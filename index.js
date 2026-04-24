@@ -9,12 +9,12 @@ async function getPrice() {
   );
 
   const data = await res.json();
-  return parseFloat(data.price);
+  return Number(data.price);
 }
 
 let lastPrice = null;
 
-setInterval(async () => {
+async function runBot() {
   try {
     const price = await getPrice();
 
@@ -35,4 +35,9 @@ setInterval(async () => {
   } catch (err) {
     console.log("Błąd:", err.message);
   }
-}, INTERVAL);
+}
+
+setInterval(runBot, INTERVAL);
+
+// uruchom od razu po starcie
+runBot();
