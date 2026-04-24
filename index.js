@@ -32,4 +32,24 @@ async function getPrice() {
     );
 
     const data = await res.json();
-    return
+    return parseFloat(data.price);
+
+  } catch (err) {
+    console.log("Binance error:", err.message);
+    return null;
+  }
+}
+
+let lastPrice = null;
+
+setInterval(async () => {
+
+  const price = await getPrice();
+
+  if (!price) return;
+
+  console.log("Cena BTC:", price);
+
+  await sendTelegram("Cena BTC: " + price);
+
+  if (last
