@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+
 
 const SYMBOL = "BTCUSDT";
 const INTERVAL = 60000;
