@@ -11,14 +11,14 @@ async function getPrice() {
 
   const data = await res.json();
 
-  if (!data.data.amount) {
+  if (!data?.data?.amount) {
     throw new Error("Brak price z API Coinbase");
   }
 
   return Number(data.data.amount);
 }
 
-async function runBot() {
+async function botLoop() {
   try {
     const price = await getPrice();
 
@@ -41,10 +41,14 @@ async function runBot() {
   }
 }
 
-runBot();
-
-setInterval(runBot, 60000);
+setInterval(botLoop, 60000);
 
 setInterval(() => {
-  console.log("heartbeat ❤️");
+  console.log("heartbeat ❤️ bot alive");
 }, 30000);
+
+// uruchom natychmiast po starcie
+botLoop();
+
+// keep container alive forever
+process.stdin.resume();
