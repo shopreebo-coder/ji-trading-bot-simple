@@ -4,14 +4,28 @@ console.log("Trading bot start ✅");
 
 let lastPrice = null;
 
+async function getPrice() {
+  const res = await fetch(
+    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`,
+    {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
+    }
+  );
+
+  const data = await res.json();
+
+  if (!data.price) {
+    throw new Error("Brak price z API Binance");
+  }
+
+  return Number(data.price);
+}
+
 async function runBot() {
   try {
-    const res = await fetch(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
-    );
-
-    const data = await res.json();
-    const price = Number(data.price);
+    const price = await getPrice();
 
     console.log("Cena:", price);
 
@@ -32,13 +46,10 @@ async function runBot() {
   }
 }
 
-// uruchom natychmiast
 runBot();
 
-// loop co minutę
 setInterval(runBot, 60000);
 
-// utrzymuj kontener aktywny (Railway workaround)
 setInterval(() => {
   console.log("heartbeat ❤️");
 }, 30000);
