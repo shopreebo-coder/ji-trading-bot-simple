@@ -3,16 +3,12 @@ console.log("BTC BOT START 🚀");
 const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
 const CHAT_ID = "7209483091";
 
-const SYMBOL = "BTCUSDT";
-
 async function sendTelegram(message) {
 
   try {
 
     await fetch(
-      "https://api.telegram.org/bot" +
-      TOKEN +
-      "/sendMessage",
+      "https://api.telegram.org/bot" + TOKEN + "/sendMessage",
       {
         method: "POST",
         headers: {
@@ -34,76 +30,25 @@ async function sendTelegram(message) {
 }
 
 
-async async function getPrice() {
+async function getBTC() {
 
   try {
 
-    const response = await fetch(
-      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      }
+    const res = await fetch(
+      "https://api.coinbase.com/v2/prices/BTC-USD/spot"
     );
 
-    const data = await response.json();
+    const data = await res.json();
 
-    console.log("BTC:", data.price);
+    const price = parseFloat(data.data.amount);
 
-    return parseFloat(data.price);
+    console.log("BTC:", price);
+
+    return price;
 
   } catch (error) {
 
-    console.log("Binance error:", error.message);
-
-    return null;
-
-  }
-
-}
-
-  try {
-
-    const response = await fetch(
-      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      }
-    );
-
-    const data = await response.json();
-
-    console.log("BTC:", data.price);
-
-    return parseFloat(data.price);
-
-  } catch (error) {
-
-    console.log("Binance error:", error.message);
-
-    return null;
-
-  }
-
-}
-
-  try {
-
-    const response = await fetch(
-      "https://api.binance.com/api/v3/ticker/price?symbol=" +
-      SYMBOL
-    );
-
-    const data = await response.json();
-
-    return parseFloat(data.price);
-
-  } catch (error) {
-
-    console.log("Binance error:", error.message);
+    console.log("PRICE ERROR:", error.message);
 
     return null;
 
@@ -115,13 +60,11 @@ async async function getPrice() {
 let lastPrice = null;
 
 
-setInterval(async function () {
+setInterval(async () => {
 
-  const price = await getPrice();
+  const price = await getBTC();
 
   if (!price) return;
-
-  console.log("BTC:", price);
 
   await sendTelegram("BTC price: " + price);
 
@@ -147,7 +90,7 @@ setInterval(async function () {
 }, 60000);
 
 
-setInterval(function () {
+setInterval(() => {
 
   console.log("heartbeat ❤️ bot alive");
 
