@@ -1,4 +1,4 @@
-console.log("BOT VERSION TELEGRAM ACTIVE 🚀");
+console.log("BTC BOT START 🚀");
 
 const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
 const CHAT_ID = "7209483091";
@@ -6,9 +6,13 @@ const CHAT_ID = "7209483091";
 const SYMBOL = "BTCUSDT";
 
 async function sendTelegram(message) {
+
   try {
+
     await fetch(
-      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
+      "https://api.telegram.org/bot" +
+      TOKEN +
+      "/sendMessage",
       {
         method: "POST",
         headers: {
@@ -20,36 +24,77 @@ async function sendTelegram(message) {
         })
       }
     );
-  } catch (err) {
-    console.log("Telegram error:", err.message);
+
+  } catch (error) {
+
+    console.log("Telegram error:", error.message);
+
   }
+
 }
+
 
 async function getPrice() {
+
   try {
-    const res = await fetch(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+
+    const response = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=" +
+      SYMBOL
     );
 
-    const data = await res.json();
+    const data = await response.json();
+
     return parseFloat(data.price);
 
-  } catch (err) {
-    console.log("Binance error:", err.message);
+  } catch (error) {
+
+    console.log("Binance error:", error.message);
+
     return null;
+
   }
+
 }
+
 
 let lastPrice = null;
 
-setInterval(async () => {
+
+setInterval(async function () {
 
   const price = await getPrice();
 
   if (!price) return;
 
-  console.log("Cena BTC:", price);
+  console.log("BTC:", price);
 
-  await sendTelegram("Cena BTC: " + price);
+  await sendTelegram("BTC price: " + price);
 
-  if (last
+
+  if (lastPrice !== null) {
+
+    if (price > lastPrice) {
+
+      await sendTelegram("📈 BUY signal");
+
+    }
+
+    if (price < lastPrice) {
+
+      await sendTelegram("📉 SELL signal");
+
+    }
+
+  }
+
+  lastPrice = price;
+
+}, 60000);
+
+
+setInterval(function () {
+
+  console.log("heartbeat ❤️ bot alive");
+
+}, 30000);
