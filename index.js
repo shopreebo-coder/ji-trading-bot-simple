@@ -34,7 +34,61 @@ async function sendTelegram(message) {
 }
 
 
-async function getPrice() {
+async async function getPrice() {
+
+  try {
+
+    const response = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0"
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    console.log("BTC:", data.price);
+
+    return parseFloat(data.price);
+
+  } catch (error) {
+
+    console.log("Binance error:", error.message);
+
+    return null;
+
+  }
+
+}
+
+  try {
+
+    const response = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0"
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    console.log("BTC:", data.price);
+
+    return parseFloat(data.price);
+
+  } catch (error) {
+
+    console.log("Binance error:", error.message);
+
+    return null;
+
+  }
+
+}
 
   try {
 
