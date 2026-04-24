@@ -2,62 +2,73 @@ const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
 const CHAT_ID = "7209483091";
 
 const SYMBOL = "BTCUSDT";
-const INTERVAL = 60000;
 
 console.log("Trading bot start ✅");
 
 async function sendTelegram(message) {
-  const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          chat_id: CHAT_ID,
+          text: message
+        })
+      }
+    );
 
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      chat_id: CHAT_ID,
-      text: message,
-    }),
-  });
+    console.log("Telegram status:", res.status);
+  } catch (err) {
+    console.log("Telegram error:", err.message);
+  }
 }
 
 async function getPrice() {
-  const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
-  );
+  try {
+    const res = await fetch(
+      `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+    );
 
-  const data = await res.json();
-  return parseFloat(data.price);
+    const data = await res.json();
+
+    return parseFloat(data.price);
+  } catch (err) {
+    console.log("Binance error:", err.message);
+  }
 }
 
 let lastPrice = null;
 
 setInterval(async () => {
-  try {
-    const price = await getPrice();
 
-    console.log("Cena BTC:", price);
+  const price = await getPrice();
 
-    await sendTelegram(`Cena BTC: ${price}`);
+  if (!price) return;
 
-    if (lastPrice) {
-      if (price > lastPrice) {
-        console.log("Trend rośnie 📈 BUY signal");
-        await sendTelegram("📈 BUY signal");
-      } else if (price < lastPrice) {
-        console.log("Trend spada 📉 SELL signal");
-        await sendTelegram("📉 SELL signal");
-      } else {
-        console.log("Brak zmiany");
-      }
+  console.log("Cena BTC:", price);
+
+  await sendTelegram("Cena BTC: " + price);
+
+  if (lastPrice) {
+
+    if (price > lastPrice) {
+      await sendTelegram("📈 BUY signal");
     }
 
-    lastPrice = price;
+    if (price < lastPrice) {
+      await sendTelegram("📉 SELL signal");
+    }
 
-  } catch (err) {
-    console.log("Błąd:", err.message);
   }
-}, INTERVAL);
+
+  lastPrice = price;
+
+}, 60000);
+
 
 setInterval(() => {
   console.log("heartbeat ❤️ bot alive");
