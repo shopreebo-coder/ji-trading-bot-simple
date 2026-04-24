@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 console.log("BOT VERSION TELEGRAM ACTIVE 🚀");
 
 const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
@@ -28,43 +26,10 @@ async function sendTelegram(message) {
 }
 
 async function getPrice() {
-  const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
-  );
+  try {
+    const res = await fetch(
+      `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+    );
 
-  const data = await res.json();
-  return parseFloat(data.price);
-}
-
-let lastPrice = null;
-
-setInterval(async () => {
-
-  const price = await getPrice();
-
-  if (!price) return;
-
-  console.log("Cena BTC:", price);
-
-  await sendTelegram("Cena BTC: " + price);
-
-  if (lastPrice !== null) {
-
-    if (price > lastPrice) {
-      await sendTelegram("📈 BUY signal");
-    }
-
-    if (price < lastPrice) {
-      await sendTelegram("📉 SELL signal");
-    }
-
-  }
-
-  lastPrice = price;
-
-}, 60000);
-
-
-setInterval(() => {
-  console.log("heartbeat ❤️ bot alive");
-}, 30000);
+    const data = await res.json();
+    return
