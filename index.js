@@ -1,12 +1,16 @@
-console.log("BTC BOT START 🚀");
+console.log("BOT TEST START 🚀");
 
 const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
 const CHAT_ID = "7209483091";
 
-async function sendTelegram(message) {
+async function run() {
+
   try {
-    await fetch(
-      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
+
+    const response = await fetch(
+      "https://api.telegram.org/bot" +
+      TOKEN +
+      "/sendMessage",
       {
         method: "POST",
         headers: {
@@ -14,71 +18,27 @@ async function sendTelegram(message) {
         },
         body: JSON.stringify({
           chat_id: CHAT_ID,
-          text: message
+          text: "Bot działa ✅"
         })
       }
     );
-  } catch (error) {
-    console.log("Telegram error:", error.message);
-  }
-}
 
+    const data = await response.text();
 
-async function getBTCPrice() {
+    console.log("Telegram response:", data);
 
-  try {
+  } catch (err) {
 
-    const response = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-    );
-
-    const data = await response.json();
-
-    const price = data.bitcoin.usd;
-
-    console.log("BTC:", price);
-
-    return price;
-
-  } catch (error) {
-
-    console.log("PRICE ERROR:", error.message);
-
-    return null;
+    console.log("ERROR:", err.message);
 
   }
 
 }
 
-
-let lastPrice = null;
-
-
-setInterval(async () => {
-
-  const price = await getBTCPrice();
-
-  if (!price) return;
-
-  await sendTelegram("BTC price: " + price);
-
-  if (lastPrice !== null) {
-
-    if (price > lastPrice)
-      await sendTelegram("📈 BUY signal");
-
-    if (price < lastPrice)
-      await sendTelegram("📉 SELL signal");
-
-  }
-
-  lastPrice = price;
-
-}, 60000);
-
+run();
 
 setInterval(() => {
 
-  console.log("heartbeat ❤️ bot alive");
+  console.log("heartbeat ❤️");
 
 }, 30000);
