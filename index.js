@@ -1,22 +1,17 @@
 const SYMBOL = "BTCUSDT";
-const INTERVAL = 60000;
 
 console.log("Trading bot start ✅");
-
-async function getPrice() {
-  const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
-  );
-
-  const data = await res.json();
-  return Number(data.price);
-}
 
 let lastPrice = null;
 
 async function runBot() {
   try {
-    const price = await getPrice();
+    const res = await fetch(
+      `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+    );
+
+    const data = await res.json();
+    const price = Number(data.price);
 
     console.log("Cena:", price);
 
@@ -37,7 +32,13 @@ async function runBot() {
   }
 }
 
-setInterval(runBot, INTERVAL);
-
-// uruchom od razu po starcie
+// uruchom natychmiast
 runBot();
+
+// loop co minutę
+setInterval(runBot, 60000);
+
+// utrzymuj kontener aktywny (Railway workaround)
+setInterval(() => {
+  console.log("heartbeat ❤️");
+}, 30000);
