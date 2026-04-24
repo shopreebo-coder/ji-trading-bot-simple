@@ -1,4 +1,4 @@
-const SYMBOL = "BTCUSDT";
+const SYMBOL = "BTC-USD";
 
 console.log("Trading bot start ✅");
 
@@ -6,28 +6,23 @@ let lastPrice = null;
 
 async function getPrice() {
   const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`,
-    {
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
-    }
+    `https://api.coinbase.com/v2/prices/${SYMBOL}/spot`
   );
 
   const data = await res.json();
 
-  if (!data.price) {
-    throw new Error("Brak price z API Binance");
+  if (!data.data.amount) {
+    throw new Error("Brak price z API Coinbase");
   }
 
-  return Number(data.price);
+  return Number(data.data.amount);
 }
 
 async function runBot() {
   try {
     const price = await getPrice();
 
-    console.log("Cena:", price);
+    console.log("Cena BTC:", price);
 
     if (lastPrice !== null) {
       if (price > lastPrice) {
