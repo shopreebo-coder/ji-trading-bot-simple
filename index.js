@@ -1,36 +1,54 @@
-const SYMBOL = "BTC-USD";
+const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
+const CHAT_ID = "7209483091";
+
+const SYMBOL = "BTCUSDT";
+const INTERVAL = 60000;
 
 console.log("Trading bot start ✅");
 
-let lastPrice = null;
+async function sendTelegram(message) {
+  const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      chat_id: CHAT_ID,
+      text: message,
+    }),
+  });
+}
 
 async function getPrice() {
   const res = await fetch(
-    `https://api.coinbase.com/v2/prices/${SYMBOL}/spot`
+    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
   );
 
   const data = await res.json();
-
-  if (!data?.data?.amount) {
-    throw new Error("Brak price z API Coinbase");
-  }
-
-  return Number(data.data.amount);
+  return parseFloat(data.price);
 }
 
-async function botLoop() {
+let lastPrice = null;
+
+setInterval(async () => {
   try {
     const price = await getPrice();
 
     console.log("Cena BTC:", price);
 
-    if (lastPrice !== null) {
+    await sendTelegram(`Cena BTC: ${price}`);
+
+    if (lastPrice) {
       if (price > lastPrice) {
         console.log("Trend rośnie 📈 BUY signal");
+        await sendTelegram("📈 BUY signal");
       } else if (price < lastPrice) {
         console.log("Trend spada 📉 SELL signal");
+        await sendTelegram("📉 SELL signal");
       } else {
-        console.log("Brak zmiany ➖");
+        console.log("Brak zmiany");
       }
     }
 
@@ -39,16 +57,8 @@ async function botLoop() {
   } catch (err) {
     console.log("Błąd:", err.message);
   }
-}
-
-setInterval(botLoop, 60000);
+}, INTERVAL);
 
 setInterval(() => {
   console.log("heartbeat ❤️ bot alive");
 }, 30000);
-
-// uruchom natychmiast po starcie
-botLoop();
-
-// keep container alive forever
-process.stdin.resume();
