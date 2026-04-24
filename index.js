@@ -5,9 +5,9 @@ const INTERVAL = 60000;
 
 console.log("Trading bot start ✅");
 
-async function getPrice() {
-  const res = await fetch(
-    `https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+aconst res = await fetch(
+`https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`
+);
   );
   const data = await res.json();
   return parseFloat(data.price);
