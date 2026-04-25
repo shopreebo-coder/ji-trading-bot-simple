@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 const TELEGRAM_TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
@@ -17,7 +15,7 @@ async function sendTelegram(message) {
 
   await fetch(url, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: CHAT_ID,
       text: message
@@ -36,23 +34,18 @@ async function getPrice(symbol) {
 }
 
 function detectTrendMock(price) {
-  // placeholder trend logic (EMA engine next step)
-  if (price % 2 > 1) return "UP";
-  return "DOWN";
+  return price % 2 > 1 ? "UP" : "DOWN";
 }
 
 function detectMomentumMock(price) {
-  if (price % 5 > 2) return true;
-  return false;
+  return price % 5 > 2;
 }
 
 function detectEntryMock(price) {
-  if (price % 3 > 1) return true;
-  return false;
+  return price % 3 > 1;
 }
 
 async function analyzePair(pair) {
-
   const price = await getPrice(pair);
 
   const trend = detectTrendMock(price);
@@ -60,9 +53,7 @@ async function analyzePair(pair) {
   const entry = detectEntryMock(price);
 
   if (trend === "UP" && momentum && entry) {
-
     if (tradeState[pair] !== "LONG") {
-
       tradeState[pair] = "LONG";
 
       await sendTelegram(
@@ -74,13 +65,11 @@ ENTRY: ${price}
 RISK: 1.5%
 CONFIDENCE: HIGH`
       );
-
     }
+  }
 
-  } else if (trend === "DOWN" && momentum && entry) {
-
+  else if (trend === "DOWN" && momentum && entry) {
     if (tradeState[pair] !== "SHORT") {
-
       tradeState[pair] = "SHORT";
 
       await sendTelegram(
@@ -92,13 +81,11 @@ ENTRY: ${price}
 RISK: 1.5%
 CONFIDENCE: HIGH`
       );
-
     }
+  }
 
-  } else {
-
+  else {
     if (tradeState[pair] !== "NONE") {
-
       await sendTelegram(
 `TRADE CLOSED ✅
 
@@ -107,19 +94,14 @@ STATUS: EXIT SIGNAL`
       );
 
       tradeState[pair] = "NONE";
-
     }
-
   }
-
 }
 
 async function runEngine() {
-
   for (const pair of PAIRS) {
     await analyzePair(pair);
   }
-
 }
 
 setInterval(runEngine, 60000);
