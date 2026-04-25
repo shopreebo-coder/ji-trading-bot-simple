@@ -1,11 +1,11 @@
 console.log("BTC BOT START 🚀");
 
-const TOKEN = "8659223122:AAFvSZw6wnAPOuEUZMhuufw0Xu4QzZ8BEeOo";
+const TOKEN = "8659223122:AAG3azRhCPU1F29AdUc0lO5jKRg-Nv_KDuA";
 const CHAT_ID = "7209483091";
 
 
-// funkcja wysyłania wiadomości do Telegram
 async function sendTelegram(message) {
+
   try {
 
     const response = await fetch(
@@ -31,11 +31,12 @@ async function sendTelegram(message) {
     console.log("Telegram ERROR:", error.message);
 
   }
+
 }
 
 
-// pobieranie ceny BTC
 async function getBTCPrice() {
+
   try {
 
     const response = await fetch(
@@ -53,6 +54,7 @@ async function getBTCPrice() {
     return null;
 
   }
+
 }
 
 
@@ -61,11 +63,13 @@ let lastPrice = null;
 
 // wiadomość startowa
 setTimeout(() => {
+
   sendTelegram("Bot działa ✅");
+
 }, 4000);
 
 
-// główny loop co 60 sekund
+// loop co 60 sekund
 setInterval(async () => {
 
   const price = await getBTCPrice();
@@ -80,11 +84,15 @@ setInterval(async () => {
   if (lastPrice !== null) {
 
     if (price > lastPrice) {
+
       await sendTelegram("📈 BUY signal");
+
     }
 
     if (price < lastPrice) {
+
       await sendTelegram("📉 SELL signal");
+
     }
 
   }
@@ -94,7 +102,7 @@ setInterval(async () => {
 }, 60000);
 
 
-// heartbeat Railway keep-alive
+// heartbeat Railway keepalive
 setInterval(() => {
 
   console.log("heartbeat ❤️ bot alive");
