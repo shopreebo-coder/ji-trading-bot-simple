@@ -1,9 +1,17 @@
 console.log("BTC BOT START 🚀");
 
-const TOKEN = "8659223122:AAG3azRhCPU1F29AdUc0lO5jKRg-Nv_KDuA";
-const CHAT_ID = "7209483091";
+const TOKEN = process.env.TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 
 
+// sprawdzenie czy Railway widzi variables
+if (!TOKEN || !CHAT_ID) {
+  console.log("❌ Missing ENV variables");
+  process.exit(1);
+}
+
+
+// funkcja telegram
 async function sendTelegram(message) {
 
   try {
@@ -35,6 +43,7 @@ async function sendTelegram(message) {
 }
 
 
+// pobieranie ceny BTC
 async function getBTCPrice() {
 
   try {
@@ -62,14 +71,14 @@ let lastPrice = null;
 
 
 // wiadomość startowa
-setTimeout(() => {
+setTimeout(async () => {
 
-  sendTelegram("Bot działa ✅");
+  await sendTelegram("Bot działa ✅ Railway OK");
 
-}, 4000);
+}, 5000);
 
 
-// loop co 60 sekund
+// główny loop
 setInterval(async () => {
 
   const price = await getBTCPrice();
@@ -102,7 +111,7 @@ setInterval(async () => {
 }, 60000);
 
 
-// heartbeat Railway keepalive
+// heartbeat żeby Railway nie ubijał kontenera
 setInterval(() => {
 
   console.log("heartbeat ❤️ bot alive");
