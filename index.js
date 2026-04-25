@@ -1,18 +1,19 @@
 console.log("BTC BOT START 🚀");
 
-const TOKEN = process.env.TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
+const TOKEN = process.env.TOKEN || "";
+const CHAT_ID = process.env.CHAT_ID || "";
 
 
-// sprawdzenie czy Railway widzi variables
-if (!TOKEN || !CHAT_ID) {
-  console.log("❌ Missing ENV variables");
-  process.exit(1);
-}
+console.log("ENV TOKEN:", TOKEN ? "OK" : "MISSING");
+console.log("ENV CHAT_ID:", CHAT_ID ? "OK" : "MISSING");
 
 
-// funkcja telegram
 async function sendTelegram(message) {
+
+  if (!TOKEN || !CHAT_ID) {
+    console.log("❌ Missing ENV variables");
+    return;
+  }
 
   try {
 
@@ -43,7 +44,6 @@ async function sendTelegram(message) {
 }
 
 
-// pobieranie ceny BTC
 async function getBTCPrice() {
 
   try {
@@ -56,9 +56,7 @@ async function getBTCPrice() {
 
     return data.bitcoin.usd;
 
-  } catch (error) {
-
-    console.log("PRICE ERROR:", error.message);
+  } catch {
 
     return null;
 
@@ -70,7 +68,6 @@ async function getBTCPrice() {
 let lastPrice = null;
 
 
-// wiadomość startowa
 setTimeout(async () => {
 
   await sendTelegram("Bot działa ✅ Railway OK");
@@ -78,7 +75,6 @@ setTimeout(async () => {
 }, 5000);
 
 
-// główny loop
 setInterval(async () => {
 
   const price = await getBTCPrice();
@@ -89,20 +85,13 @@ setInterval(async () => {
 
   await sendTelegram("BTC price: " + price);
 
-
   if (lastPrice !== null) {
 
-    if (price > lastPrice) {
-
+    if (price > lastPrice)
       await sendTelegram("📈 BUY signal");
 
-    }
-
-    if (price < lastPrice) {
-
+    if (price < lastPrice)
       await sendTelegram("📉 SELL signal");
-
-    }
 
   }
 
@@ -111,7 +100,6 @@ setInterval(async () => {
 }, 60000);
 
 
-// heartbeat żeby Railway nie ubijał kontenera
 setInterval(() => {
 
   console.log("heartbeat ❤️ bot alive");
