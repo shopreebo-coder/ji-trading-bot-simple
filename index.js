@@ -1,107 +1,127 @@
-console.log("BTC BOT START 🚀");
+import fetch from "node-fetch";
 
-const TOKEN = process.env.TOKEN || "";
-const CHAT_ID = process.env.CHAT_ID || "";
+const TELEGRAM_TOKEN = process.env.TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 
+const PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"];
 
-console.log("ENV TOKEN:", TOKEN ? "OK" : "MISSING");
-console.log("ENV CHAT_ID:", CHAT_ID ? "OK" : "MISSING");
-
+let tradeState = {
+  EURUSD: "NONE",
+  GBPUSD: "NONE",
+  USDJPY: "NONE",
+  XAUUSD: "NONE"
+};
 
 async function sendTelegram(message) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
 
-  if (!TOKEN || !CHAT_ID) {
-    console.log("❌ Missing ENV variables");
-    return;
-  }
+  await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      chat_id: CHAT_ID,
+      text: message
+    })
+  });
+}
 
-  try {
+async function getPrice(symbol) {
+  const res = await fetch(
+    `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`
+  );
 
-    const response = await fetch(
-      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message
-        })
-      }
-    );
+  const data = await res.json();
 
-    const data = await response.json();
+  return parseFloat(data.price);
+}
 
-    console.log("Telegram:", data);
+function detectTrendMock(price) {
+  // placeholder trend logic (EMA engine next step)
+  if (price % 2 > 1) return "UP";
+  return "DOWN";
+}
 
-  } catch (error) {
+function detectMomentumMock(price) {
+  if (price % 5 > 2) return true;
+  return false;
+}
 
-    console.log("Telegram ERROR:", error.message);
+function detectEntryMock(price) {
+  if (price % 3 > 1) return true;
+  return false;
+}
+
+async function analyzePair(pair) {
+
+  const price = await getPrice(pair);
+
+  const trend = detectTrendMock(price);
+  const momentum = detectMomentumMock(price);
+  const entry = detectEntryMock(price);
+
+  if (trend === "UP" && momentum && entry) {
+
+    if (tradeState[pair] !== "LONG") {
+
+      tradeState[pair] = "LONG";
+
+      await sendTelegram(
+`TRADE OPENED 📈
+
+PAIR: ${pair}
+TYPE: LONG
+ENTRY: ${price}
+RISK: 1.5%
+CONFIDENCE: HIGH`
+      );
+
+    }
+
+  } else if (trend === "DOWN" && momentum && entry) {
+
+    if (tradeState[pair] !== "SHORT") {
+
+      tradeState[pair] = "SHORT";
+
+      await sendTelegram(
+`TRADE OPENED 📉
+
+PAIR: ${pair}
+TYPE: SHORT
+ENTRY: ${price}
+RISK: 1.5%
+CONFIDENCE: HIGH`
+      );
+
+    }
+
+  } else {
+
+    if (tradeState[pair] !== "NONE") {
+
+      await sendTelegram(
+`TRADE CLOSED ✅
+
+PAIR: ${pair}
+STATUS: EXIT SIGNAL`
+      );
+
+      tradeState[pair] = "NONE";
+
+    }
 
   }
 
 }
 
+async function runEngine() {
 
-async function getBTCPrice() {
-
-  try {
-
-    const response = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-    );
-
-    const data = await response.json();
-
-    return data.bitcoin.usd;
-
-  } catch {
-
-    return null;
-
+  for (const pair of PAIRS) {
+    await analyzePair(pair);
   }
 
 }
 
+setInterval(runEngine, 60000);
 
-let lastPrice = null;
-
-
-setTimeout(async () => {
-
-  await sendTelegram("Bot działa ✅ Railway OK");
-
-}, 5000);
-
-
-setInterval(async () => {
-
-  const price = await getBTCPrice();
-
-  if (!price) return;
-
-  console.log("BTC:", price);
-
-  await sendTelegram("BTC price: " + price);
-
-  if (lastPrice !== null) {
-
-    if (price > lastPrice)
-      await sendTelegram("📈 BUY signal");
-
-    if (price < lastPrice)
-      await sendTelegram("📉 SELL signal");
-
-  }
-
-  lastPrice = price;
-
-}, 60000);
-
-
-setInterval(() => {
-
-  console.log("heartbeat ❤️ bot alive");
-
-}, 30000);
+console.log("Forex Engine PRO running ✅");
