@@ -1,109 +1,103 @@
-const TELEGRAM_TOKEN = process.env.TOKEN;
+console.log("FOREX ENGINE PRO v2 starting 🚀");
+
+const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const API_KEY = process.env.TWELVEDATA_API_KEY;
 
-const PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"];
-
-let tradeState = {
-  EURUSD: "NONE",
-  GBPUSD: "NONE",
-  USDJPY: "NONE",
-  XAUUSD: "NONE"
-};
+if (!TOKEN || !CHAT_ID || !API_KEY) {
+  console.log("❌ Missing ENV variables");
+  process.exit(1);
+}
 
 async function sendTelegram(message) {
-  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-
-  await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: CHAT_ID,
-      text: message
-    })
-  });
+  try {
+    await fetch(
+      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          chat_id: CHAT_ID,
+          text: message
+        })
+      }
+    );
+  } catch (err) {
+    console.log("Telegram error:", err.message);
+  }
 }
 
 async function getPrice(symbol) {
-  const res = await fetch(
-    `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`
-  );
+  try {
+    const res = await fetch(
+      `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1min&apikey=${API_KEY}&outputsize=2`
+    );
 
-  const data = await res.json();
+    const data = await res.json();
 
-  return parseFloat(data.price);
-}
+    if (!data.values) return null;
 
-function detectTrendMock(price) {
-  return price % 2 > 1 ? "UP" : "DOWN";
-}
+    return parseFloat(data.values[0].close);
 
-function detectMomentumMock(price) {
-  return price % 5 > 2;
-}
-
-function detectEntryMock(price) {
-  return price % 3 > 1;
-}
-
-async function analyzePair(pair) {
-  const price = await getPrice(pair);
-
-  const trend = detectTrendMock(price);
-  const momentum = detectMomentumMock(price);
-  const entry = detectEntryMock(price);
-
-  if (trend === "UP" && momentum && entry) {
-    if (tradeState[pair] !== "LONG") {
-      tradeState[pair] = "LONG";
-
-      await sendTelegram(
-`TRADE OPENED 📈
-
-PAIR: ${pair}
-TYPE: LONG
-ENTRY: ${price}
-RISK: 1.5%
-CONFIDENCE: HIGH`
-      );
-    }
-  }
-
-  else if (trend === "DOWN" && momentum && entry) {
-    if (tradeState[pair] !== "SHORT") {
-      tradeState[pair] = "SHORT";
-
-      await sendTelegram(
-`TRADE OPENED 📉
-
-PAIR: ${pair}
-TYPE: SHORT
-ENTRY: ${price}
-RISK: 1.5%
-CONFIDENCE: HIGH`
-      );
-    }
-  }
-
-  else {
-    if (tradeState[pair] !== "NONE") {
-      await sendTelegram(
-`TRADE CLOSED ✅
-
-PAIR: ${pair}
-STATUS: EXIT SIGNAL`
-      );
-
-      tradeState[pair] = "NONE";
-    }
+  } catch {
+    return null;
   }
 }
 
-async function runEngine() {
-  for (const pair of PAIRS) {
-    await analyzePair(pair);
+let lastSignal = {};
+
+async function scan(symbol) {
+
+  const price = await getPrice(symbol);
+
+  if (!price) return;
+
+  console.log(symbol, price);
+
+  if (!lastSignal[symbol]) {
+    lastSignal[symbol] = "NONE";
+  }
+
+  if (price % 2 === 0 && lastSignal[symbol] !== "BUY") {
+
+    lastSignal[symbol] = "BUY";
+
+    await sendTelegram(
+`${symbol} BUY
+
+Entry: ${price}
+SL: ${(price - 0.0020).toFixed(5)}
+TP: ${(price + 0.0040).toFixed(5)}`
+    );
+  }
+
+  if (price % 3 === 0 && lastSignal[symbol] !== "SELL") {
+
+    lastSignal[symbol] = "SELL";
+
+    await sendTelegram(
+`${symbol} SELL
+
+Entry: ${price}
+SL: ${(price + 0.0020).toFixed(5)}
+TP: ${(price - 0.0040).toFixed(5)}`
+    );
   }
 }
 
-setInterval(runEngine, 60000);
+const pairs = [
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY",
+  "XAU/USD"
+];
 
-console.log("Forex Engine PRO running ✅");
+console.log("Live market connected ✅");
+
+setInterval(() => {
+
+  pairs.forEach(scan);
+
+}, 60000);
