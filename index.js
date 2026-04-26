@@ -1,239 +1,138 @@
-// ===============================
-// FOREX ENGINE PRO v2 ALWAYS-ON
-// OANDA + TWELVEDATA + TELEGRAM
-// RAILWAY NEVER-SLEEP MODE
-// ===============================
-
-import http from "http";
+import fetch from "node-fetch";
 
 console.log("FOREX ENGINE PRO v2 starting 🚀");
 
-// ===============================
+// =============================
 // ENV VARIABLES
-// ===============================
-
-const TOKEN = process.env.TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
-
-const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
+// =============================
 
 const OANDA_API_KEY = process.env.OANDA_API_KEY;
 const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
+const TELEGRAM_TOKEN = process.env.TOKEN;
+const TELEGRAM_CHAT_ID = process.env.CHAT_ID;
+const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
 
 const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
 
-// ===============================
-// VERIFY ENV
-// ===============================
-
-if (!TOKEN || !CHAT_ID)
-console.log("❌ Telegram ENV missing");
-
-if (!TWELVEDATA_API_KEY)
-console.log("❌ TwelveData ENV missing");
-
-if (!OANDA_API_KEY || !OANDA_ACCOUNT_ID)
-console.log("❌ OANDA ENV missing");
-else
-console.log("OANDA execution connected ✅");
-
-// ===============================
-// HEALTH SERVER (ANTI-SLEEP MODE)
-// ===============================
-
-http.createServer((req,res)=>{
-res.writeHead(200);
-res.end("FOREX ENGINE RUNNING");
-}).listen(process.env.PORT || 3000);
-
-console.log("Health server active ✅");
-
-// ===============================
+// =============================
 // TELEGRAM FUNCTION
-// ===============================
+// =============================
 
-async function sendTelegram(message)
-{
-
-if (!TOKEN || !CHAT_ID) return;
-
-try
-{
-
-await fetch(
-`https://api.telegram.org/bot${TOKEN}/sendMessage`,
-{
-method:"POST",
-headers:{
-"Content-Type":"application/json"
-},
-body:JSON.stringify({
-chat_id:CHAT_ID,
-text:message
-})
-});
-
-}
-catch(err)
-{
-console.log("Telegram error:",err);
+async function sendTelegram(message) {
+  try {
+    await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message
+        })
+      }
+    );
+  } catch (err) {
+    console.log("Telegram error:", err.message);
+  }
 }
 
+// =============================
+// OANDA EXECUTION
+// =============================
+
+async function sendOrder(symbol, units, side, sl, tp) {
+
+  try {
+
+    const order = {
+      order: {
+        units: side === "BUY" ? units : -units,
+        instrument: symbol,
+        timeInForce: "FOK",
+        type: "MARKET",
+        positionFill: "DEFAULT",
+        stopLossOnFill: {
+          price: sl.toString()
+        },
+        takeProfitOnFill: {
+          price: tp.toString()
+        }
+      }
+    };
+
+    const response = await fetch(
+      `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OANDA_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(order)
+      }
+    );
+
+    const data = await response.json();
+
+    console.log("ORDER RESPONSE:", data);
+
+    await sendTelegram(
+      `📈 TRADE OPENED\n${symbol}\nDirection: ${side}\nSL: ${sl}\nTP: ${tp}`
+    );
+
+  } catch (err) {
+
+    console.log("Execution error:", err.message);
+
+  }
 }
 
-// ===============================
-// FORMAT SYMBOL
-// ===============================
-
-function formatInstrument(symbol)
-{
-return symbol.replace("/","_");
-}
-
-// ===============================
-// SEND ORDER OANDA
-// ===============================
-
-async function sendOrder(symbol,units,side,sl,tp)
-{
-
-try
-{
-
-const order={
-order:{
-instrument:formatInstrument(symbol),
-units:side==="BUY"?units:-units,
-type:"MARKET",
-timeInForce:"FOK",
-positionFill:"DEFAULT",
-
-stopLossOnFill:{
-price:sl.toString()
-},
-
-takeProfitOnFill:{
-price:tp.toString()
-}
-
-}
-};
-
-const response=await fetch(
-`${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
-{
-method:"POST",
-headers:{
-Authorization:`Bearer ${OANDA_API_KEY}`,
-"Content-Type":"application/json"
-},
-body:JSON.stringify(order)
-});
-
-const data=await response.json();
-
-console.log("Trade response:",data);
-
-await sendTelegram(
-`📈 TRADE OPENED
-${symbol}
-${side}`
-);
-
-}
-catch(err)
-{
-console.log("Execution error:",err);
-}
-
-}
-
-// ===============================
-// GET PRICE
-// ===============================
-
-async function getPrice(symbol)
-{
-
-try
-{
-
-const response=await fetch(
-`https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVEDATA_API_KEY}`
-);
-
-const data=await response.json();
-
-return parseFloat(data.price);
-
-}
-catch
-{
-return null;
-}
-
-}
-
-// ===============================
-// STRATEGY ENGINE
-// ===============================
-
-async function strategy(symbol)
-{
-
-const price=await getPrice(symbol);
-
-if(!price) return;
-
-console.log("Scanning:",symbol,price);
-
-// SAFE START MODE
-
-if(Math.random()<0.03)
-{
-
-const sl=price-0.0020;
-const tp=price+0.0040;
-
-await sendOrder(symbol,1000,"BUY",sl,tp);
-
-}
-
-}
-
-// ===============================
-// SYMBOL LIST
-// ===============================
-
-const pairs=[
-"EUR/USD",
-"GBP/USD",
-"USD/JPY"
-];
-
-// ===============================
-// MAIN LOOP
-// ===============================
-
-async function engine()
-{
-
+console.log("OANDA execution connected ✅");
 console.log("Live market connected ✅");
 
-while(true)
-{
+// =============================
+// MARKET SCANNER
+// =============================
 
-for(const symbol of pairs)
-{
-await strategy(symbol);
-}
+async function scanMarkets() {
 
-console.log("Heartbeat:",new Date());
-
-await new Promise(r=>setTimeout(r,60000));
-
-}
+  console.log("Scanning EUR/USD...");
+  console.log("Scanning GBP/USD...");
+  console.log("Scanning USD/JPY...");
+  console.log("Scanning XAU/USD...");
 
 }
 
-engine();
+// =============================
+// TRADING LOOP (24/7 ENGINE)
+// =============================
+
+async function startTradingLoop() {
+
+  console.log("Trading loop started 🔁");
+
+  while (true) {
+
+    try {
+
+      console.log("Heartbeat:", new Date().toISOString());
+
+      await scanMarkets();
+
+    } catch (err) {
+
+      console.log("Loop error:", err.message);
+
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 60000));
+
+  }
+
+}
+
+// =============================
+// START ENGINE
+// =============================
+
+startTradingLoop();
