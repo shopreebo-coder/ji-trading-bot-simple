@@ -1,4 +1,4 @@
-console.log("FOREX ENGINE PRO v2 starting 🚀");
+console.log("TEST LOOP VERSION ACTIVE 🔥🔥🔥");console.log("FOREX ENGINE PRO v2 starting 🚀");
 
 async function scanMarkets() {
   console.log("Scanning EUR/USD...");
