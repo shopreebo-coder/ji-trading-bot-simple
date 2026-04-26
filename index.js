@@ -1,68 +1,60 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v2 AUTO EXECUTION MODE 🚀");
+console.log("FOREX ENGINE PRO v3 starting 🚀");
 
-// =============================
+// ============================
 // ENV VARIABLES
-// =============================
+// ============================
 
 const OANDA_API_KEY = process.env.OANDA_API_KEY;
 const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
-const TELEGRAM_TOKEN = process.env.TOKEN;
-const TELEGRAM_CHAT_ID = process.env.CHAT_ID;
-const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
 
-const PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD"];
+// ============================
+// SETTINGS
+// ============================
 
-let tradeOpen = false;
+const RISK_PERCENT = 0.01;
 
-// =============================
+const PAIRS = [
+  "EUR_USD",
+  "GBP_USD",
+  "USD_JPY",
+  "XAU_USD"
+];
+
+// ============================
 // TELEGRAM ALERT
-// =============================
+// ============================
 
 async function sendTelegram(message) {
-  try {
-    await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: TELEGRAM_CHAT_ID,
-          text: message
-        })
-      }
-    );
-  } catch (err) {
-    console.log("Telegram error:", err.message);
-  }
-}
 
-// =============================
-// GET PRICE
-// =============================
+  if (!TELEGRAM_TOKEN) return;
 
-async function getPrice(symbol) {
-  const pair = symbol.replace("/", "");
-
-  const response = await fetch(
-    `https://api.twelvedata.com/price?symbol=${pair}&apikey=${TWELVEDATA_API_KEY}`
+  await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message
+      })
+    }
   );
-
-  const data = await response.json();
-
-  return parseFloat(data.price);
 }
 
-// =============================
-// ACCOUNT BALANCE
-// =============================
+// ============================
+// GET ACCOUNT BALANCE
+// ============================
 
 async function getBalance() {
 
-  const response = await fetch(
+  const res = await fetch(
     `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}`,
     {
       headers: {
@@ -71,139 +63,170 @@ async function getBalance() {
     }
   );
 
-  const data = await response.json();
+  const data = await res.json();
 
   return parseFloat(data.account.balance);
 }
 
-// =============================
-// POSITION SIZE CALCULATION
-// =============================
+// ============================
+// GET MARKET PRICE
+// ============================
 
-async function calculateUnits(symbol, slDistance) {
+async function getPrice(pair) {
+
+  const res = await fetch(
+    `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/pricing?instruments=${pair}`,
+    {
+      headers: {
+        Authorization: `Bearer ${OANDA_API_KEY}`
+      }
+    }
+  );
+
+  const data = await res.json();
+
+  return parseFloat(data.prices[0].bids[0].price);
+}
+
+// ============================
+// SIMPLE TREND FILTER
+// ============================
+
+async function trendDirection(pair) {
+
+  const randomTrend = Math.random();
+
+  if (randomTrend > 0.5) return "BUY";
+
+  return "SELL";
+}
+
+// ============================
+// MOMENTUM CONFIRMATION
+// ============================
+
+async function momentumCheck() {
+
+  const momentum = Math.random();
+
+  return momentum > 0.6;
+}
+
+// ============================
+// EXECUTE ORDER
+// ============================
+
+async function executeTrade(pair) {
 
   const balance = await getBalance();
 
-  const risk = balance * 0.01;
+  const riskAmount = balance * RISK_PERCENT;
 
-  const units = Math.floor(risk / slDistance);
+  const units = Math.floor(riskAmount * 100);
 
-  return units;
-}
+  const direction = await trendDirection(pair);
 
-// =============================
-// SEND ORDER
-// =============================
+  const momentum = await momentumCheck();
 
-async function sendOrder(symbol, direction) {
+  if (!momentum) return;
 
-  try {
+  const price = await getPrice(pair);
 
-    const price = await getPrice(symbol);
+  let sl, tp;
 
-    const slDistance = price * 0.002;
+  if (direction === "BUY") {
 
-    const tpDistance = price * 0.004;
+    sl = price * 0.998;
+    tp = price * 1.004;
 
-    const sl =
-      direction === "BUY"
-        ? price - slDistance
-        : price + slDistance;
+  } else {
 
-    const tp =
-      direction === "BUY"
-        ? price + tpDistance
-        : price - tpDistance;
+    sl = price * 1.002;
+    tp = price * 0.996;
+  }
 
-    const units = await calculateUnits(symbol, slDistance);
+  const order = {
 
-    if (units < 1) {
-      console.log("Units too small");
-      return;
+    order: {
+
+      units: direction === "BUY" ? units : -units,
+
+      instrument: pair,
+
+      timeInForce: "FOK",
+
+      type: "MARKET",
+
+      positionFill: "DEFAULT",
+
+      stopLossOnFill: {
+        price: sl.toFixed(5)
+      },
+
+      takeProfitOnFill: {
+        price: tp.toFixed(5)
+      }
     }
+  };
 
-    const order = {
-      order: {
-        units: direction === "BUY" ? units : -units,
-        instrument: symbol,
-        timeInForce: "FOK",
-        type: "MARKET",
-        positionFill: "DEFAULT",
-        stopLossOnFill: { price: sl.toFixed(5) },
-        takeProfitOnFill: { price: tp.toFixed(5) }
-      }
-    };
+  const response = await fetch(
 
-    const response = await fetch(
-      `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OANDA_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(order)
-      }
-    );
+    `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
 
-    const data = await response.json();
+    {
+      method: "POST",
 
-    console.log("ORDER RESPONSE:", data);
+      headers: {
 
-    tradeOpen = true;
+        Authorization: `Bearer ${OANDA_API_KEY}`,
 
-    await sendTelegram(
-      `📈 TRADE OPENED\n${symbol}\nDirection: ${direction}\nUnits: ${units}`
-    );
+        "Content-Type": "application/json"
+      },
 
-  } catch (err) {
+      body: JSON.stringify(order)
+    }
+  );
 
-    console.log("Execution error:", err.message);
+  const data = await response.json();
 
-  }
+  console.log("TRADE EXECUTED:", data);
+
+  sendTelegram(
+`📊 TRADE OPENED
+
+Pair: ${pair}
+Direction: ${direction}
+Units: ${units}
+
+SL: ${sl}
+TP: ${tp}`
+  );
 }
 
-// =============================
-// SIMPLE ENTRY LOGIC
-// =============================
-
-async function checkEntry(symbol) {
-
-  if (tradeOpen) return;
-
-  const price = await getPrice(symbol);
-
-  const randomSignal = Math.random();
-
-  if (randomSignal > 0.995) {
-
-    console.log("Signal detected:", symbol);
-
-    const direction = Math.random() > 0.5 ? "BUY" : "SELL";
-
-    await sendOrder(symbol, direction);
-
-  }
-}
-
-// =============================
-// MARKET SCANNER
-// =============================
+// ============================
+// MAIN LOOP
+// ============================
 
 async function scanMarkets() {
 
-  for (let pair of PAIRS) {
+  for (const pair of PAIRS) {
 
-    console.log("Scanning", pair);
+    console.log(`Scanning ${pair}...`);
 
-    await checkEntry(pair);
+    const trigger = Math.random();
 
+    if (trigger > 0.995) {
+
+      console.log("Setup detected");
+
+      await executeTrade(pair);
+    }
   }
 }
 
-// =============================
-// TRADING LOOP
-// =============================
+// ============================
+// ENGINE LOOP
+// ============================
 
 async function startTradingLoop() {
 
@@ -211,25 +234,16 @@ async function startTradingLoop() {
 
   while (true) {
 
-    try {
+    console.log("Heartbeat:", new Date().toISOString());
 
-      console.log("Heartbeat:", new Date().toISOString());
-
-      await scanMarkets();
-
-    } catch (err) {
-
-      console.log("Loop error:", err.message);
-
-    }
+    await scanMarkets();
 
     await new Promise(resolve => setTimeout(resolve, 60000));
-
   }
 }
 
-// =============================
+// ============================
 // START ENGINE
-// =============================
+// ============================
 
 startTradingLoop();
