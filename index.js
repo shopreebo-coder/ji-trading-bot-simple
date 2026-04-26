@@ -1,13 +1,13 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v8 LIVE MODE 🚀");
+console.log("FOREX ENGINE PRO v9 SESSION MODE 🚀");
 
 // ============================
 // ENV
 // ============================
 
-const OANDA_API_KEY = process.env.OANDA_API_KEY;
-const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
+const API_KEY = process.env.OANDA_API_KEY;
+const ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
 
 const BASE_URL = "https://api-fxtrade.oanda.com/v3";
 
@@ -19,12 +19,82 @@ const PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY"];
 
 const RISK_PERCENT = 0.5;
 
-const RSI_PERIOD = 14;
-
 const STOP_LOSS_PIPS = 15;
 const TAKE_PROFIT_PIPS = 30;
 
+const MAX_GLOBAL_TRADES = 3;
+
 let activeTrades = {};
+
+// ============================
+// SESSION FILTER
+// ============================
+
+function tradingSessionOpen() {
+
+    const hour = new Date().getUTCHours();
+
+    if (hour >= 7 && hour <= 20) return true;
+
+    return false;
+
+}
+
+// ============================
+// GET BALANCE
+// ============================
+
+async function getBalance() {
+
+    const res = await fetch(
+
+        `${BASE_URL}/accounts/${ACCOUNT_ID}`,
+
+        {
+
+            headers: {
+
+                Authorization: `Bearer ${API_KEY}`
+
+            }
+
+        }
+
+    );
+
+    const data = await res.json();
+
+    return Number(data.account.balance);
+
+}
+
+// ============================
+// GET PRICE
+// ============================
+
+async function getPrice(pair) {
+
+    const res = await fetch(
+
+        `${BASE_URL}/accounts/${ACCOUNT_ID}/pricing?instruments=${pair}`,
+
+        {
+
+            headers: {
+
+                Authorization: `Bearer ${API_KEY}`
+
+            }
+
+        }
+
+    );
+
+    const data = await res.json();
+
+    return Number(data.prices[0].closeoutAsk);
+
+}
 
 // ============================
 // GET CANDLES
@@ -32,42 +102,52 @@ let activeTrades = {};
 
 async function getCandles(pair) {
 
-    const url =
-        `${BASE_URL}/instruments/${pair}/candles?count=100&granularity=M5`;
+    const res = await fetch(
 
-    const response = await fetch(url, {
+        `${BASE_URL}/instruments/${pair}/candles?count=100&granularity=M5`,
 
-        headers: {
-            Authorization: `Bearer ${OANDA_API_KEY}`
+        {
+
+            headers: {
+
+                Authorization: `Bearer ${API_KEY}`
+
+            }
+
         }
 
-    });
+    );
 
-    const data = await response.json();
+    const data = await res.json();
 
     return data.candles.map(c => Number(c.mid.c));
+
 }
 
 // ============================
 // RSI
 // ============================
 
-function calculateRSI(prices) {
+function rsi(prices) {
 
-    let gains = 0;
-    let losses = 0;
+    let gain = 0;
 
-    for (let i = prices.length - RSI_PERIOD; i < prices.length - 1; i++) {
+    let loss = 0;
+
+    for (let i = prices.length - 14; i < prices.length - 1; i++) {
 
         const diff = prices[i + 1] - prices[i];
 
-        if (diff >= 0) gains += diff;
-        else losses -= diff;
+        if (diff > 0) gain += diff;
+
+        else loss -= diff;
+
     }
 
-    const rs = gains / losses;
+    const rs = gain / loss;
 
-    return 100 - (100 / (1 + rs));
+    return 100 - 100 / (1 + rs);
+
 }
 
 // ============================
@@ -78,98 +158,82 @@ function ema(prices, period) {
 
     const k = 2 / (period + 1);
 
-    let emaValue = prices[0];
+    let value = prices[0];
 
     for (let i = 1; i < prices.length; i++) {
 
-        emaValue = prices[i] * k + emaValue * (1 - k);
+        value = prices[i] * k + value * (1 - k);
 
     }
 
-    return emaValue;
+    return value;
+
 }
 
 // ============================
-// TREND FILTER
+// TREND
 // ============================
 
-function detectTrend(prices) {
+function trend(prices) {
 
-    const ema10 = ema(prices.slice(-20), 10);
+    const e10 = ema(prices.slice(-20), 10);
 
-    const ema30 = ema(prices.slice(-50), 30);
+    const e30 = ema(prices.slice(-50), 30);
 
-    if (ema10 > ema30) return "UP";
+    if (e10 > e30) return "UP";
 
-    if (ema10 < ema30) return "DOWN";
+    if (e10 < e30) return "DOWN";
 
     return "SIDEWAYS";
+
 }
 
 // ============================
-// ENGULFING DETECTOR
+// ENGULFING
 // ============================
 
-function detectEngulfing(prices) {
+function engulfing(prices) {
 
-    const last = prices[prices.length - 1];
+    const last = prices.at(-1);
 
-    const prev = prices[prices.length - 2];
+    const prev = prices.at(-2);
 
     if (last > prev * 1.001) return "BULLISH";
 
     if (last < prev * 0.999) return "BEARISH";
 
     return "NONE";
-}
 
-// ============================
-// ACCOUNT BALANCE
-// ============================
-
-async function getBalance() {
-
-    const url =
-        `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}`;
-
-    const response = await fetch(url, {
-
-        headers: {
-            Authorization: `Bearer ${OANDA_API_KEY}`
-        }
-
-    });
-
-    const data = await response.json();
-
-    return Number(data.account.balance);
 }
 
 // ============================
 // POSITION SIZE
 // ============================
 
-function calculateUnits(balance) {
+function units(balance) {
 
-    const riskAmount = balance * (RISK_PERCENT / 100);
+    return Math.floor(balance * (RISK_PERCENT / 100) * 10);
 
-    return Math.floor(riskAmount * 10);
 }
 
 // ============================
 // OPEN TRADE
 // ============================
 
-async function openTrade(pair, units, price) {
+async function openTrade(pair, unitsValue) {
 
-    const sl =
-        units > 0
+    const price = await getPrice(pair);
+
+    const sl = unitsValue > 0
+
         ? price - STOP_LOSS_PIPS * 0.0001
+
         : price + STOP_LOSS_PIPS * 0.0001;
 
-    const tp =
-        units > 0
+    const tp = unitsValue > 0
+
         ? price + TAKE_PROFIT_PIPS * 0.0001
+
         : price - TAKE_PROFIT_PIPS * 0.0001;
 
     const order = {
@@ -178,23 +242,13 @@ async function openTrade(pair, units, price) {
 
             instrument: pair,
 
-            units: String(units),
+            units: String(unitsValue),
 
             type: "MARKET",
 
-            positionFill: "DEFAULT",
+            stopLossOnFill: { price: sl.toFixed(5) },
 
-            stopLossOnFill: {
-
-                price: sl.toFixed(5)
-
-            },
-
-            takeProfitOnFill: {
-
-                price: tp.toFixed(5)
-
-            }
+            takeProfitOnFill: { price: tp.toFixed(5) }
 
         }
 
@@ -202,7 +256,7 @@ async function openTrade(pair, units, price) {
 
     await fetch(
 
-        `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
+        `${BASE_URL}/accounts/${ACCOUNT_ID}/orders`,
 
         {
 
@@ -210,7 +264,7 @@ async function openTrade(pair, units, price) {
 
             headers: {
 
-                Authorization: `Bearer ${OANDA_API_KEY}`,
+                Authorization: `Bearer ${API_KEY}`,
 
                 "Content-Type": "application/json"
 
@@ -222,7 +276,7 @@ async function openTrade(pair, units, price) {
 
     );
 
-    console.log("TRADE OPENED:", pair, units);
+    console.log("TRADE OPENED", pair, unitsValue);
 
 }
 
@@ -230,64 +284,61 @@ async function openTrade(pair, units, price) {
 // SIGNAL ENGINE
 // ============================
 
-async function analyzePair(pair) {
+async function analyze(pair) {
 
-    if (activeTrades[pair]) {
+    if (!tradingSessionOpen()) {
 
-        console.log(pair, "already active trade");
+        console.log("Session closed");
 
         return;
 
     }
 
-    console.log("Scanning", pair);
+    if (Object.keys(activeTrades).length >= MAX_GLOBAL_TRADES)
+
+        return;
+
+    if (activeTrades[pair]) return;
 
     const prices = await getCandles(pair);
 
-    const price = prices[prices.length - 1];
+    const r = rsi(prices);
 
-    const rsi = calculateRSI(prices);
+    const t = trend(prices);
 
-    const trend = detectTrend(prices);
+    const e = engulfing(prices);
 
-    const engulfing = detectEngulfing(prices);
+    console.log(pair, "RSI:", r.toFixed(2));
+
+    console.log(pair, "Trend:", t);
+
+    console.log(pair, "Engulfing:", e);
 
     let signal = "WAIT";
 
-    if (trend === "UP" && rsi < 35 && engulfing === "BULLISH") {
+    if (t === "UP" && r < 35 && e === "BULLISH")
 
         signal = "BUY";
 
-    }
-
-    if (trend === "DOWN" && rsi > 65 && engulfing === "BEARISH") {
+    if (t === "DOWN" && r > 65 && e === "BEARISH")
 
         signal = "SELL";
 
-    }
-
-    console.log(pair, "RSI:", rsi.toFixed(2));
-
-    console.log(pair, "Trend:", trend);
-
-    console.log(pair, "Engulfing:", engulfing);
-
     console.log(pair, "Signal:", signal);
 
-    if (signal !== "WAIT") {
+    if (signal === "WAIT") return;
 
-        const balance = await getBalance();
+    const balance = await getBalance();
 
-        const units =
-            signal === "BUY"
-            ? calculateUnits(balance)
-            : -calculateUnits(balance);
+    const u = signal === "BUY"
 
-        await openTrade(pair, units, price);
+        ? units(balance)
 
-        activeTrades[pair] = true;
+        : -units(balance);
 
-    }
+    await openTrade(pair, u);
+
+    activeTrades[pair] = true;
 
 }
 
@@ -295,29 +346,17 @@ async function analyzePair(pair) {
 // LOOP
 // ============================
 
-async function startTradingLoop() {
+async function loop() {
 
     console.log("Trading loop started 🔁");
 
     while (true) {
 
-        console.log("Heartbeat:", new Date().toISOString());
+        console.log("Heartbeat", new Date().toISOString());
 
-        for (const pair of PAIRS) {
+        for (const pair of PAIRS)
 
-            try {
-
-                await analyzePair(pair);
-
-            }
-
-            catch {
-
-                console.log("Error scanning", pair);
-
-            }
-
-        }
+            await analyze(pair);
 
         await new Promise(r => setTimeout(r, 60000));
 
@@ -325,4 +364,4 @@ async function startTradingLoop() {
 
 }
 
-startTradingLoop();
+loop();
