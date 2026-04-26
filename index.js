@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v4 starting 🚀");
+console.log("FOREX ENGINE PRO v5 starting 🚀");
 
 // ============================
 // ENV VARIABLES
@@ -18,235 +18,129 @@ const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
 // SETTINGS
 // ============================
 
-const RISK_PERCENT = 0.01;
+const PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "XAU_USD"];
 
-const PAIRS = [
-  "EUR_USD",
-  "GBP_USD",
-  "USD_JPY",
-  "XAU_USD"
-];
+const RSI_PERIOD = 14;
 
 // ============================
-// TELEGRAM ALERT
+// GET CANDLES
 // ============================
 
-async function sendTelegram(message) {
+async function getCandles(pair) {
 
-  if (!TELEGRAM_TOKEN) return;
+    const url =
+        `${OANDA_URL}/instruments/${pair}/candles?count=100&granularity=M5`;
 
-  await fetch(
-    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text: message
-      })
+    const response = await fetch(url, {
+        headers: {
+            Authorization: `Bearer ${OANDA_API_KEY}`
+        }
+    });
+
+    const data = await response.json();
+
+    return data.candles.map(c => Number(c.mid.c));
+}
+
+// ============================
+// RSI CALCULATION
+// ============================
+
+function calculateRSI(prices) {
+
+    let gains = 0;
+    let losses = 0;
+
+    for (let i = prices.length - RSI_PERIOD; i < prices.length - 1; i++) {
+
+        const diff = prices[i + 1] - prices[i];
+
+        if (diff >= 0) gains += diff;
+        else losses -= diff;
     }
-  );
+
+    const rs = gains / losses;
+
+    return 100 - (100 / (1 + rs));
 }
 
 // ============================
-// ACCOUNT BALANCE
+// TREND FILTER
 // ============================
 
-async function getBalance() {
+function detectTrend(prices) {
 
-  const res = await fetch(
-    `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}`,
-    {
-      headers: {
-        Authorization: `Bearer ${OANDA_API_KEY}`
-      }
-    }
-  );
+    const shortMA =
+        prices.slice(-10).reduce((a, b) => a + b) / 10;
 
-  const data = await res.json();
+    const longMA =
+        prices.slice(-30).reduce((a, b) => a + b) / 30;
 
-  return parseFloat(data.account.balance);
+    if (shortMA > longMA) return "UP";
+
+    if (shortMA < longMA) return "DOWN";
+
+    return "SIDEWAYS";
 }
 
 // ============================
-// PRICE FETCH
+// SIGNAL ENGINE
 // ============================
 
-async function getPrice(pair) {
-
-  const res = await fetch(
-    `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/pricing?instruments=${pair}`,
-    {
-      headers: {
-        Authorization: `Bearer ${OANDA_API_KEY}`
-      }
-    }
-  );
-
-  const data = await res.json();
-
-  return parseFloat(data.prices[0].bids[0].price);
-}
-
-// ============================
-// TREND ENGINE
-// ============================
-
-function trendDirection() {
-
-  const trendScore = Math.random();
-
-  if (trendScore > 0.4) return "BUY";
-
-  return "SELL";
-}
-
-// ============================
-// MOMENTUM ENGINE
-// ============================
-
-function momentumCheck() {
-
-  return Math.random() > 0.5;
-}
-
-// ============================
-// ENTRY FILTER ENGINE
-// ============================
-
-function entrySignalStrength() {
-
-  return Math.random() > 0.7;
-}
-
-// ============================
-// EXECUTION ENGINE
-// ============================
-
-async function executeTrade(pair) {
-
-  const balance = await getBalance();
-
-  const riskAmount = balance * RISK_PERCENT;
-
-  const units = Math.floor(riskAmount * 100);
-
-  const direction = trendDirection();
-
-  const momentum = momentumCheck();
-
-  const entrySignal = entrySignalStrength();
-
-  if (!momentum || !entrySignal) return;
-
-  const price = await getPrice(pair);
-
-  let sl, tp;
-
-  if (direction === "BUY") {
-
-    sl = price * 0.998;
-    tp = price * 1.004;
-
-  } else {
-
-    sl = price * 1.002;
-    tp = price * 0.996;
-  }
-
-  const order = {
-
-    order: {
-
-      units: direction === "BUY" ? units : -units,
-
-      instrument: pair,
-
-      timeInForce: "FOK",
-
-      type: "MARKET",
-
-      positionFill: "DEFAULT",
-
-      stopLossOnFill: {
-        price: sl.toFixed(5)
-      },
-
-      takeProfitOnFill: {
-        price: tp.toFixed(5)
-      }
-    }
-  };
-
-  const response = await fetch(
-    `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OANDA_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(order)
-    }
-  );
-
-  const data = await response.json();
-
-  console.log("TRADE EXECUTED:", data);
-
-  await sendTelegram(
-`📊 TRADE OPENED
-
-Pair: ${pair}
-Direction: ${direction}
-Units: ${units}
-
-SL: ${sl}
-TP: ${tp}`
-  );
-}
-
-// ============================
-// SMART SCANNER
-// ============================
-
-async function scanMarkets() {
-
-  for (const pair of PAIRS) {
+async function analyzePair(pair) {
 
     console.log(`Scanning ${pair}...`);
 
-    const setupChance = Math.random();
+    const prices = await getCandles(pair);
 
-    if (setupChance > 0.97) {
+    const rsi = calculateRSI(prices);
 
-      console.log("Smart setup detected");
+    const trend = detectTrend(prices);
 
-      await executeTrade(pair);
-    }
-  }
+    let signal = "WAIT";
+
+    if (rsi < 30 && trend === "UP") signal = "BUY";
+
+    if (rsi > 70 && trend === "DOWN") signal = "SELL";
+
+    console.log(`${pair} RSI: ${rsi.toFixed(2)}`);
+
+    console.log(`${pair} Trend: ${trend}`);
+
+    console.log(`${pair} Signal: ${signal}`);
+
 }
 
 // ============================
-// ENGINE LOOP
+// MAIN LOOP
 // ============================
 
 async function startTradingLoop() {
 
-  console.log("Trading loop started 🔁");
+    console.log("Trading loop started 🔁");
 
-  while (true) {
+    while (true) {
 
-    console.log("Heartbeat:", new Date().toISOString());
+        console.log("Heartbeat:", new Date().toISOString());
 
-    await scanMarkets();
+        for (const pair of PAIRS) {
 
-    await new Promise(resolve => setTimeout(resolve, 60000));
-  }
+            try {
+
+                await analyzePair(pair);
+
+            } catch (err) {
+
+                console.log("Error scanning pair:", pair);
+
+            }
+
+        }
+
+        await new Promise(resolve =>
+            setTimeout(resolve, 60000)
+        );
+    }
 }
-
-// ============================
-// START ENGINE
-// ============================
 
 startTradingLoop();
