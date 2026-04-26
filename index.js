@@ -1,7 +1,10 @@
 // ===============================
-// FOREX ENGINE PRO v2 (FULL AUTO)
+// FOREX ENGINE PRO v2 ALWAYS-ON
 // OANDA + TWELVEDATA + TELEGRAM
+// RAILWAY NEVER-SLEEP MODE
 // ===============================
+
+import http from "http";
 
 console.log("FOREX ENGINE PRO v2 starting 🚀");
 
@@ -35,6 +38,17 @@ else
 console.log("OANDA execution connected ✅");
 
 // ===============================
+// HEALTH SERVER (ANTI-SLEEP MODE)
+// ===============================
+
+http.createServer((req,res)=>{
+res.writeHead(200);
+res.end("FOREX ENGINE RUNNING");
+}).listen(process.env.PORT || 3000);
+
+console.log("Health server active ✅");
+
+// ===============================
 // TELEGRAM FUNCTION
 // ===============================
 
@@ -49,108 +63,93 @@ try
 await fetch(
 `https://api.telegram.org/bot${TOKEN}/sendMessage`,
 {
-method: "POST",
-headers:
-{
-"Content-Type": "application/json"
+method:"POST",
+headers:{
+"Content-Type":"application/json"
 },
-body: JSON.stringify(
-{
-chat_id: CHAT_ID,
-text: message
+body:JSON.stringify({
+chat_id:CHAT_ID,
+text:message
 })
 });
 
 }
 catch(err)
 {
-console.log("Telegram error:", err);
+console.log("Telegram error:",err);
 }
 
 }
 
 // ===============================
-// FORMAT SYMBOL OANDA
+// FORMAT SYMBOL
 // ===============================
 
 function formatInstrument(symbol)
 {
-
-if(symbol.includes("_")) return symbol;
-
-return symbol.replace("/", "_");
-
+return symbol.replace("/","_");
 }
 
 // ===============================
 // SEND ORDER OANDA
 // ===============================
 
-async function sendOrder(symbol, units, side, sl, tp)
+async function sendOrder(symbol,units,side,sl,tp)
 {
-
-if(!OANDA_API_KEY) return;
 
 try
 {
 
-const instrument = formatInstrument(symbol);
+const order={
+order:{
+instrument:formatInstrument(symbol),
+units:side==="BUY"?units:-units,
+type:"MARKET",
+timeInForce:"FOK",
+positionFill:"DEFAULT",
 
-const order =
-{
-order:
-{
-instrument,
-units: side === "BUY" ? units : -units,
-type: "MARKET",
-timeInForce: "FOK",
-positionFill: "DEFAULT",
-
-stopLossOnFill:
-{
-price: sl.toString()
+stopLossOnFill:{
+price:sl.toString()
 },
 
-takeProfitOnFill:
-{
-price: tp.toString()
+takeProfitOnFill:{
+price:tp.toString()
 }
 
 }
 };
 
-const response = await fetch(
+const response=await fetch(
 `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
 {
 method:"POST",
-headers:
-{
+headers:{
 Authorization:`Bearer ${OANDA_API_KEY}`,
 "Content-Type":"application/json"
 },
 body:JSON.stringify(order)
 });
 
-const data = await response.json();
+const data=await response.json();
 
-console.log("Trade response:", data);
+console.log("Trade response:",data);
 
 await sendTelegram(
 `📈 TRADE OPENED
 ${symbol}
-Side: ${side}`
+${side}`
 );
 
 }
 catch(err)
 {
-console.log("Execution error:", err);
+console.log("Execution error:",err);
 }
 
 }
 
 // ===============================
-// GET PRICE FROM TWELVEDATA
+// GET PRICE
 // ===============================
 
 async function getPrice(symbol)
@@ -159,11 +158,11 @@ async function getPrice(symbol)
 try
 {
 
-const response = await fetch(
+const response=await fetch(
 `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVEDATA_API_KEY}`
 );
 
-const data = await response.json();
+const data=await response.json();
 
 return parseFloat(data.price);
 
@@ -176,25 +175,25 @@ return null;
 }
 
 // ===============================
-// STRATEGY ENGINE (SAFE START MODE)
+// STRATEGY ENGINE
 // ===============================
 
 async function strategy(symbol)
 {
 
-const price = await getPrice(symbol);
+const price=await getPrice(symbol);
 
 if(!price) return;
 
-console.log(symbol, price);
+console.log("Scanning:",symbol,price);
 
-// SAFE MODE ENTRY FILTER (DAY 1 ONLY)
+// SAFE START MODE
 
-if(Math.random() < 0.03)
+if(Math.random()<0.03)
 {
 
-const sl = price - 0.0020;
-const tp = price + 0.0040;
+const sl=price-0.0020;
+const tp=price+0.0040;
 
 await sendOrder(symbol,1000,"BUY",sl,tp);
 
@@ -206,8 +205,7 @@ await sendOrder(symbol,1000,"BUY",sl,tp);
 // SYMBOL LIST
 // ===============================
 
-const pairs =
-[
+const pairs=[
 "EUR/USD",
 "GBP/USD",
 "USD/JPY"
@@ -229,6 +227,8 @@ for(const symbol of pairs)
 {
 await strategy(symbol);
 }
+
+console.log("Heartbeat:",new Date());
 
 await new Promise(r=>setTimeout(r,60000));
 
