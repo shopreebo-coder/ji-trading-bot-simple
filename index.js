@@ -3,8 +3,6 @@
 // OANDA + TWELVEDATA + TELEGRAM
 // ===============================
 
-import fetch from "node-fetch";
-
 console.log("FOREX ENGINE PRO v2 starting 🚀");
 
 // ===============================
@@ -25,60 +23,62 @@ const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
 // VERIFY ENV
 // ===============================
 
-if (!TOKEN || !CHAT_ID) {
-  console.log("❌ Telegram ENV missing");
-}
+if (!TOKEN || !CHAT_ID)
+console.log("❌ Telegram ENV missing");
 
-if (!TWELVEDATA_API_KEY) {
-  console.log("❌ TwelveData ENV missing");
-}
+if (!TWELVEDATA_API_KEY)
+console.log("❌ TwelveData ENV missing");
 
-if (!OANDA_API_KEY || !OANDA_ACCOUNT_ID) {
-  console.log("❌ OANDA ENV missing");
-} else {
-  console.log("OANDA execution connected ✅");
-}
+if (!OANDA_API_KEY || !OANDA_ACCOUNT_ID)
+console.log("❌ OANDA ENV missing");
+else
+console.log("OANDA execution connected ✅");
 
 // ===============================
 // TELEGRAM FUNCTION
 // ===============================
 
-async function sendTelegram(message) {
+async function sendTelegram(message)
+{
 
-  if (!TOKEN || !CHAT_ID) return;
+if (!TOKEN || !CHAT_ID) return;
 
-  try {
+try
+{
 
-    await fetch(
-      `https://api.telegram.org/bot${TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message
-        })
-      }
-    );
+await fetch(
+`https://api.telegram.org/bot${TOKEN}/sendMessage`,
+{
+method: "POST",
+headers:
+{
+"Content-Type": "application/json"
+},
+body: JSON.stringify(
+{
+chat_id: CHAT_ID,
+text: message
+})
+});
 
-  } catch (err) {
+}
+catch(err)
+{
+console.log("Telegram error:", err);
+}
 
-    console.log("Telegram error:", err);
-
-  }
 }
 
 // ===============================
 // FORMAT SYMBOL OANDA
 // ===============================
 
-function formatInstrument(symbol) {
+function formatInstrument(symbol)
+{
 
-  if (symbol.includes("_")) return symbol;
+if(symbol.includes("_")) return symbol;
 
-  return symbol.slice(0, 3) + "_" + symbol.slice(3);
+return symbol.replace("/", "_");
 
 }
 
@@ -86,69 +86,66 @@ function formatInstrument(symbol) {
 // SEND ORDER OANDA
 // ===============================
 
-async function sendOrder(symbol, units, side, sl, tp) {
+async function sendOrder(symbol, units, side, sl, tp)
+{
 
-  if (!OANDA_API_KEY) return;
+if(!OANDA_API_KEY) return;
 
-  try {
+try
+{
 
-    const instrument = formatInstrument(symbol);
+const instrument = formatInstrument(symbol);
 
-    const order = {
+const order =
+{
+order:
+{
+instrument,
+units: side === "BUY" ? units : -units,
+type: "MARKET",
+timeInForce: "FOK",
+positionFill: "DEFAULT",
 
-      order: {
+stopLossOnFill:
+{
+price: sl.toString()
+},
 
-        instrument: instrument,
+takeProfitOnFill:
+{
+price: tp.toString()
+}
 
-        units: side === "BUY"
-          ? units
-          : -units,
+}
+};
 
-        type: "MARKET",
+const response = await fetch(
+`${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
+{
+method:"POST",
+headers:
+{
+Authorization:`Bearer ${OANDA_API_KEY}`,
+"Content-Type":"application/json"
+},
+body:JSON.stringify(order)
+});
 
-        timeInForce: "FOK",
+const data = await response.json();
 
-        positionFill: "DEFAULT",
+console.log("Trade response:", data);
 
-        stopLossOnFill: {
-          price: sl.toString()
-        },
+await sendTelegram(
+`📈 TRADE OPENED
+${symbol}
+Side: ${side}`
+);
 
-        takeProfitOnFill: {
-          price: tp.toString()
-        }
-
-      }
-
-    };
-
-    const response = await fetch(
-      `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OANDA_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(order)
-      }
-    );
-
-    const data = await response.json();
-
-    console.log("Trade response:", data);
-
-    await sendTelegram(
-      `📈 TRADE OPENED\n${symbol}\nSide: ${side}`
-    );
-
-  }
-
-  catch (err) {
-
-    console.log("Execution error:", err);
-
-  }
+}
+catch(err)
+{
+console.log("Execution error:", err);
+}
 
 }
 
@@ -156,63 +153,52 @@ async function sendOrder(symbol, units, side, sl, tp) {
 // GET PRICE FROM TWELVEDATA
 // ===============================
 
-async function getPrice(symbol) {
+async function getPrice(symbol)
+{
 
-  try {
+try
+{
 
-    const response = await fetch(
-      `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVEDATA_API_KEY}`
-    );
+const response = await fetch(
+`https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVEDATA_API_KEY}`
+);
 
-    const data = await response.json();
+const data = await response.json();
 
-    return parseFloat(data.price);
+return parseFloat(data.price);
 
-  }
-
-  catch {
-
-    return null;
-
-  }
+}
+catch
+{
+return null;
+}
 
 }
 
 // ===============================
-// SIMPLE STRATEGY ENGINE
+// STRATEGY ENGINE (SAFE START MODE)
 // ===============================
 
-async function strategy(symbol) {
+async function strategy(symbol)
+{
 
-  const price = await getPrice(symbol);
+const price = await getPrice(symbol);
 
-  if (!price) return;
+if(!price) return;
 
-  console.log(symbol, price);
+console.log(symbol, price);
 
-  // test condition (first version entry trigger)
+// SAFE MODE ENTRY FILTER (DAY 1 ONLY)
 
-  if (price % 2 < 1) {
+if(Math.random() < 0.03)
+{
 
-    const sl = price - 0.0020;
+const sl = price - 0.0020;
+const tp = price + 0.0040;
 
-    const tp = price + 0.0040;
+await sendOrder(symbol,1000,"BUY",sl,tp);
 
-    await sendOrder(
-
-      symbol,
-
-      1000,
-
-      "BUY",
-
-      sl,
-
-      tp
-
-    );
-
-  }
+}
 
 }
 
@@ -220,37 +206,33 @@ async function strategy(symbol) {
 // SYMBOL LIST
 // ===============================
 
-const pairs = [
-
-  "EUR/USD",
-
-  "GBP/USD",
-
-  "USD/JPY"
-
+const pairs =
+[
+"EUR/USD",
+"GBP/USD",
+"USD/JPY"
 ];
 
 // ===============================
 // MAIN LOOP
 // ===============================
 
-async function engine() {
+async function engine()
+{
 
-  console.log("Live market connected ✅");
+console.log("Live market connected ✅");
 
-  while (true) {
+while(true)
+{
 
-    for (const symbol of pairs) {
+for(const symbol of pairs)
+{
+await strategy(symbol);
+}
 
-      await strategy(symbol);
+await new Promise(r=>setTimeout(r,60000));
 
-    }
-
-    await new Promise(resolve =>
-      setTimeout(resolve, 60000)
-    );
-
-  }
+}
 
 }
 
