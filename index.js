@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v7 SAFE MODE starting 🚀");
+console.log("FOREX ENGINE PRO v8 LIVE MODE 🚀");
 
 // ============================
 // ENV
@@ -20,6 +20,11 @@ const PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY"];
 const RISK_PERCENT = 0.5;
 
 const RSI_PERIOD = 14;
+
+const STOP_LOSS_PIPS = 15;
+const TAKE_PROFIT_PIPS = 30;
+
+let activeTrades = {};
 
 // ============================
 // GET CANDLES
@@ -144,9 +149,80 @@ async function getBalance() {
 // POSITION SIZE
 // ============================
 
-function calculateLot(balance) {
+function calculateUnits(balance) {
 
-    return (balance * (RISK_PERCENT / 100) / 100).toFixed(2);
+    const riskAmount = balance * (RISK_PERCENT / 100);
+
+    return Math.floor(riskAmount * 10);
+}
+
+// ============================
+// OPEN TRADE
+// ============================
+
+async function openTrade(pair, units, price) {
+
+    const sl =
+        units > 0
+        ? price - STOP_LOSS_PIPS * 0.0001
+        : price + STOP_LOSS_PIPS * 0.0001;
+
+    const tp =
+        units > 0
+        ? price + TAKE_PROFIT_PIPS * 0.0001
+        : price - TAKE_PROFIT_PIPS * 0.0001;
+
+    const order = {
+
+        order: {
+
+            instrument: pair,
+
+            units: String(units),
+
+            type: "MARKET",
+
+            positionFill: "DEFAULT",
+
+            stopLossOnFill: {
+
+                price: sl.toFixed(5)
+
+            },
+
+            takeProfitOnFill: {
+
+                price: tp.toFixed(5)
+
+            }
+
+        }
+
+    };
+
+    await fetch(
+
+        `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
+
+        {
+
+            method: "POST",
+
+            headers: {
+
+                Authorization: `Bearer ${OANDA_API_KEY}`,
+
+                "Content-Type": "application/json"
+
+            },
+
+            body: JSON.stringify(order)
+
+        }
+
+    );
+
+    console.log("TRADE OPENED:", pair, units);
 
 }
 
@@ -156,9 +232,19 @@ function calculateLot(balance) {
 
 async function analyzePair(pair) {
 
-    console.log(`Scanning ${pair}...`);
+    if (activeTrades[pair]) {
+
+        console.log(pair, "already active trade");
+
+        return;
+
+    }
+
+    console.log("Scanning", pair);
 
     const prices = await getCandles(pair);
+
+    const price = prices[prices.length - 1];
 
     const rsi = calculateRSI(prices);
 
@@ -180,25 +266,26 @@ async function analyzePair(pair) {
 
     }
 
-    console.log(`${pair} RSI: ${rsi.toFixed(2)}`);
+    console.log(pair, "RSI:", rsi.toFixed(2));
 
-    console.log(`${pair} Trend: ${trend}`);
+    console.log(pair, "Trend:", trend);
 
-    console.log(`${pair} Engulfing: ${engulfing}`);
+    console.log(pair, "Engulfing:", engulfing);
 
-    console.log(`${pair} Signal: ${signal}`);
+    console.log(pair, "Signal:", signal);
 
     if (signal !== "WAIT") {
 
         const balance = await getBalance();
 
-        const lot = calculateLot(balance);
+        const units =
+            signal === "BUY"
+            ? calculateUnits(balance)
+            : -calculateUnits(balance);
 
-        console.log("SIMULATED TRADE");
+        await openTrade(pair, units, price);
 
-        console.log(`Balance: ${balance}`);
-
-        console.log(`Lot size: ${lot}`);
+        activeTrades[pair] = true;
 
     }
 
