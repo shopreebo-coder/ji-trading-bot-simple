@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v9 SESSION MODE 🚀");
+console.log("FOREX ENGINE PRO v10 PRICE ACTION MODE 🚀");
 
 // ============================
 // ENV
@@ -30,13 +30,11 @@ let activeTrades = {};
 // SESSION FILTER
 // ============================
 
-function tradingSessionOpen() {
+function sessionOpen() {
 
     const hour = new Date().getUTCHours();
 
-    if (hour >= 7 && hour <= 20) return true;
-
-    return false;
+    return hour >= 7 && hour <= 20;
 
 }
 
@@ -97,7 +95,7 @@ async function getPrice(pair) {
 }
 
 // ============================
-// GET CANDLES
+// GET CANDLES FULL DATA
 // ============================
 
 async function getCandles(pair) {
@@ -120,7 +118,14 @@ async function getCandles(pair) {
 
     const data = await res.json();
 
-    return data.candles.map(c => Number(c.mid.c));
+    return data.candles.map(c => ({
+
+        close: Number(c.mid.c),
+        open: Number(c.mid.o),
+        high: Number(c.mid.h),
+        low: Number(c.mid.l)
+
+    }));
 
 }
 
@@ -131,7 +136,6 @@ async function getCandles(pair) {
 function rsi(prices) {
 
     let gain = 0;
-
     let loss = 0;
 
     for (let i = prices.length - 14; i < prices.length - 1; i++) {
@@ -139,7 +143,6 @@ function rsi(prices) {
         const diff = prices[i + 1] - prices[i];
 
         if (diff > 0) gain += diff;
-
         else loss -= diff;
 
     }
@@ -154,19 +157,19 @@ function rsi(prices) {
 // EMA
 // ============================
 
-function ema(prices, period) {
+function ema(values, period) {
 
     const k = 2 / (period + 1);
 
-    let value = prices[0];
+    let val = values[0];
 
-    for (let i = 1; i < prices.length; i++) {
+    for (let i = 1; i < values.length; i++) {
 
-        value = prices[i] * k + value * (1 - k);
+        val = values[i] * k + val * (1 - k);
 
     }
 
-    return value;
+    return val;
 
 }
 
@@ -174,11 +177,11 @@ function ema(prices, period) {
 // TREND
 // ============================
 
-function trend(prices) {
+function trend(closes) {
 
-    const e10 = ema(prices.slice(-20), 10);
+    const e10 = ema(closes.slice(-20), 10);
 
-    const e30 = ema(prices.slice(-50), 30);
+    const e30 = ema(closes.slice(-50), 30);
 
     if (e10 > e30) return "UP";
 
@@ -189,18 +192,38 @@ function trend(prices) {
 }
 
 // ============================
-// ENGULFING
+// PIN BAR DETECTOR
 // ============================
 
-function engulfing(prices) {
+function pinBar(candle) {
 
-    const last = prices.at(-1);
+    const body = Math.abs(candle.close - candle.open);
 
-    const prev = prices.at(-2);
+    const upperWick = candle.high - Math.max(candle.close, candle.open);
 
-    if (last > prev * 1.001) return "BULLISH";
+    const lowerWick = Math.min(candle.close, candle.open) - candle.low;
 
-    if (last < prev * 0.999) return "BEARISH";
+    if (lowerWick > body * 2) return "BULLISH";
+
+    if (upperWick > body * 2) return "BEARISH";
+
+    return "NONE";
+
+}
+
+// ============================
+// BREAKOUT DETECTOR
+// ============================
+
+function breakout(candles) {
+
+    const last = candles.at(-1);
+
+    const prev = candles.at(-2);
+
+    if (last.close > prev.high) return "UP";
+
+    if (last.close < prev.low) return "DOWN";
 
     return "NONE";
 
@@ -265,7 +288,6 @@ async function openTrade(pair, unitsValue) {
             headers: {
 
                 Authorization: `Bearer ${API_KEY}`,
-
                 "Content-Type": "application/json"
 
             },
@@ -286,41 +308,49 @@ async function openTrade(pair, unitsValue) {
 
 async function analyze(pair) {
 
-    if (!tradingSessionOpen()) {
+    if (!sessionOpen()) return;
 
-        console.log("Session closed");
-
-        return;
-
-    }
-
-    if (Object.keys(activeTrades).length >= MAX_GLOBAL_TRADES)
-
-        return;
+    if (Object.keys(activeTrades).length >= MAX_GLOBAL_TRADES) return;
 
     if (activeTrades[pair]) return;
 
-    const prices = await getCandles(pair);
+    const candles = await getCandles(pair);
 
-    const r = rsi(prices);
+    const closes = candles.map(c => c.close);
 
-    const t = trend(prices);
+    const lastCandle = candles.at(-1);
 
-    const e = engulfing(prices);
+    const trendDirection = trend(closes);
+
+    const r = rsi(closes);
+
+    const pin = pinBar(lastCandle);
+
+    const br = breakout(candles);
+
+    console.log(pair, "Trend:", trendDirection);
 
     console.log(pair, "RSI:", r.toFixed(2));
 
-    console.log(pair, "Trend:", t);
+    console.log(pair, "PinBar:", pin);
 
-    console.log(pair, "Engulfing:", e);
+    console.log(pair, "Breakout:", br);
 
     let signal = "WAIT";
 
-    if (t === "UP" && r < 35 && e === "BULLISH")
+    if (trendDirection === "UP" && pin === "BULLISH")
 
         signal = "BUY";
 
-    if (t === "DOWN" && r > 65 && e === "BEARISH")
+    if (trendDirection === "DOWN" && pin === "BEARISH")
+
+        signal = "SELL";
+
+    if (trendDirection === "UP" && br === "UP")
+
+        signal = "BUY";
+
+    if (trendDirection === "DOWN" && br === "DOWN")
 
         signal = "SELL";
 
