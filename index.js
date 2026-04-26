@@ -1,24 +1,23 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v5 starting 🚀");
+console.log("FOREX ENGINE PRO v7 SAFE MODE starting 🚀");
 
 // ============================
-// ENV VARIABLES
+// ENV
 // ============================
 
 const OANDA_API_KEY = process.env.OANDA_API_KEY;
 const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
 
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
+const BASE_URL = "https://api-fxtrade.oanda.com/v3";
 
 // ============================
 // SETTINGS
 // ============================
 
-const PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "XAU_USD"];
+const PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY"];
+
+const RISK_PERCENT = 0.5;
 
 const RSI_PERIOD = 14;
 
@@ -29,12 +28,14 @@ const RSI_PERIOD = 14;
 async function getCandles(pair) {
 
     const url =
-        `${OANDA_URL}/instruments/${pair}/candles?count=100&granularity=M5`;
+        `${BASE_URL}/instruments/${pair}/candles?count=100&granularity=M5`;
 
     const response = await fetch(url, {
+
         headers: {
             Authorization: `Bearer ${OANDA_API_KEY}`
         }
+
     });
 
     const data = await response.json();
@@ -43,7 +44,7 @@ async function getCandles(pair) {
 }
 
 // ============================
-// RSI CALCULATION
+// RSI
 // ============================
 
 function calculateRSI(prices) {
@@ -65,22 +66,88 @@ function calculateRSI(prices) {
 }
 
 // ============================
+// EMA
+// ============================
+
+function ema(prices, period) {
+
+    const k = 2 / (period + 1);
+
+    let emaValue = prices[0];
+
+    for (let i = 1; i < prices.length; i++) {
+
+        emaValue = prices[i] * k + emaValue * (1 - k);
+
+    }
+
+    return emaValue;
+}
+
+// ============================
 // TREND FILTER
 // ============================
 
 function detectTrend(prices) {
 
-    const shortMA =
-        prices.slice(-10).reduce((a, b) => a + b) / 10;
+    const ema10 = ema(prices.slice(-20), 10);
 
-    const longMA =
-        prices.slice(-30).reduce((a, b) => a + b) / 30;
+    const ema30 = ema(prices.slice(-50), 30);
 
-    if (shortMA > longMA) return "UP";
+    if (ema10 > ema30) return "UP";
 
-    if (shortMA < longMA) return "DOWN";
+    if (ema10 < ema30) return "DOWN";
 
     return "SIDEWAYS";
+}
+
+// ============================
+// ENGULFING DETECTOR
+// ============================
+
+function detectEngulfing(prices) {
+
+    const last = prices[prices.length - 1];
+
+    const prev = prices[prices.length - 2];
+
+    if (last > prev * 1.001) return "BULLISH";
+
+    if (last < prev * 0.999) return "BEARISH";
+
+    return "NONE";
+}
+
+// ============================
+// ACCOUNT BALANCE
+// ============================
+
+async function getBalance() {
+
+    const url =
+        `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}`;
+
+    const response = await fetch(url, {
+
+        headers: {
+            Authorization: `Bearer ${OANDA_API_KEY}`
+        }
+
+    });
+
+    const data = await response.json();
+
+    return Number(data.account.balance);
+}
+
+// ============================
+// POSITION SIZE
+// ============================
+
+function calculateLot(balance) {
+
+    return (balance * (RISK_PERCENT / 100) / 100).toFixed(2);
+
 }
 
 // ============================
@@ -97,22 +164,48 @@ async function analyzePair(pair) {
 
     const trend = detectTrend(prices);
 
+    const engulfing = detectEngulfing(prices);
+
     let signal = "WAIT";
 
-    if (rsi < 30 && trend === "UP") signal = "BUY";
+    if (trend === "UP" && rsi < 35 && engulfing === "BULLISH") {
 
-    if (rsi > 70 && trend === "DOWN") signal = "SELL";
+        signal = "BUY";
+
+    }
+
+    if (trend === "DOWN" && rsi > 65 && engulfing === "BEARISH") {
+
+        signal = "SELL";
+
+    }
 
     console.log(`${pair} RSI: ${rsi.toFixed(2)}`);
 
     console.log(`${pair} Trend: ${trend}`);
 
+    console.log(`${pair} Engulfing: ${engulfing}`);
+
     console.log(`${pair} Signal: ${signal}`);
+
+    if (signal !== "WAIT") {
+
+        const balance = await getBalance();
+
+        const lot = calculateLot(balance);
+
+        console.log("SIMULATED TRADE");
+
+        console.log(`Balance: ${balance}`);
+
+        console.log(`Lot size: ${lot}`);
+
+    }
 
 }
 
 // ============================
-// MAIN LOOP
+// LOOP
 // ============================
 
 async function startTradingLoop() {
@@ -129,18 +222,20 @@ async function startTradingLoop() {
 
                 await analyzePair(pair);
 
-            } catch (err) {
+            }
 
-                console.log("Error scanning pair:", pair);
+            catch {
+
+                console.log("Error scanning", pair);
 
             }
 
         }
 
-        await new Promise(resolve =>
-            setTimeout(resolve, 60000)
-        );
+        await new Promise(r => setTimeout(r, 60000));
+
     }
+
 }
 
 startTradingLoop();
