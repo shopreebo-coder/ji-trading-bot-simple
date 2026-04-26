@@ -101,3 +101,50 @@ setInterval(() => {
   pairs.forEach(scan);
 
 }, 60000);
+import fetch from "node-fetch";
+
+const OANDA_API_KEY = process.env.OANDA_API_KEY;
+const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
+
+const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
+
+async function sendOrder(symbol, units, side, sl, tp) {
+  try {
+    const order = {
+      order: {
+        units: side === "BUY" ? units : -units,
+        instrument: symbol,
+        timeInForce: "FOK",
+        type: "MARKET",
+        positionFill: "DEFAULT",
+        stopLossOnFill: {
+          price: sl.toString()
+        },
+        takeProfitOnFill: {
+          price: tp.toString()
+        }
+      }
+    };
+
+    const response = await fetch(
+      `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OANDA_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(order)
+      }
+    );
+
+    const data = await response.json();
+
+    console.log("OANDA order response:", data);
+
+  } catch (err) {
+    console.error("Execution error:", err);
+  }
+}
+
+console.log("OANDA execution connected ✅");
