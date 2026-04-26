@@ -1,16 +1,54 @@
+// ===============================
+// FOREX ENGINE PRO v2 (FULL AUTO)
+// OANDA + TWELVEDATA + TELEGRAM
+// ===============================
+
+import fetch from "node-fetch";
+
 console.log("FOREX ENGINE PRO v2 starting 🚀");
+
+// ===============================
+// ENV VARIABLES
+// ===============================
 
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const API_KEY = process.env.TWELVEDATA_API_KEY;
 
-if (!TOKEN || !CHAT_ID || !API_KEY) {
-  console.log("❌ Missing ENV variables");
-  process.exit(1);
+const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
+
+const OANDA_API_KEY = process.env.OANDA_API_KEY;
+const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
+
+const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
+
+// ===============================
+// VERIFY ENV
+// ===============================
+
+if (!TOKEN || !CHAT_ID) {
+  console.log("❌ Telegram ENV missing");
 }
 
+if (!TWELVEDATA_API_KEY) {
+  console.log("❌ TwelveData ENV missing");
+}
+
+if (!OANDA_API_KEY || !OANDA_ACCOUNT_ID) {
+  console.log("❌ OANDA ENV missing");
+} else {
+  console.log("OANDA execution connected ✅");
+}
+
+// ===============================
+// TELEGRAM FUNCTION
+// ===============================
+
 async function sendTelegram(message) {
+
+  if (!TOKEN || !CHAT_ID) return;
+
   try {
+
     await fetch(
       `https://api.telegram.org/bot${TOKEN}/sendMessage`,
       {
@@ -24,106 +62,64 @@ async function sendTelegram(message) {
         })
       }
     );
+
   } catch (err) {
-    console.log("Telegram error:", err.message);
+
+    console.log("Telegram error:", err);
+
   }
 }
 
-async function getPrice(symbol) {
-  try {
-    const res = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=1min&apikey=${API_KEY}&outputsize=2`
-    );
+// ===============================
+// FORMAT SYMBOL OANDA
+// ===============================
 
-    const data = await res.json();
+function formatInstrument(symbol) {
 
-    if (!data.values) return null;
+  if (symbol.includes("_")) return symbol;
 
-    return parseFloat(data.values[0].close);
+  return symbol.slice(0, 3) + "_" + symbol.slice(3);
 
-  } catch {
-    return null;
-  }
 }
 
-let lastSignal = {};
-
-async function scan(symbol) {
-
-  const price = await getPrice(symbol);
-
-  if (!price) return;
-
-  console.log(symbol, price);
-
-  if (!lastSignal[symbol]) {
-    lastSignal[symbol] = "NONE";
-  }
-
-  if (price % 2 === 0 && lastSignal[symbol] !== "BUY") {
-
-    lastSignal[symbol] = "BUY";
-
-    await sendTelegram(
-`${symbol} BUY
-
-Entry: ${price}
-SL: ${(price - 0.0020).toFixed(5)}
-TP: ${(price + 0.0040).toFixed(5)}`
-    );
-  }
-
-  if (price % 3 === 0 && lastSignal[symbol] !== "SELL") {
-
-    lastSignal[symbol] = "SELL";
-
-    await sendTelegram(
-`${symbol} SELL
-
-Entry: ${price}
-SL: ${(price + 0.0020).toFixed(5)}
-TP: ${(price - 0.0040).toFixed(5)}`
-    );
-  }
-}
-
-const pairs = [
-  "EUR/USD",
-  "GBP/USD",
-  "USD/JPY",
-  "XAU/USD"
-];
-
-console.log("Live market connected ✅");
-
-setInterval(() => {
-
-  pairs.forEach(scan);
-
-}, 60000);
-import fetch from "node-fetch";
-
-const OANDA_API_KEY = process.env.OANDA_API_KEY;
-const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
-
-const OANDA_URL = "https://api-fxtrade.oanda.com/v3";
+// ===============================
+// SEND ORDER OANDA
+// ===============================
 
 async function sendOrder(symbol, units, side, sl, tp) {
+
+  if (!OANDA_API_KEY) return;
+
   try {
+
+    const instrument = formatInstrument(symbol);
+
     const order = {
+
       order: {
-        units: side === "BUY" ? units : -units,
-        instrument: symbol,
-        timeInForce: "FOK",
+
+        instrument: instrument,
+
+        units: side === "BUY"
+          ? units
+          : -units,
+
         type: "MARKET",
+
+        timeInForce: "FOK",
+
         positionFill: "DEFAULT",
+
         stopLossOnFill: {
           price: sl.toString()
         },
+
         takeProfitOnFill: {
           price: tp.toString()
         }
+
       }
+
     };
 
     const response = await fetch(
@@ -140,11 +136,122 @@ async function sendOrder(symbol, units, side, sl, tp) {
 
     const data = await response.json();
 
-    console.log("OANDA order response:", data);
+    console.log("Trade response:", data);
 
-  } catch (err) {
-    console.error("Execution error:", err);
+    await sendTelegram(
+      `📈 TRADE OPENED\n${symbol}\nSide: ${side}`
+    );
+
   }
+
+  catch (err) {
+
+    console.log("Execution error:", err);
+
+  }
+
 }
 
-console.log("OANDA execution connected ✅");
+// ===============================
+// GET PRICE FROM TWELVEDATA
+// ===============================
+
+async function getPrice(symbol) {
+
+  try {
+
+    const response = await fetch(
+      `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVEDATA_API_KEY}`
+    );
+
+    const data = await response.json();
+
+    return parseFloat(data.price);
+
+  }
+
+  catch {
+
+    return null;
+
+  }
+
+}
+
+// ===============================
+// SIMPLE STRATEGY ENGINE
+// ===============================
+
+async function strategy(symbol) {
+
+  const price = await getPrice(symbol);
+
+  if (!price) return;
+
+  console.log(symbol, price);
+
+  // test condition (first version entry trigger)
+
+  if (price % 2 < 1) {
+
+    const sl = price - 0.0020;
+
+    const tp = price + 0.0040;
+
+    await sendOrder(
+
+      symbol,
+
+      1000,
+
+      "BUY",
+
+      sl,
+
+      tp
+
+    );
+
+  }
+
+}
+
+// ===============================
+// SYMBOL LIST
+// ===============================
+
+const pairs = [
+
+  "EUR/USD",
+
+  "GBP/USD",
+
+  "USD/JPY"
+
+];
+
+// ===============================
+// MAIN LOOP
+// ===============================
+
+async function engine() {
+
+  console.log("Live market connected ✅");
+
+  while (true) {
+
+    for (const symbol of pairs) {
+
+      await strategy(symbol);
+
+    }
+
+    await new Promise(resolve =>
+      setTimeout(resolve, 60000)
+    );
+
+  }
+
+}
+
+engine();
