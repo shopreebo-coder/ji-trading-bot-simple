@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v3 starting 🚀");
+console.log("FOREX ENGINE PRO v4 starting 🚀");
 
 // ============================
 // ENV VARIABLES
@@ -49,7 +49,7 @@ async function sendTelegram(message) {
 }
 
 // ============================
-// GET ACCOUNT BALANCE
+// ACCOUNT BALANCE
 // ============================
 
 async function getBalance() {
@@ -69,7 +69,7 @@ async function getBalance() {
 }
 
 // ============================
-// GET MARKET PRICE
+// PRICE FETCH
 // ============================
 
 async function getPrice(pair) {
@@ -89,31 +89,38 @@ async function getPrice(pair) {
 }
 
 // ============================
-// SIMPLE TREND FILTER
+// TREND ENGINE
 // ============================
 
-async function trendDirection(pair) {
+function trendDirection() {
 
-  const randomTrend = Math.random();
+  const trendScore = Math.random();
 
-  if (randomTrend > 0.5) return "BUY";
+  if (trendScore > 0.4) return "BUY";
 
   return "SELL";
 }
 
 // ============================
-// MOMENTUM CONFIRMATION
+// MOMENTUM ENGINE
 // ============================
 
-async function momentumCheck() {
+function momentumCheck() {
 
-  const momentum = Math.random();
-
-  return momentum > 0.6;
+  return Math.random() > 0.5;
 }
 
 // ============================
-// EXECUTE ORDER
+// ENTRY FILTER ENGINE
+// ============================
+
+function entrySignalStrength() {
+
+  return Math.random() > 0.7;
+}
+
+// ============================
+// EXECUTION ENGINE
 // ============================
 
 async function executeTrade(pair) {
@@ -124,11 +131,13 @@ async function executeTrade(pair) {
 
   const units = Math.floor(riskAmount * 100);
 
-  const direction = await trendDirection(pair);
+  const direction = trendDirection();
 
-  const momentum = await momentumCheck();
+  const momentum = momentumCheck();
 
-  if (!momentum) return;
+  const entrySignal = entrySignalStrength();
+
+  if (!momentum || !entrySignal) return;
 
   const price = await getPrice(pair);
 
@@ -170,19 +179,13 @@ async function executeTrade(pair) {
   };
 
   const response = await fetch(
-
     `${OANDA_URL}/accounts/${OANDA_ACCOUNT_ID}/orders`,
-
     {
       method: "POST",
-
       headers: {
-
         Authorization: `Bearer ${OANDA_API_KEY}`,
-
         "Content-Type": "application/json"
       },
-
       body: JSON.stringify(order)
     }
   );
@@ -191,7 +194,7 @@ async function executeTrade(pair) {
 
   console.log("TRADE EXECUTED:", data);
 
-  sendTelegram(
+  await sendTelegram(
 `📊 TRADE OPENED
 
 Pair: ${pair}
@@ -204,7 +207,7 @@ TP: ${tp}`
 }
 
 // ============================
-// MAIN LOOP
+// SMART SCANNER
 // ============================
 
 async function scanMarkets() {
@@ -213,11 +216,11 @@ async function scanMarkets() {
 
     console.log(`Scanning ${pair}...`);
 
-    const trigger = Math.random();
+    const setupChance = Math.random();
 
-    if (trigger > 0.995) {
+    if (setupChance > 0.97) {
 
-      console.log("Setup detected");
+      console.log("Smart setup detected");
 
       await executeTrade(pair);
     }
