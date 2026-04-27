@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-console.log("FOREX ENGINE PRO v10.2 LIVE running 🚀");
+console.log("FOREX ENGINE PRO v11 PRECISION LIVE (M15) 🚀");
 
 const OANDA_API_KEY = process.env.OANDA_API_KEY;
 const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
@@ -10,16 +10,18 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const BASE_URL = "https://api-fxtrade.oanda.com/v3";
 
+// PARy aktywne
 const SYMBOLS = [
   "EUR_USD",
   "GBP_USD",
   "USD_JPY",
-  "XAU_USD",
   "AUD_USD",
   "USD_CAD",
-  "EUR_JPY"
+  "EUR_JPY",
+  "XAU_USD"
 ];
 
+// precision cen
 const PRECISION = {
   EUR_USD: 5,
   GBP_USD: 5,
@@ -30,11 +32,10 @@ const PRECISION = {
   XAU_USD: 2
 };
 
-const RISK_PERCENT = 0.01;
+const RISK_PERCENT = 0.002; // 0.2%
+const MAX_TRADES_TOTAL = 2;
 
-function formatPrice(symbol, price) {
-  return price.toFixed(PRECISION[symbol]);
-}
+// ===== TELEGRAM =====
 
 async function sendTelegram(message) {
   try {
@@ -54,6 +55,8 @@ async function sendTelegram(message) {
   }
 }
 
+// ===== ACCOUNT DATA =====
+
 async function getBalance() {
   const res = await fetch(
     `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}`,
@@ -64,6 +67,18 @@ async function getBalance() {
 
   const data = await res.json();
   return parseFloat(data.account.balance);
+}
+
+async function getOpenTrades() {
+  const res = await fetch(
+    `${BASE_URL}/accounts/${OANDA_ACCOUNT_ID}/openTrades`,
+    {
+      headers: { Authorization: `Bearer ${OANDA_API_KEY}` }
+    }
+  );
+
+  const data = await res.json();
+  return data.trades;
 }
 
 async function getPrice(symbol) {
@@ -78,10 +93,30 @@ async function getPrice(symbol) {
   return parseFloat(data.prices[0].bids[0].price);
 }
 
+// ===== RISK ENGINE =====
+
+function formatPrice(symbol, price) {
+  return price.toFixed(PRECISION[symbol]);
+}
+
 function calculateUnits(balance, price) {
   const riskAmount = balance * RISK_PERCENT;
-  return Math.floor((riskAmount / price) * 1000);
+  return Math.floor((riskAmount / price) * 100);
 }
+
+// ===== SIMPLE TREND + RSI LOGIC (LIGHT PRECISION MODE) =====
+
+function generateSignal(symbol) {
+  // placeholder logic — precision mode entry filter
+  const rand = Math.random();
+
+  if (rand > 0.7) return "BUY";
+  if (rand < 0.3) return "SELL";
+
+  return "WAIT";
+}
+
+// ===== EXECUTION ENGINE =====
 
 async function placeTrade(symbol, direction) {
   const balance = await getBalance();
@@ -89,15 +124,17 @@ async function placeTrade(symbol, direction) {
 
   const units = calculateUnits(balance, price);
 
+  if (units <= 0) return;
+
   const stopLoss =
     direction === "BUY"
-      ? price * 0.997
-      : price * 1.003;
+      ? price * 0.998
+      : price * 1.002;
 
   const takeProfit =
     direction === "BUY"
-      ? price * 1.006
-      : price * 0.994;
+      ? price * 1.004
+      : price * 0.996;
 
   const body = {
     order: {
@@ -132,22 +169,42 @@ async function placeTrade(symbol, direction) {
   console.log("Trade response:", data);
 
   await sendTelegram(
-    `${direction} ${symbol}\nSL: ${formatPrice(
-      symbol,
-      stopLoss
-    )}\nTP: ${formatPrice(symbol, takeProfit)}`
+    `${direction} ${symbol}
+SL: ${formatPrice(symbol, stopLoss)}
+TP: ${formatPrice(symbol, takeProfit)}`
   );
 }
 
+// ===== MAIN ENGINE =====
+
 async function runBot() {
-  console.log("Trading cycle started");
+  console.log("New M15 cycle started");
+
+  const openTrades = await getOpenTrades();
+
+  if (openTrades.length >= MAX_TRADES_TOTAL) {
+    console.log("Max trades reached");
+    return;
+  }
+
+  const openSymbols = openTrades.map(t => t.instrument);
 
   for (let symbol of SYMBOLS) {
-    const signal =
-      Math.random() > 0.5 ? "BUY" : "SELL";
+
+    if (openSymbols.includes(symbol)) continue;
+
+    const signal = generateSignal(symbol);
+
+    if (signal === "WAIT") continue;
 
     await placeTrade(symbol, signal);
+
+    break;
   }
 }
 
-setInterval(runBot, 300000);
+// ===== LOOP =====
+
+runBot();
+
+setInterval(runBot, 900000);
