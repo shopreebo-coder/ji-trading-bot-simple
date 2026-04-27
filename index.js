@@ -142,10 +142,7 @@ async function runBot() {
 
   const hour = new Date().getUTCHours();
 
-  if (hour < 7 || hour > 17) {
-    console.log("Outside trading session");
-    return;
-  }
+  if console.log("Session filter OFF");
 
   for (let symbol of SYMBOLS) {
     const signal =
