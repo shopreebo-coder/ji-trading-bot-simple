@@ -1,5 +1,7 @@
 import fetch from "node-fetch";
 
+console.log("FOREX ENGINE PRO v10.2 LIVE running 🚀");
+
 const OANDA_API_KEY = process.env.OANDA_API_KEY;
 const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
 
@@ -138,11 +140,7 @@ async function placeTrade(symbol, direction) {
 }
 
 async function runBot() {
-  console.log("FOREX ENGINE PRO v10.1 LIVE running");
-
-  const hour = new Date().getUTCHours();
-
-  if console.log("Session filter OFF");
+  console.log("Trading cycle started");
 
   for (let symbol of SYMBOLS) {
     const signal =
