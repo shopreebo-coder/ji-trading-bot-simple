@@ -1,0 +1,709 @@
+require("dotenv").config();
+const axios = require("axios");
+
+console.log("FOREX ENGINE PRO v39.1 (BALANCED MTF)");
+
+const API_KEY = process.env.OANDA_API_KEY;
+const ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
+
+const BASE_URL =
+  process.env.OANDA_ENV === "live"
+    ? "https://api-fxtrade.oanda.com"
+    : "https://api-fxpractice.oanda.com";
+
+const SYMBOLS = process.env.SYMBOLS.split(",");
+
+const MAIN_TIMEFRAME = process.env.TIMEFRAME || "M5";
+
+const ENTRY_TIMEFRAME = "M1";
+
+const RISK_PERCENT = parseFloat(process.env.RISK_PERCENT || "0.01");
+
+const MAX_OPEN_TRADES = parseInt(process.env.MAX_OPEN_TRADES || "1");
+
+const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "3");
+console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
+
+console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
+
+console.log(`SYMBOLS=${SYMBOLS}`);
+const headers = {
+  Authorization: `Bearer ${API_KEY}`,
+  "Content-Type": "application/json",
+};
+
+let dailyTrades = 0;
+
+let lastTradeDay = new Date().getUTCDate();
+
+const cooldownMap = {};
+const tradeLocks = {};
+const stats = {
+  wins: 0,
+  losses: 0,
+  totalTrades: 0,
+};
+
+const tradePeak = {};
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pipMultiplier(symbol) {
+  return symbol.includes("JPY") ? 0.01 : 0.0001;
+}
+
+async function getCandles(symbol, count = 100, granularity = MAIN_TIMEFRAME) {
+  try {
+    const url = `${BASE_URL}/v3/instruments/${symbol}/candles`;
+
+    const res = await axios.get(url, {
+      headers,
+      params: {
+        granularity,
+        count,
+        price: "M",
+      },
+    });
+
+    return res.data.candles || [];
+  } catch (err) {
+    console.log(`Candles error ${symbol}`, err.message);
+
+    return [];
+  }
+}
+
+function ema(data, period) {
+  const k = 2 / (period + 1);
+
+  let emaArray = [data[0]];
+
+  for (let i = 1; i < data.length; i++) {
+    emaArray.push(data[i] * k + emaArray[i - 1] * (1 - k));
+  }
+
+  return emaArray;
+}
+
+function calculateATR(candles, period = 14) {
+  const trs = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const high = parseFloat(candles[i].mid.h);
+
+    const low = parseFloat(candles[i].mid.l);
+
+    const prevClose = parseFloat(candles[i - 1].mid.c);
+
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose),
+    );
+
+    trs.push(tr);
+  }
+
+  const recent = trs.slice(-period);
+
+  return recent.reduce((a, b) => a + b, 0) / recent.length;
+}
+
+function bullishCandle(candle) {
+  return parseFloat(candle.mid.c) > parseFloat(candle.mid.o);
+}
+
+function bearishCandle(candle) {
+  return parseFloat(candle.mid.c) < parseFloat(candle.mid.o);
+}
+
+function candleBodySize(candle) {
+  return Math.abs(parseFloat(candle.mid.c) - parseFloat(candle.mid.o));
+}
+
+async function getOpenTrades() {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/openTrades`,
+      { headers },
+    );
+
+    return res.data.trades || [];
+  } catch (err) {
+    console.log("Open trades error", err.message);
+
+    return [];
+  }
+}
+
+async function hasOpenTrade(symbol) {
+  const trades = await getOpenTrades();
+
+  return trades.some((trade) => trade.instrument === symbol);
+}
+
+async function getBalance() {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/summary`,
+      { headers },
+    );
+
+    return parseFloat(res.data.account.balance);
+  } catch (err) {
+    console.log("Balance error", err.message);
+
+    return 100;
+  }
+}
+
+async function getAccountInfo() {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/summary`,
+      { headers },
+    );
+
+    return {
+      balance: parseFloat(res.data.account.balance),
+
+      marginUsed: parseFloat(res.data.account.marginUsed),
+    };
+  } catch (err) {
+    console.log("Account info error", err.message);
+
+    return {
+      balance: 100,
+      marginUsed: 0,
+    };
+  }
+}
+
+function calculateUnits(balance, stopLossPips, symbol) {
+  const riskAmount = balance * RISK_PERCENT;
+
+  const pipValuePerUnit = symbol.includes("JPY") ? 0.01 : 0.0001;
+
+  const units = riskAmount / (stopLossPips * pipValuePerUnit);
+
+  return Math.max(Math.floor(units), 1);
+}
+
+async function placeTrade(symbol, side, units, slPips, tpPips) {
+  try {
+    if (tradeLocks[symbol]) {
+      console.log(`LOCK ACTIVE -> ${symbol}`);
+
+      return;
+    }
+
+    tradeLocks[symbol] = true;
+
+    const existingTrade = await hasOpenTrade(symbol);
+
+    if (existingTrade) {
+      console.log(`EXISTING TRADE -> ${symbol}`);
+
+      tradeLocks[symbol] = false;
+
+      return;
+    }
+
+    const priceData = await axios.get(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/pricing`,
+      {
+        headers,
+        params: {
+          instruments: symbol,
+        },
+      },
+    );
+
+    const price =
+      side === "buy"
+        ? parseFloat(priceData.data.prices[0].asks[0].price)
+        : parseFloat(priceData.data.prices[0].bids[0].price);
+
+    const pipMult = pipMultiplier(symbol);
+
+    const stopLoss =
+      side === "buy" ? price - slPips * pipMult : price + slPips * pipMult;
+
+    const takeProfit =
+      side === "buy" ? price + tpPips * pipMult : price - tpPips * pipMult;
+
+    const body = {
+      order: {
+        instrument: symbol,
+
+        units: side === "buy" ? `${units}` : `-${units}`,
+
+        type: "MARKET",
+
+        positionFill: "DEFAULT",
+
+        stopLossOnFill: {
+          price: stopLoss.toFixed(5),
+        },
+
+        takeProfitOnFill: {
+          price: takeProfit.toFixed(5),
+        },
+      },
+    };
+
+    await axios.post(`${BASE_URL}/v3/accounts/${ACCOUNT_ID}/orders`, body, {
+      headers,
+    });
+
+    console.log(`Trade -> ${symbol} ${side.toUpperCase()}`);
+
+    cooldownMap[symbol] = Date.now();
+    console.log(`dailyTrades=${dailyTrades + 1}`);
+    dailyTrades++;
+
+    await sleep(5000);
+  } catch (err) {
+    console.log("Trade error", err.response?.data || err.message);
+  } finally {
+    tradeLocks[symbol] = false;
+  }
+}
+
+async function closeTrade(tradeId) {
+  try {
+    await axios.put(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/trades/${tradeId}/close`,
+      {},
+      { headers },
+    );
+  } catch (err) {
+    console.log("Close trade error", err.message);
+  }
+}
+
+async function manageTrades() {
+  const trades = await getOpenTrades();
+
+  for (const trade of trades) {
+    try {
+      const symbol = trade.instrument;
+
+      const currentUnits = parseFloat(trade.currentUnits);
+
+      const side = currentUnits > 0 ? "buy" : "sell";
+
+      const openPrice = parseFloat(trade.price);
+
+      const currentPriceData = await axios.get(
+        `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/pricing`,
+        {
+          headers,
+          params: {
+            instruments: symbol,
+          },
+        },
+      );
+
+      const current =
+        side === "buy"
+          ? parseFloat(currentPriceData.data.prices[0].bids[0].price)
+          : parseFloat(currentPriceData.data.prices[0].asks[0].price);
+
+      const pipMult = pipMultiplier(symbol);
+
+      let pips =
+        side === "buy"
+          ? (current - openPrice) / pipMult
+          : (openPrice - current) / pipMult;
+
+      console.log(`${symbol} -> ${pips.toFixed(1)} pips`);
+      // PEAK PROFIT TRACKER
+
+      if (!tradePeak[trade.id] || pips > tradePeak[trade.id]) {
+        tradePeak[trade.id] = pips;
+      }
+
+      const peak = tradePeak[trade.id];
+
+      // był na +5 i zaczął oddawać?
+      if (peak >= 2 && peak - pips >= 0.5) {
+        console.log(`MOMENTUM LOST -> ${symbol}`);
+
+        if (pips > 0) {
+          stats.wins++;
+        } else {
+          stats.losses++;
+        }
+
+        stats.totalTrades++;
+
+        await closeTrade(trade.id);
+
+        delete tradePeak[trade.id];
+
+        cooldownMap[symbol] = Date.now();
+
+        continue;
+      }
+      // BREAK EVEN
+      if (pips >= 5) {
+        const breakEven =
+          side === "buy" ? openPrice + 2 * pipMult : openPrice - 2 * pipMult;
+
+        const currentSL = parseFloat(trade.stopLossOrder?.price || 0);
+
+        const targetBE = parseFloat(breakEven.toFixed(5));
+
+        const shouldMoveBE =
+          side === "buy"
+            ? currentSL < targetBE
+            : currentSL > targetBE || currentSL === 0;
+
+        if (shouldMoveBE) {
+          await axios.put(
+            `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/trades/${trade.id}/orders`,
+            {
+              stopLoss: {
+                price: targetBE.toFixed(5),
+              },
+            },
+            { headers },
+          );
+
+          console.log(`BREAK EVEN -> ${symbol}`);
+        }
+      }
+
+      // TRAILING STOP
+      if (pips >= 10) {
+        const trailingDistance = 6;
+
+        const newSL =
+          side === "buy"
+            ? current - trailingDistance * pipMult
+            : current + trailingDistance * pipMult;
+
+        const currentSL = parseFloat(trade.stopLossOrder?.price || 0);
+
+        const shouldMoveSL =
+          side === "buy"
+            ? newSL > currentSL
+            : newSL < currentSL || currentSL === 0;
+
+        if (shouldMoveSL) {
+          await axios.put(
+            `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/trades/${trade.id}/orders`,
+            {
+              stopLoss: {
+                price: newSL.toFixed(5),
+              },
+            },
+            { headers },
+          );
+
+          console.log(`Trailing SL -> ${symbol}`);
+        }
+      }
+      // EARLY EXIT
+
+      if (pips <= -4) {
+        console.log(`EARLY EXIT -> ${symbol}`);
+
+        await closeTrade(trade.id);
+        stats.losses++;
+        stats.totalTrades++;
+        cooldownMap[symbol] = Date.now();
+
+        continue;
+      }
+      // MAX TIME EXIT
+      const openTime = new Date(trade.openTime).getTime();
+
+      const now = Date.now();
+
+      const minutesOpen = (now - openTime) / 1000 / 60;
+
+      // [FIX 5] Increased from 5 min to 10 min — gives trades more time to develop
+      if (minutesOpen >= 10 && pips < 2) {
+        console.log(`MAX TIME EXIT -> ${symbol}`);
+
+        await closeTrade(trade.id);
+
+        cooldownMap[symbol] = Date.now();
+      }
+    } catch (err) {
+      console.log("Manage trade error", err.message);
+    }
+  }
+}
+
+async function strategy(symbol) {
+  try {
+    // COOLDOWN
+    // [FIX 4] Reduced from 20 min to 10 min — previous value blocked too many opportunities
+    const cooldown = 10 * 60 * 1000; // 10 minutes
+
+    if (cooldownMap[symbol] && Date.now() - cooldownMap[symbol] <= cooldown) {
+      console.log(`Cooldown -> ${symbol}`);
+      return;
+    }
+
+    // OPEN TRADE CHECK
+    const existingTrade = await hasOpenTrade(symbol);
+
+    if (existingTrade) {
+      return;
+    }
+
+    // dalsza strategia...
+    const CORRELATED = {
+      EUR_USD: ["GBP_USD"],
+      GBP_USD: ["EUR_USD"],
+      AUD_USD: ["NZD_USD"],
+      NZD_USD: ["AUD_USD"],
+    };
+
+    const openTrades = await getOpenTrades();
+
+    for (const trade of openTrades) {
+      if (CORRELATED[symbol]?.includes(trade.instrument)) {
+        console.log(`CORRELATION BLOCK -> ${symbol}`);
+
+        return;
+      }
+    }
+    // M5 ANALYSIS
+    const candles = await getCandles(symbol, 100, MAIN_TIMEFRAME);
+
+    if (candles.length < 60) {
+      return;
+    }
+
+    const closes = candles.map((c) => parseFloat(c.mid.c));
+
+    const emaFast = ema(closes, 20);
+
+    const emaSlow = ema(closes, 50);
+
+    const lastClose = closes[closes.length - 1];
+
+    const lastFast = emaFast[emaFast.length - 1];
+
+    const lastSlow = emaSlow[emaSlow.length - 1];
+
+    const lastCandle = candles[candles.length - 1];
+
+    // ATR
+    const atr = calculateATR(candles);
+
+    // EMA DISTANCE
+    const emaDistance = Math.abs(lastFast - lastSlow) / pipMultiplier(symbol);
+
+    // CANDLE STRENGTH
+    const candleStrength = candleBodySize(lastCandle) / atr;
+
+    // M1 CONFIRMATION
+    const m1Candles = await getCandles(symbol, 50, ENTRY_TIMEFRAME);
+
+    if (m1Candles.length < 30) {
+      return;
+    }
+
+    const m1Closes = m1Candles.map((c) => parseFloat(c.mid.c));
+
+    const m1Fast = ema(m1Closes, 9);
+
+    const m1Slow = ema(m1Closes, 21);
+
+    const m1LastFast = m1Fast[m1Fast.length - 1];
+
+    const m1LastSlow = m1Slow[m1Slow.length - 1];
+
+    const m1LastCandle = m1Candles[m1Candles.length - 1];
+
+    const m1Bullish = bullishCandle(m1LastCandle);
+
+    const m1Bearish = bearishCandle(m1LastCandle);
+    const m1LastClose = m1Closes[m1Closes.length - 1];
+    // RISK
+    const stopLossPips = Math.max(
+      Math.floor((atr / pipMultiplier(symbol)) * 1.5),
+      12,
+    );
+
+    const takeProfitPips = Math.floor(stopLossPips * 1.8);
+
+    const account = await getAccountInfo();
+
+    const balance = account.balance;
+
+    const marginPercent = (account.marginUsed / account.balance) * 100;
+
+    console.log(`MARGIN -> ${marginPercent.toFixed(1)}%`);
+
+    if (marginPercent > 50) {
+      console.log("MARGIN PROTECTION ACTIVE");
+
+      return;
+    }
+
+    const units = calculateUnits(balance, stopLossPips, symbol);
+
+    // DEBUG
+    console.log(`${symbol} EMA DIST -> ${emaDistance.toFixed(1)}`);
+
+    console.log(`${symbol} CANDLE STR -> ${candleStrength.toFixed(2)}`);
+
+    console.log(`${symbol} M1 FAST -> ${m1LastFast.toFixed(5)}`);
+    // [FIX 1] Debug thresholds now match real trade conditions (strength 0.04, spread 0.1)
+    // [FIX 3] Single CHECK block only — duplicates below removed
+    console.log(`${symbol} BUY CHECK:`);
+
+    console.log(
+      `trend=${lastFast > lastSlow}
+candle=${bullishCandle(lastCandle)}
+ema=${emaDistance > 1}
+strength=${candleStrength > 0.04}
+m1trend=${m1LastFast > m1LastSlow}
+m1candle=${m1Bullish}
+m1close=${m1LastClose > m1LastFast}
+spread=${m1LastFast - m1LastSlow > 0.1 * pipMultiplier(symbol)}`,
+    );
+
+    console.log(`${symbol} SELL CHECK:`);
+
+    console.log(
+      `trend=${lastFast < lastSlow}
+candle=${bearishCandle(lastCandle)}
+ema=${emaDistance > 1}
+strength=${candleStrength > 0.04}
+m1trend=${m1LastFast < m1LastSlow}
+m1candle=${m1Bearish}
+m1close=${m1LastClose < m1LastFast}
+spread=${m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)}`,
+    );
+    // BUY
+    if (
+      lastFast > lastSlow &&
+      lastClose > lastFast &&
+      bullishCandle(lastCandle) &&
+      emaDistance > 1 &&
+      candleStrength > 0.04 &&
+      m1LastFast > m1LastSlow &&
+      m1Bullish &&
+      // [FIX 2] Added m1LastClose confirmation: M1 close must be above M1 fast EMA
+      m1LastClose > m1LastFast &&
+      m1LastFast - m1LastSlow > 0.1 * pipMultiplier(symbol)
+    ) {
+      console.log(`MTF BUY CONFIRMED -> ${symbol}`);
+
+      await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
+    }
+    // SELL
+    if (
+      lastFast < lastSlow &&
+      lastClose < lastFast &&
+      bearishCandle(lastCandle) &&
+      emaDistance > 1 &&
+      candleStrength > 0.04 &&
+      m1LastFast < m1LastSlow &&
+      m1Bearish &&
+      // [FIX 2] Added m1LastClose confirmation: M1 close must be below M1 fast EMA
+      m1LastClose < m1LastFast &&
+      m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)
+    ) {
+      console.log(`MTF SELL CONFIRMED -> ${symbol}`);
+
+      await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
+    } // IF SELL
+  } catch (err) {
+    console.log(`Strategy error ${symbol}`, err.message);
+  }
+} // strategy()
+
+async function runBot() {
+  while (true) {
+    try {
+      const now = new Date();
+
+      const day = now.getUTCDay();
+
+      const hour = now.getUTCHours();
+
+      if (day === 6 || (day === 0 && hour < 21)) {
+        console.log("FOREX CLOSED");
+
+        await sleep(600000);
+
+        continue;
+      }
+      const currentDay = new Date().getUTCDate();
+
+      if (currentDay !== lastTradeDay) {
+        dailyTrades = 0;
+
+        lastTradeDay = currentDay;
+      }
+      // DAILY LIMIT
+      if (dailyTrades >= MAX_DAILY_TRADES) {
+        console.log("===== TODAY STATS =====");
+
+        console.log(`Trades: ${stats.totalTrades}`);
+
+        console.log(`Wins: ${stats.wins}`);
+
+        console.log(`Losses: ${stats.losses}`);
+
+        const winRate =
+          stats.totalTrades > 0
+            ? ((stats.wins / stats.totalTrades) * 100).toFixed(1)
+            : 0;
+
+        console.log(`Winrate: ${winRate}%`);
+
+        stats.wins = 0;
+        stats.losses = 0;
+        stats.totalTrades = 0;
+
+        console.log("MAX DAILY TRADES REACHED");
+
+        await manageTrades();
+
+        await sleep(60000);
+
+        continue;
+      } // MAX OPEN TRADES
+      const openTrades = await getOpenTrades();
+
+      if (openTrades.length >= MAX_OPEN_TRADES) {
+        await manageTrades();
+
+        await sleep(5000);
+
+        continue;
+      }
+
+      // SYMBOL LOOP
+      for (const symbol of SYMBOLS) {
+        await strategy(symbol);
+
+        await sleep(5000);
+      }
+
+      // MANAGE OPEN TRADES
+      await manageTrades();
+
+      // MAIN LOOP DELAY
+      await sleep(5000);
+    } catch (err) {
+      console.log("Main loop error", err.message);
+
+      await sleep(10000);
+    }
+  }
+}
+
+runBot();
