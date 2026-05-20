@@ -144,6 +144,28 @@ async function hasOpenTrade(symbol) {
   return trades.some((trade) => trade.instrument === symbol);
 }
 
+// REAL SPREAD FILTER
+async function getSpread(symbol) {
+  try {
+    const res = await axios.get(
+      `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/pricing`,
+      {
+        headers,
+        params: { instruments: symbol },
+      },
+    );
+
+    const ask = parseFloat(res.data.prices[0].asks[0].price);
+    const bid = parseFloat(res.data.prices[0].bids[0].price);
+
+    return (ask - bid) / pipMultiplier(symbol);
+  } catch (err) {
+    console.log(`Spread error ${symbol}`, err.message);
+
+    return 0;
+  }
+}
+
 async function getBalance() {
   try {
     const res = await axios.get(
@@ -320,17 +342,24 @@ async function manageTrades() {
           : (openPrice - current) / pipMult;
 
       console.log(`${symbol} -> ${pips.toFixed(1)} pips`);
-      // PEAK PROFIT TRACKER
 
+      // DURATION — calculated once, used by all exit logs
+      const openTime = new Date(trade.openTime).getTime();
+      const now = Date.now();
+      const minutesOpen = (now - openTime) / 1000 / 60;
+
+      // PEAK PROFIT TRACKER
       if (!tradePeak[trade.id] || pips > tradePeak[trade.id]) {
         tradePeak[trade.id] = pips;
       }
 
       const peak = tradePeak[trade.id];
 
-      // był na +5 i zaczął oddawać?
-      if (peak >= 2 && peak - pips >= 0.5) {
-        console.log(`MOMENTUM LOST -> ${symbol}`);
+      // MOMENTUM EXIT — softened: normal pullbacks no longer trigger early close
+      if (peak >= 8 && peak - pips >= 3) {
+        console.log(
+          `=== TRADE CLOSED ===\nReason: MOMENTUM LOST\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+        );
 
         if (pips > 0) {
           stats.wins++;
@@ -348,8 +377,9 @@ async function manageTrades() {
 
         continue;
       }
-      // BREAK EVEN
-      if (pips >= 5) {
+
+      // BREAK EVEN — delayed to pips >= 8 so trades have room to breathe
+      if (pips >= 8) {
         const breakEven =
           side === "buy" ? openPrice + 2 * pipMult : openPrice - 2 * pipMult;
 
@@ -407,10 +437,12 @@ async function manageTrades() {
           console.log(`Trailing SL -> ${symbol}`);
         }
       }
-      // EARLY EXIT
 
+      // EARLY EXIT
       if (pips <= -4) {
-        console.log(`EARLY EXIT -> ${symbol}`);
+        console.log(
+          `=== TRADE CLOSED ===\nReason: EARLY EXIT\nResult: ${pips.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+        );
 
         await closeTrade(trade.id);
         stats.losses++;
@@ -419,16 +451,12 @@ async function manageTrades() {
 
         continue;
       }
+
       // MAX TIME EXIT
-      const openTime = new Date(trade.openTime).getTime();
-
-      const now = Date.now();
-
-      const minutesOpen = (now - openTime) / 1000 / 60;
-
-      // [FIX 5] Increased from 5 min to 10 min — gives trades more time to develop
       if (minutesOpen >= 10 && pips < 2) {
-        console.log(`MAX TIME EXIT -> ${symbol}`);
+        console.log(
+          `=== TRADE CLOSED ===\nReason: TIME EXIT\nResult: ${pips.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+        );
 
         await closeTrade(trade.id);
 
@@ -443,7 +471,6 @@ async function manageTrades() {
 async function strategy(symbol) {
   try {
     // COOLDOWN
-    // [FIX 4] Reduced from 20 min to 10 min — previous value blocked too many opportunities
     const cooldown = 10 * 60 * 1000; // 10 minutes
 
     if (cooldownMap[symbol] && Date.now() - cooldownMap[symbol] <= cooldown) {
@@ -458,7 +485,7 @@ async function strategy(symbol) {
       return;
     }
 
-    // dalsza strategia...
+    // CORRELATION FILTER
     const CORRELATED = {
       EUR_USD: ["GBP_USD"],
       GBP_USD: ["EUR_USD"],
@@ -475,6 +502,17 @@ async function strategy(symbol) {
         return;
       }
     }
+
+    // REAL SPREAD FILTER
+    const spread = await getSpread(symbol);
+
+    console.log(`${symbol} SPREAD -> ${spread.toFixed(2)} pips`);
+
+    if (spread > 1.5) {
+      console.log(`SPREAD BLOCK -> ${symbol}`);
+      return;
+    }
+
     // M5 ANALYSIS
     const candles = await getCandles(symbol, 100, MAIN_TIMEFRAME);
 
@@ -527,7 +565,9 @@ async function strategy(symbol) {
     const m1Bullish = bullishCandle(m1LastCandle);
 
     const m1Bearish = bearishCandle(m1LastCandle);
+
     const m1LastClose = m1Closes[m1Closes.length - 1];
+
     // RISK
     const stopLossPips = Math.max(
       Math.floor((atr / pipMultiplier(symbol)) * 1.5),
@@ -550,7 +590,11 @@ async function strategy(symbol) {
       return;
     }
 
-    const units = calculateUnits(balance, stopLossPips, symbol);
+    // SAFETY CAP — 500 units max for small account
+    const units = Math.min(
+      calculateUnits(balance, stopLossPips, symbol),
+      500,
+    );
 
     // DEBUG
     console.log(`${symbol} EMA DIST -> ${emaDistance.toFixed(1)}`);
@@ -558,8 +602,7 @@ async function strategy(symbol) {
     console.log(`${symbol} CANDLE STR -> ${candleStrength.toFixed(2)}`);
 
     console.log(`${symbol} M1 FAST -> ${m1LastFast.toFixed(5)}`);
-    // [FIX 1] Debug thresholds now match real trade conditions (strength 0.04, spread 0.1)
-    // [FIX 3] Single CHECK block only — duplicates below removed
+
     console.log(`${symbol} BUY CHECK:`);
 
     console.log(
@@ -570,7 +613,7 @@ strength=${candleStrength > 0.04}
 m1trend=${m1LastFast > m1LastSlow}
 m1candle=${m1Bullish}
 m1close=${m1LastClose > m1LastFast}
-spread=${m1LastFast - m1LastSlow > 0.1 * pipMultiplier(symbol)}`,
+spread=${spread.toFixed(2)} pips (limit 1.5)`,
     );
 
     console.log(`${symbol} SELL CHECK:`);
@@ -583,8 +626,9 @@ strength=${candleStrength > 0.04}
 m1trend=${m1LastFast < m1LastSlow}
 m1candle=${m1Bearish}
 m1close=${m1LastClose < m1LastFast}
-spread=${m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)}`,
+spread=${spread.toFixed(2)} pips (limit 1.5)`,
     );
+
     // BUY
     if (
       lastFast > lastSlow &&
@@ -594,14 +638,17 @@ spread=${m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)}`,
       candleStrength > 0.04 &&
       m1LastFast > m1LastSlow &&
       m1Bullish &&
-      // [FIX 2] Added m1LastClose confirmation: M1 close must be above M1 fast EMA
-      m1LastClose > m1LastFast &&
-      m1LastFast - m1LastSlow > 0.1 * pipMultiplier(symbol)
+      m1LastClose > m1LastFast
     ) {
+      console.log(
+        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + close above fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+      );
+
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
     }
+
     // SELL
     if (
       lastFast < lastSlow &&
@@ -611,14 +658,16 @@ spread=${m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)}`,
       candleStrength > 0.04 &&
       m1LastFast < m1LastSlow &&
       m1Bearish &&
-      // [FIX 2] Added m1LastClose confirmation: M1 close must be below M1 fast EMA
-      m1LastClose < m1LastFast &&
-      m1LastSlow - m1LastFast > 0.1 * pipMultiplier(symbol)
+      m1LastClose < m1LastFast
     ) {
+      console.log(
+        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + close below fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+      );
+
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
-    } // IF SELL
+    }
   } catch (err) {
     console.log(`Strategy error ${symbol}`, err.message);
   }
@@ -640,13 +689,20 @@ async function runBot() {
 
         continue;
       }
+
       const currentDay = new Date().getUTCDate();
 
       if (currentDay !== lastTradeDay) {
         dailyTrades = 0;
 
         lastTradeDay = currentDay;
+
+        // DAILY STATS RESET — only on new UTC day
+        stats.wins = 0;
+        stats.losses = 0;
+        stats.totalTrades = 0;
       }
+
       // DAILY LIMIT
       if (dailyTrades >= MAX_DAILY_TRADES) {
         console.log("===== TODAY STATS =====");
@@ -664,10 +720,6 @@ async function runBot() {
 
         console.log(`Winrate: ${winRate}%`);
 
-        stats.wins = 0;
-        stats.losses = 0;
-        stats.totalTrades = 0;
-
         console.log("MAX DAILY TRADES REACHED");
 
         await manageTrades();
@@ -676,6 +728,7 @@ async function runBot() {
 
         continue;
       } // MAX OPEN TRADES
+
       const openTrades = await getOpenTrades();
 
       if (openTrades.length >= MAX_OPEN_TRADES) {
