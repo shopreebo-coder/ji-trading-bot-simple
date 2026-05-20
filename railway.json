@@ -1,0 +1,3 @@
+{
+  "installCommand":"CI=false pnpm install --no-frozen-lockfile"
+}
