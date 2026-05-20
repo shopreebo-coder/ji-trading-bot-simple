@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FOREX ENGINE PRO — Telemetry</title>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}
+
+/* header */
+.hdr{background:#161b22;border-bottom:1px solid #30363d;padding:12px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+.hdr h1{font-size:15px;font-weight:600;color:#58a6ff;letter-spacing:.3px}
+.hdr .right{margin-left:auto;display:flex;gap:12px;align-items:center}
+.dot{width:9px;height:9px;border-radius:50%;background:#3fb950}
+.dot.stopped{background:#f85149}
+.dot.starting{background:#d29922;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.ts{font-size:11px;color:#484f58}
+
+/* tabs */
+.tabs{display:flex;gap:2px;background:#161b22;border-bottom:1px solid #30363d;padding:0 24px}
+.tab{padding:10px 18px;cursor:pointer;font-size:13px;font-weight:500;color:#8b949e;border-bottom:2px solid transparent;transition:all .15s}
+.tab:hover{color:#e6edf3}
+.tab.active{color:#58a6ff;border-bottom-color:#58a6ff}
+
+/* layout */
+.page{padding:20px 24px;max-width:1400px;margin:0 auto}
+
+/* cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(135px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:13px 15px}
+.card .lbl{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px}
+.card .val{font-size:24px;font-weight:700}
+.val.blue{color:#58a6ff}.val.green{color:#3fb950}.val.red{color:#f85149}.val.yellow{color:#d29922}
+
+/* grid */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
+@media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+
+/* panel */
+.panel{background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:16px}
+.ph{padding:9px 15px;border-bottom:1px solid #30363d;font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.8px;display:flex;justify-content:space-between;align-items:center}
+.pb{overflow-y:auto;max-height:320px}
+.pb.short{max-height:220px}
+
+/* table */
+table{width:100%;border-collapse:collapse}
+th{background:#0d1117;color:#8b949e;font-size:10px;font-weight:600;text-transform:uppercase;padding:7px 13px;text-align:left;position:sticky;top:0;z-index:1}
+td{padding:7px 13px;border-bottom:1px solid #21262d;font-size:12px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#1c2128}
+
+/* tags / badges */
+.tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700;line-height:18px}
+.buy{background:#1a3a26;color:#3fb950}.sell{background:#3a1a1a;color:#f85149}
+.be{background:#1a2e3a;color:#58a6ff}
+.ok{background:#1a3a26;color:#3fb950}.fail{background:#3a1a1a;color:#f85149}
+.accepted{background:#1a3a26;color:#3fb950}.rejected{background:#3a2a00;color:#d29922}
+
+/* pips colors */
+.pp{color:#3fb950;font-weight:600}.pn{color:#f85149;font-weight:600}.pz{color:#8b949e}
+
+/* empty state */
+.empty{color:#484f58;padding:18px;text-align:center;font-size:12px}
+
+/* decision card */
+.dcard{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:13px 15px;margin-bottom:10px}
+.dcard .dhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.dcard .sym{font-weight:700;font-size:14px;color:#e6edf3}
+.dcard .time{font-size:10px;color:#484f58}
+.dcard .conditions{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:5px;margin-top:8px}
+.cond{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:#161b22;border-radius:4px;font-size:11px}
+.cond .cname{color:#8b949e}
+.cond .cv.t{color:#3fb950}.cond .cv.f{color:#f85149}
+
+/* export btn */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#e6edf3;cursor:pointer;font-size:12px;font-weight:600;text-decoration:none}
+.btn:hover{background:#30363d}
+.btn.primary{background:#1f4a2e;border-color:#3fb950;color:#3fb950}
+.btn.primary:hover{background:#2a6040}
+
+/* chart container */
+.chart-wrap{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}
+.chart-wrap h3{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
+.chart-wrap canvas{max-height:220px}
+
+/* log */
+.logbox{background:#0d1117;border:1px solid #30363d;border-radius:8px;height:180px;overflow-y:auto;padding:8px 12px;font-family:monospace;font-size:11px;color:#8b949e}
+.ll{padding:1px 0;white-space:pre-wrap;word-break:break-all}
+.ll.t{color:#3fb950}.ll.x{color:#f85149}.ll.b{color:#d29922}.ll.e{color:#58a6ff}
+
+/* loading */
+.loading{text-align:center;padding:40px;color:#484f58;font-size:13px}
+
+/* bar: block breakdown */
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.bar-row .blbl{width:130px;font-size:11px;color:#8b949e;text-align:right;flex-shrink:0}
+.bar-row .btrack{flex:1;background:#21262d;border-radius:3px;height:12px;overflow:hidden}
+.bar-row .bfill{height:100%;border-radius:3px;background:#58a6ff;transition:width .4s}
+.bar-row .bval{width:45px;font-size:11px;color:#e6edf3;text-align:right;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── helpers ────────────────────────────────────────────────────────────────
+function hms(iso){ return new Date(iso).toUTCString().slice(17,25); }
+function hm(iso){ return new Date(iso).toUTCString().slice(17,22); }
+function fmtDate(iso){ return iso ? iso.slice(0,10) : ""; }
+function fmtPips(v){
+  v = parseFloat(v);
+  if(isNaN(v)) return <span className="pz">—</span>;
+  return <span className={v>0?"pp":v<0?"pn":"pz"}>{v>0?"+":""}{v.toFixed(2)}</span>;
+}
+function minsOpen(t){ return ((Date.now()-t)/60000).toFixed(1); }
+
+async function api(path){ const r=await fetch(path); return r.json(); }
+
+// ── Top header ─────────────────────────────────────────────────────────────
+function Header({ botStatus, ts }){
+  return (
+    <div className="hdr">
+      <span className={`dot ${botStatus==="running"?"":"stopped"}`}/>
+      <h1>FOREX ENGINE PRO v39.1 — Telemetry</h1>
+      <div className="right">
+        <span className="ts">{ts ? `updated ${hms(ts)} UTC` : "connecting…"}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE"];
+function Tabs({ active, set }){
+  return (
+    <div className="tabs">
+      {TABS.map(t => <div key={t} className={`tab ${active===t?"active":""}`} onClick={()=>set(t)}>{t}</div>)}
+    </div>
+  );
+}
+
+// ── LIVE tab ───────────────────────────────────────────────────────────────
+function LiveTab({ live, today, logLines }){
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(x=>x+1),3000); return()=>clearInterval(id); },[]);
+
+  const trades = live.openTrades || [];
+  const blocks = live.recentBlocks || [];
+
+  return (
+    <div className="page">
+      <div className="cards">
+        <div className="card"><div className="lbl">Bot Status</div>
+          <div className={`val ${live.botStatus==="running"?"green":"red"}`}>{live.botStatus||"—"}</div></div>
+        <div className="card"><div className="lbl">Open Trades</div>
+          <div className="val blue">{trades.length}</div></div>
+        <div className="card"><div className="lbl">Daily Trades</div>
+          <div className="val">{live.dailyTrades||0}</div></div>
+        <div className="card"><div className="lbl">Today Wins</div>
+          <div className="val green">{today.wins||0}</div></div>
+        <div className="card"><div className="lbl">Today Losses</div>
+          <div className="val red">{today.losses||0}</div></div>
+        <div className="card"><div className="lbl">Win Rate</div>
+          <div className="val">{today.winRate||"0.0"}%</div></div>
+        <div className="card"><div className="lbl">Avg Peak</div>
+          <div className="val">{today.avgPeak||"0.00"} p</div></div>
+      </div>
+
+      <div className="g2">
+        <div className="panel">
+          <div className="ph">Open Positions <span>{trades.length}</span></div>
+          <div className="pb">
+            {trades.length===0 ? <div className="empty">No open trades</div> : (
+              <table><thead><tr>
+                <th>Symbol</th><th>Side</th><th>Pips</th><th>Peak</th><th>BE</th><th>Open</th>
+              </tr></thead><tbody>
+                {trades.map(t=>(
+                  <tr key={t.symbol}>
+                    <td><b>{t.symbol}</b></td>
+                    <td><span className={`tag ${t.side}`}>{t.side.toUpperCase()}</span></td>
+                    <td>{fmtPips(t.pips)}</td>
+                    <td>{fmtPips(t.peak)}</td>
+                    <td>{t.breakEven?<span className="tag be">BE</span>:""}</td>
+                    <td>{minsOpen(t.entryTime)} m</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="ph">Active Blocks <span>{blocks.length}</span></div>
+          <div className="pb short">
+            {blocks.length===0 ? <div className="empty">No blocks</div> : (
+              <table><thead><tr><th>UTC</th><th>Event</th></tr></thead><tbody>
+                {blocks.map((b,i)=>(
+                  <tr key={i}><td className="pz">{hms(b.t)}</td><td>{b.line}</td></tr>
+                ))}
+              </tbody></table>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph">Live Log</div>
+        <div className="logbox" id="livelog">
+          {logLines.map((l,i)=>(
+            <div key={i} className={`ll${l.line.startsWith("Trade ->")||l.line.includes("CONFIRMED")?" t":l.line.startsWith("EXIT")?" x":l.line.includes("BLOCK")?" b":l.line.includes("BREAK EVEN")?" e":""}`}>
+              {hms(l.t)} {l.line}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ANALIZA tab ────────────────────────────────────────────────────────────
+function AnalyzaTab({ stats, today, symbols }){
+  const totalBlocks = Object.values(today.blockCounts||{}).reduce((a,b)=>a+b,0);
+  const blockTypes = [
+    {key:"spread_block",     label:"Spread"},
+    {key:"pullback_block",   label:"Pullback"},
+    {key:"cooldown_block",   label:"Cooldown"},
+    {key:"correlation_block",label:"Correlation"},
+    {key:"margin_block",     label:"Margin"},
+  ];
+
+  return (
+    <div className="page">
+      <div className="cards">
+        <div className="card"><div className="lbl">Total Trades</div><div className="val blue">{stats.trades||0}</div></div>
+        <div className="card"><div className="lbl">Wins</div><div className="val green">{stats.wins||0}</div></div>
+        <div className="card"><div className="lbl">Losses</div><div className="val red">{stats.losses||0}</div></div>
+        <div className="card"><div className="lbl">Win Rate</div><div className="val">{stats.winRate||"0.0"}%</div></div>
+        <div className="card"><div className="lbl">Avg Peak</div><div className="val">{stats.avgPeak||"0.00"} p</div></div>
+        <div className="card"><div className="lbl">Avg Duration</div><div className="val">{stats.avgDuration||"0.0"} m</div></div>
+        <div className="card"><div className="lbl">Checks</div><div className="val yellow">{stats.checksTotal||0}</div></div>
+      </div>
+
+      <div className="g2">
+        <div className="panel">
+          <div className="ph">Block Breakdown — Today</div>
+          <div style={{padding:"16px"}}>
+            {blockTypes.map(({key,label})=>{
+              const n = (today.blockCounts||{})[key]||0;
+              const pct = totalBlocks>0 ? Math.round(n/totalBlocks*100) : 0;
+              return (
+                <div className="bar-row" key={key}>
+                  <div className="blbl">{label}</div>
+                  <div className="btrack"><div className="bfill" style={{width:pct+"%"}}/></div>
+                  <div className="bval">{n} <span className="pz">({pct}%)</span></div>
+                </div>
+              );
+            })}
+            {totalBlocks===0&&<div className="empty">No blocks today</div>}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="ph">Performance per Symbol</div>
+          <div className="pb">
+            {symbols.length===0 ? <div className="empty">No data</div> : (
+              <table><thead><tr>
+                <th>Symbol</th><th>Trades</th><th>Win%</th><th>Avg P</th><th>Avg Peak</th>
+              </tr></thead><tbody>
+                {symbols.map(s=>(
+                  <tr key={s.symbol}>
+                    <td><b>{s.symbol}</b></td>
+                    <td>{s.trades}</td>
+                    <td><span className={parseFloat(s.winRate)>=50?"pp":"pn"}>{s.winRate}%</span></td>
+                    <td>{fmtPips(s.avgProfit)}</td>
+                    <td>{fmtPips(s.avgPeak)}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Chart helpers ──────────────────────────────────────────────────────────
+const CHART_OPTS_BASE = {
+  responsive:true,
+  maintainAspectRatio:true,
+  plugins:{ legend:{ labels:{ color:"#8b949e", font:{size:11} } } },
+  scales:{
+    x:{ ticks:{ color:"#8b949e", font:{size:10} }, grid:{ color:"#21262d" } },
+    y:{ ticks:{ color:"#8b949e", font:{size:10} }, grid:{ color:"#21262d" } },
+  },
+};
+
+function EquityChart({ trades }){
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(()=>{
+    if(!ref.current||!trades.length) return;
+    if(chartRef.current) chartRef.current.destroy();
+    let cum=0;
+    const points = trades
+      .filter(t=>t.close)
+      .sort((a,b)=>a.open.timestamp>b.open.timestamp?1:-1)
+      .map(t=>{ cum+=t.close.profitPips||0; return {x:hm(t.close.timestamp||t.open.timestamp),y:parseFloat(cum.toFixed(2))}; });
+    chartRef.current = new Chart(ref.current, {
+      type:"line",
+      data:{ labels:points.map(p=>p.x), datasets:[{
+        label:"Cumulative pips", data:points.map(p=>p.y),
+        borderColor:"#58a6ff", backgroundColor:"rgba(88,166,255,.08)",
+        tension:.3, pointRadius:2, fill:true,
+      }]},
+      options:{ ...CHART_OPTS_BASE, plugins:{...CHART_OPTS_BASE.plugins, legend:{display:false}} },
+    });
+    return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
+  },[trades]);
+  if(!trades.length) return <div className="empty">No closed trades yet</div>;
+  return <canvas ref={ref}/>;
+}
+
+function BarChart({ labels, values, color="#58a6ff", label="Value" }){
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(()=>{
+    if(!ref.current||!labels.length) return;
+    if(chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type:"bar",
+      data:{ labels, datasets:[{ label, data:values, backgroundColor:color, borderRadius:4 }]},
+      options:{ ...CHART_OPTS_BASE, plugins:{...CHART_OPTS_BASE.plugins, legend:{display:false}} },
+    });
+    return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
+  },[labels,values,color,label]);
+  if(!labels.length) return <div className="empty">No data</div>;
+  return <canvas ref={ref}/>;
+}
+
+function WykreśyTab({ symbols, trades }){
+  // hour histogram from open trades
+  const hourCounts = Array(24).fill(0);
+  trades.filter(t=>t.open?.timestamp).forEach(t=>{
+    const h = new Date(t.open.timestamp).getUTCHours();
+    hourCounts[h]++;
+  });
+
+  const symLabels  = symbols.map(s=>s.symbol.replace("_",""));
+  const symProfit  = symbols.map(s=>parseFloat(s.avgProfit));
+  const symWinRate = symbols.map(s=>parseFloat(s.winRate));
+  const profitColors = symProfit.map(v=>v>=0?"rgba(63,185,80,.7)":"rgba(248,81,73,.7)");
+
+  return (
+    <div className="page">
+      <div className="g2">
+        <div className="chart-wrap">
+          <h3>Equity Curve (cumulative pips)</h3>
+          <EquityChart trades={trades}/>
+        </div>
+        <div className="chart-wrap">
+          <h3>Trade Distribution by Hour (UTC)</h3>
+          <BarChart
+            labels={Array.from({length:24},(_,i)=>i+":00")}
+            values={hourCounts}
+            color="rgba(88,166,255,.7)"
+            label="Trades"
+          />
+        </div>
+      </div>
+      <div className="g2">
+        <div className="chart-wrap">
+          <h3>Avg Profit per Pair (pips)</h3>
+          <BarChart labels={symLabels} values={symProfit} color={profitColors} label="Avg profit"/>
+        </div>
+        <div className="chart-wrap">
+          <h3>Win Rate per Pair (%)</h3>
+          <BarChart
+            labels={symLabels}
+            values={symWinRate}
+            color={symWinRate.map(v=>v>=50?"rgba(63,185,80,.7)":"rgba(248,81,73,.7)")}
+            label="Win rate"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DECYZJE tab ────────────────────────────────────────────────────────────
+const CHECK_KEYS = ["trend","candle","ema","strength","m1trend","m1candle","m1prev","m1close"];
+
+function DecisionCard({ ev }){
+  const d = ev.data;
+  const side = ev.type === "buy_check" ? "buy" : "sell";
+  const conditions = CHECK_KEYS.map(k=>({ key:k, val: d[k] }));
+  const accepted = conditions.every(c=>c.val===true);
+  const rejected = !accepted;
+  const failReasons = conditions.filter(c=>c.val===false).map(c=>c.key);
+
+  return (
+    <div className="dcard">
+      <div className="dhead">
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span className="sym">{d.symbol}</span>
+          <span className={`tag ${side}`}>{side.toUpperCase()} CHECK</span>
+          <span className={`tag ${accepted?"accepted":"rejected"}`}>{accepted?"ACCEPTED":"REJECTED"}</span>
+        </div>
+        <span className="time">{hms(d.ts||ev.ts)} UTC</span>
+      </div>
+      {rejected && failReasons.length>0 && (
+        <div style={{marginBottom:8,fontSize:11,color:"#d29922"}}>
+          Rejected: {failReasons.join(", ")}
+        </div>
+      )}
+      <div className="conditions">
+        {conditions.map(({key,val})=>(
+          <div className="cond" key={key}>
+            <span className="cname">{key}</span>
+            <span className={`cv ${val?"t":"f"}`}>{val?"✓":"✗"}</span>
+          </div>
+        ))}
+        {d.entryDistance!=null&&(
+          <div className="cond">
+            <span className="cname">entry dist</span>
+            <span className="cv t">{parseFloat(d.entryDistance).toFixed(2)} p</span>
+          </div>
+        )}
+        {d.spread!=null&&(
+          <div className="cond">
+            <span className="cname">spread</span>
+            <span className="cv t">{parseFloat(d.spread).toFixed(2)} p</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DecyzjeTab({ checks }){
+  const [filter, setFilter] = useState("all");
+  const filtered = checks
+    .filter(c=>filter==="all"||(filter==="rejected"&&!CHECK_KEYS.every(k=>c.data[k]===true))||(filter==="accepted"&&CHECK_KEYS.every(k=>c.data[k]===true)))
+    .slice(0,80);
+
+  return (
+    <div className="page">
+      <div style={{display:"flex",gap:8,marginBottom:16,alignItems:"center"}}>
+        <span style={{fontSize:12,color:"#8b949e"}}>Filter:</span>
+        {["all","accepted","rejected"].map(f=>(
+          <button key={f} onClick={()=>setFilter(f)}
+            style={{padding:"4px 12px",borderRadius:5,border:"1px solid",cursor:"pointer",fontSize:11,fontWeight:600,
+              borderColor:filter===f?"#58a6ff":"#30363d",
+              background:filter===f?"#1f3a4a":"#161b22",
+              color:filter===f?"#58a6ff":"#8b949e"}}>
+            {f.toUpperCase()}
+          </button>
+        ))}
+        <span style={{marginLeft:"auto",fontSize:11,color:"#484f58"}}>{filtered.length} entries</span>
+      </div>
+      {filtered.length===0
+        ? <div className="empty">No check events yet</div>
+        : filtered.map((c,i)=><DecisionCard key={i} ev={c}/>)
+      }
+    </div>
+  );
+}
+
+// ── Export button ──────────────────────────────────────────────────────────
+function ExportBar(){
+  const today = new Date().toISOString().slice(0,10);
+  return (
+    <div style={{padding:"10px 24px",background:"#161b22",borderBottom:"1px solid #30363d",display:"flex",gap:10,alignItems:"center"}}>
+      <span style={{fontSize:11,color:"#8b949e",marginRight:4}}>Export:</span>
+      <a className="btn primary" href={`/api/export?date=today&format=json`} download={`forex_${today}.json`}>⬇ JSON</a>
+      <a className="btn" href={`/api/export?date=today&format=csv`} download={`forex_${today}.csv`}>⬇ CSV</a>
+      <span style={{fontSize:11,color:"#484f58",marginLeft:8}}>today ({today})</span>
+    </div>
+  );
+}
+
+// ── App root ───────────────────────────────────────────────────────────────
+function App(){
+  const [tab, setTab]         = useState("LIVE");
+  const [live, setLive]       = useState({ botStatus:"starting", dailyTrades:0, openTrades:[], recentBlocks:[] });
+  const [today, setToday]     = useState({});
+  const [stats, setStats]     = useState({});
+  const [symbols, setSymbols] = useState([]);
+  const [trades, setTrades]   = useState([]);
+  const [checks, setChecks]   = useState([]);
+  const [logLines, setLog]    = useState([]);
+  const [lastTs, setLastTs]   = useState(null);
+
+  // fetch data
+  const refresh = useCallback(async()=>{
+    try {
+      const [t,s,sym,tr,ch] = await Promise.all([
+        api("/api/today"),
+        api("/api/stats"),
+        api("/api/symbols"),
+        api("/api/trades?date=today"),
+        api("/api/events?type=buy_check&date=today&limit=200").then(r=>[...r,
+          ...[]]).catch(()=>[]),
+      ]);
+      setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
+
+      const sells = await api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]);
+      const buys  = await api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]);
+      const all   = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
+      setChecks(all);
+
+      setLastTs(new Date().toISOString());
+    } catch(e){ console.error("refresh error",e); }
+  },[]);
+
+  // initial + periodic refresh
+  useEffect(()=>{
+    refresh();
+    const id = setInterval(refresh, 30000);
+    return ()=>clearInterval(id);
+  },[refresh]);
+
+  // SSE
+  useEffect(()=>{
+    const es = new EventSource("/api/events/stream");
+    es.onmessage = (ev)=>{
+      const msg = JSON.parse(ev.data);
+      setLastTs(new Date().toISOString());
+
+      if(msg.source==="live"){
+        if(msg.type==="init"){
+          setLive(msg.live||{});
+        } else if(msg.type==="pips"){
+          setLive(prev=>({
+            ...prev,
+            openTrades: prev.openTrades.map(t=>t.symbol===msg.symbol?{...t,pips:msg.pips}:t)
+          }));
+        } else if(msg.type==="trade_opened"){
+          setLive(prev=>({
+            ...prev,
+            openTrades:[...prev.openTrades,{symbol:msg.symbol,side:msg.side,pips:0,peak:0,breakEven:false,entryTime:Date.now()}]
+          }));
+          refresh();
+        } else if(msg.type==="trade_closed"){
+          setLive(prev=>({...prev,openTrades:prev.openTrades.filter(t=>t.symbol!==msg.symbol)}));
+          refresh();
+        } else if(msg.type==="bot_status"){
+          setLive(prev=>({...prev,botStatus:msg.status}));
+        } else if(msg.type==="daily_count"){
+          setLive(prev=>({...prev,dailyTrades:msg.value}));
+        } else if(msg.type==="block"){
+          setLive(prev=>({...prev,recentBlocks:[{t:new Date().toISOString(),line:msg.line},...(prev.recentBlocks||[])].slice(0,20)}));
+        }
+      }
+
+      if(msg.source==="db"){
+        const t=msg.type;
+        const line = t+" "+(msg.symbol||"")+" "+(msg.data?.reason||"");
+        setLog(prev=>[...prev,{t:msg.ts,line:line.trim()}].slice(-200));
+        if(t==="buy_check"||t==="sell_check"){
+          setChecks(prev=>[{...msg,data:msg.data||{}},...prev].slice(0,300));
+        }
+        if(t==="trade_open"||t==="trade_close"){
+          refresh();
+        }
+      }
+    };
+    es.onerror=()=>setLive(prev=>({...prev,botStatus:"stopped"}));
+    return()=>es.close();
+  },[refresh]);
+
+  // auto-scroll log
+  useEffect(()=>{
+    const el=document.getElementById("livelog");
+    if(el) el.scrollTop=el.scrollHeight;
+  },[logLines]);
+
+  return (
+    <>
+      <Header botStatus={live.botStatus} ts={lastTs}/>
+      <Tabs active={tab} set={setTab}/>
+      <ExportBar/>
+      {tab==="LIVE"    && <LiveTab    live={live} today={today} logLines={logLines}/>}
+      {tab==="ANALIZA" && <AnalyzaTab stats={stats} today={today} symbols={symbols}/>}
+      {tab==="WYKRESY" && <WykreśyTab symbols={symbols} trades={trades}/>}
+      {tab==="DECYZJE" && <DecyzjeTab checks={checks}/>}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

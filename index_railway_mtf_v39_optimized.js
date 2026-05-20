@@ -1,6 +1,14 @@
 require("dotenv").config();
 const axios = require("axios");
 
+// Telemetry — loaded with fallback so bot works even without better-sqlite3
+let logEvent = () => {};
+try {
+  logEvent = require("./telemetry").logEvent;
+} catch (e) {
+  console.error("[TELEMETRY] Not loaded:", e.message);
+}
+
 console.log("FOREX ENGINE PRO v39.1 (BALANCED MTF)");
 
 const API_KEY = process.env.OANDA_API_KEY;
@@ -374,6 +382,8 @@ async function manageTrades() {
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
 
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+
         await closeTrade(trade.id);
 
         delete tradePeak[trade.id];
@@ -400,6 +410,8 @@ async function manageTrades() {
         stats.totalTrades++;
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
+
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
 
         await closeTrade(trade.id);
 
@@ -440,6 +452,7 @@ async function manageTrades() {
 
           tradeBreakEven[trade.id] = true;
           console.log(`${symbol} BREAK EVEN ON`);
+          logEvent({ type: "break_even", symbol, pips });
         }
       }
 
@@ -481,6 +494,8 @@ async function manageTrades() {
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+
         await closeTrade(trade.id);
         stats.losses++;
         stats.totalTrades++;
@@ -501,6 +516,8 @@ async function manageTrades() {
         console.log(
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
+
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
 
         await closeTrade(trade.id);
 
@@ -532,6 +549,7 @@ async function strategy(symbol) {
 
     if (cooldownMap[symbol] && Date.now() - cooldownMap[symbol] <= cooldown) {
       console.log(`Cooldown -> ${symbol}`);
+      logEvent({ type: "cooldown_block", symbol });
       return;
     }
 
@@ -555,6 +573,7 @@ async function strategy(symbol) {
     for (const trade of openTrades) {
       if (CORRELATED[symbol]?.includes(trade.instrument)) {
         console.log(`CORRELATION BLOCK -> ${symbol}`);
+        logEvent({ type: "correlation_block", symbol });
 
         return;
       }
@@ -567,6 +586,7 @@ async function strategy(symbol) {
 
     if (spread > 1.5) {
       console.log(`SPREAD BLOCK -> ${symbol}`);
+      logEvent({ type: "spread_block", symbol, spread });
       return;
     }
 
@@ -634,6 +654,7 @@ async function strategy(symbol) {
     // PULLBACK FILTER — reject entries where price is more than 1 pip from EMA9
     if (entryDistance > 1) {
       console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)}`);
+      logEvent({ type: "pullback_block", symbol, entryDistance });
       return;
     }
 
@@ -655,6 +676,7 @@ async function strategy(symbol) {
 
     if (marginPercent > 50) {
       console.log("MARGIN PROTECTION ACTIVE");
+      logEvent({ type: "margin_block", symbol, marginPercent });
 
       return;
     }
@@ -700,6 +722,42 @@ m1close=${m1LastClose < m1LastFast}
 spread=${spread.toFixed(2)} pips (limit 1.5)`,
     );
 
+    // BUY CHECK — log structured decision
+    logEvent({
+      type: "buy_check",
+      symbol,
+      trend:   lastFast > lastSlow,
+      candle:  bullishCandle(lastCandle),
+      ema:     emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+      m1trend: m1LastFast > m1LastSlow,
+      m1candle: m1Bullish,
+      m1prev:  bullishCandle(m1PrevCandle),
+      m1close: m1LastClose > m1LastFast,
+      entryDistance,
+      emaDistance,
+      candleStrength,
+      spread,
+    });
+
+    // SELL CHECK — log structured decision
+    logEvent({
+      type: "sell_check",
+      symbol,
+      trend:   lastFast < lastSlow,
+      candle:  bearishCandle(lastCandle),
+      ema:     emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+      m1trend: m1LastFast < m1LastSlow,
+      m1candle: m1Bearish,
+      m1prev:  bearishCandle(m1PrevCandle),
+      m1close: m1LastClose < m1LastFast,
+      entryDistance,
+      emaDistance,
+      candleStrength,
+      spread,
+    });
+
     // BUY
     if (
       lastFast > lastSlow &&
@@ -717,6 +775,20 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
       );
 
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
+
+      logEvent({
+        type: "trade_open",
+        symbol,
+        side: "buy",
+        spread,
+        atr: atr / pipMultiplier(symbol),
+        emaDistance,
+        candleStrength,
+        stopLossPips,
+        takeProfitPips,
+        risk: RISK_PERCENT,
+        units,
+      });
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
     }
@@ -738,6 +810,20 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
       );
 
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
+
+      logEvent({
+        type: "trade_open",
+        symbol,
+        side: "sell",
+        spread,
+        atr: atr / pipMultiplier(symbol),
+        emaDistance,
+        candleStrength,
+        stopLossPips,
+        takeProfitPips,
+        risk: RISK_PERCENT,
+        units,
+      });
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
     }
