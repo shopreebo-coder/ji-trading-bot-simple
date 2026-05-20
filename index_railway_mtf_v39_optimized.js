@@ -361,7 +361,7 @@ async function manageTrades() {
       const peak = tradePeak[trade.id];
 
       // PROFIT PROTECTION
-      if (peak >= 2 && pips < peak - 0.5) {
+      if (peak >= 4 && pips < peak - 1.5) {
         const reason = "PROFIT PROTECTION";
         console.log(
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
@@ -411,8 +411,8 @@ async function manageTrades() {
         continue;
       }
 
-      // BREAK EVEN — triggers at +1.5 pips, moves SL to +0.5 pip above entry
-      if (pips >= 1.5) {
+      // BREAK EVEN — triggers at +3 pips, moves SL to +0.5 pip above entry
+      if (pips >= 3) {
         const breakEven =
           side === "buy"
             ? openPrice + 0.5 * pipMult
@@ -626,6 +626,16 @@ async function strategy(symbol) {
     const m1Bearish = bearishCandle(m1LastCandle);
 
     const m1LastClose = m1Closes[m1Closes.length - 1];
+
+    // ENTRY DISTANCE — distance from current M1 close to EMA9
+    const entryDistance = Math.abs(m1LastClose - m1LastFast) / pipMultiplier(symbol);
+    console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
+
+    // PULLBACK FILTER — reject entries where price is more than 1 pip from EMA9
+    if (entryDistance > 1) {
+      console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)}`);
+      return;
+    }
 
     // RISK
     const stopLossPips = Math.max(
