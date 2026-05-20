@@ -620,6 +620,20 @@ async function strategy(symbol) {
     // CANDLE STRENGTH
     const candleStrength = candleBodySize(lastCandle) / atr;
 
+    // MARKET REGIME SNAPSHOT — logged at every evaluation cycle
+    const _rNow = new Date();
+    logEvent({
+      type:           "market_regime",
+      symbol,
+      hour:           _rNow.getUTCHours(),
+      dow:            _rNow.getUTCDay(),
+      atr:            parseFloat((atr / pipMultiplier(symbol)).toFixed(2)),
+      spread,
+      emaDistance:    parseFloat(emaDistance.toFixed(2)),
+      trendStrength:  parseFloat(emaDistance.toFixed(2)),
+      candleStrength: parseFloat(candleStrength.toFixed(3)),
+    });
+
     // M1 CONFIRMATION
     const m1Candles = await getCandles(symbol, 50, ENTRY_TIMEFRAME);
 

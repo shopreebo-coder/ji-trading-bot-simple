@@ -375,6 +375,105 @@ app.get("/api/events/stream", (req, res) => {
   req.on("close", () => { clearInterval(ka); sseClients.delete(res); });
 });
 
+// ── API: GET /api/winrate-analysis ───────────────────────────────────────────
+app.get("/api/winrate-analysis", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+
+  const opens  = queryEvents({ type: "trade_open",     date, limit: 5000  });
+  const closes = queryEvents({ type: "trade_close",    date, limit: 5000  });
+  const regime = queryEvents({ type: "market_regime",  date, limit: 50000 });
+
+  // Index regime by symbol for fast lookup
+  const regBySymbol = {};
+  for (const r of regime) {
+    (regBySymbol[r.symbol] = regBySymbol[r.symbol] || []).push(r);
+  }
+
+  // Match each open trade with its close, then nearest regime snapshot
+  const matched = [];
+  for (const o of opens) {
+    const sym    = o.symbol;
+    const openTs = o.ts;
+    const close  = closes.find(c => c.symbol === sym && c.ts >= openTs);
+    if (!close) continue; // still open or unmatched
+
+    const won   = (close.data.profitPips || 0) > 0;
+    const pool  = regBySymbol[sym] || [];
+    let best = null, bestDiff = Infinity;
+    for (const r of pool) {
+      const diff = Math.abs(new Date(r.ts) - new Date(openTs));
+      if (diff < bestDiff) { bestDiff = diff; best = r; }
+    }
+    matched.push({
+      symbol:      sym,
+      won,
+      profitPips:  close.data.profitPips || 0,
+      atr:         best?.data?.atr          ?? null,
+      spread:      best?.data?.spread       ?? null,
+      emaDistance: best?.data?.emaDistance  ?? null,
+      hour:        best?.data?.hour         ?? new Date(openTs).getUTCHours(),
+      dow:         best?.data?.dow          ?? new Date(openTs).getUTCDay(),
+    });
+  }
+
+  function bucketWinRate(items, getKey) {
+    const map = {};
+    for (const t of items) {
+      const k = getKey(t);
+      if (k === null || k === undefined) continue;
+      if (!map[k]) map[k] = { wins: 0, total: 0 };
+      map[k].total++;
+      if (t.won) map[k].wins++;
+    }
+    return Object.entries(map)
+      .map(([key, v]) => ({
+        key,
+        winRate: v.total > 0 ? parseFloat(((v.wins / v.total) * 100).toFixed(1)) : 0,
+        trades:  v.total,
+        wins:    v.wins,
+      }))
+      .sort((a, b) => String(a.key).localeCompare(String(b.key), undefined, { numeric: true }));
+  }
+
+  const atrBuckets = bucketWinRate(matched, t => {
+    if (t.atr === null) return null;
+    const a = parseFloat(t.atr);
+    if (a < 5)  return "0-5 p";
+    if (a < 10) return "5-10 p";
+    if (a < 15) return "10-15 p";
+    if (a < 20) return "15-20 p";
+    return "20+ p";
+  });
+
+  const hourBuckets = bucketWinRate(matched, t =>
+    t.hour !== null && t.hour !== undefined ? String(t.hour).padStart(2, "0") + ":00" : null
+  );
+
+  const spreadBuckets = bucketWinRate(matched, t => {
+    if (t.spread === null) return null;
+    const s = parseFloat(t.spread);
+    if (s < 0.5) return "0-0.5";
+    if (s < 1.0) return "0.5-1.0";
+    if (s < 1.5) return "1.0-1.5";
+    return "1.5+";
+  });
+
+  const symbolBuckets = bucketWinRate(matched, t => t.symbol);
+
+  res.json({ atrBuckets, hourBuckets, spreadBuckets, symbolBuckets, totalTrades: matched.length });
+});
+
+// ── API: GET /api/regime ──────────────────────────────────────────────────────
+app.get("/api/regime", (req, res) => {
+  const rows = queryEvents({
+    type:   "market_regime",
+    symbol: req.query.symbol,
+    date:   req.query.date ? parseDate(req.query.date) : undefined,
+    limit:  parseInt(req.query.limit || "1000"),
+  });
+  res.json(rows);
+});
+
 // ── root → dashboard ──────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));

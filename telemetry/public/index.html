@@ -330,24 +330,68 @@ function EquityChart({ trades }){
   return <canvas ref={ref}/>;
 }
 
-function BarChart({ labels, values, color="#58a6ff", label="Value" }){
+function BarChart({ labels, values, color="#58a6ff", label="Value", extra={} }){
   const ref = useRef(null);
   const chartRef = useRef(null);
   useEffect(()=>{
     if(!ref.current||!labels.length) return;
     if(chartRef.current) chartRef.current.destroy();
+    const baseOpts = { ...CHART_OPTS_BASE, plugins:{...CHART_OPTS_BASE.plugins, legend:{display:false}} };
+    function deepMerge(a, b){
+      const out = {...a};
+      for(const k of Object.keys(b||{})){
+        if(b[k]&&typeof b[k]==="object"&&!Array.isArray(b[k])&&a[k]&&typeof a[k]==="object")
+          out[k] = deepMerge(a[k], b[k]);
+        else out[k] = b[k];
+      }
+      return out;
+    }
     chartRef.current = new Chart(ref.current, {
       type:"bar",
       data:{ labels, datasets:[{ label, data:values, backgroundColor:color, borderRadius:4 }]},
-      options:{ ...CHART_OPTS_BASE, plugins:{...CHART_OPTS_BASE.plugins, legend:{display:false}} },
+      options: deepMerge(baseOpts, extra),
     });
     return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
-  },[labels,values,color,label]);
+  },[labels,values,color,label,extra]);
   if(!labels.length) return <div className="empty">No data</div>;
   return <canvas ref={ref}/>;
 }
 
-function WykreśyTab({ symbols, trades }){
+function WinRateChart({ title, buckets, noDataMsg }){
+  if(!buckets||buckets.length===0) return (
+    <div className="chart-wrap">
+      <h3>{title}</h3>
+      <p style={{color:"#8b949e",fontSize:12,textAlign:"center",marginTop:40}}>{noDataMsg||"Brak danych — za mało transakcji"}</p>
+    </div>
+  );
+  const labels = buckets.map(b=>b.key);
+  const values = buckets.map(b=>b.winRate);
+  const counts = buckets.map(b=>b.trades);
+  const colors = values.map(v=>v>=50?"rgba(63,185,80,.7)":"rgba(248,81,73,.7)");
+  return (
+    <div className="chart-wrap">
+      <h3>{title}</h3>
+      <BarChart
+        labels={labels}
+        values={values}
+        color={colors}
+        label="Win rate %"
+        extra={{
+          plugins:{
+            tooltip:{
+              callbacks:{
+                afterLabel: (ctx)=>`  Transakcji: ${counts[ctx.dataIndex]}`
+              }
+            }
+          },
+          scales:{ y:{ min:0, max:100, ticks:{ callback: v=>v+"%" } } }
+        }}
+      />
+    </div>
+  );
+}
+
+function WykreśyTab({ symbols, trades, winrate }){
   // hour histogram from open trades
   const hourCounts = Array(24).fill(0);
   trades.filter(t=>t.open?.timestamp).forEach(t=>{
@@ -359,6 +403,8 @@ function WykreśyTab({ symbols, trades }){
   const symProfit  = symbols.map(s=>parseFloat(s.avgProfit));
   const symWinRate = symbols.map(s=>parseFloat(s.winRate));
   const profitColors = symProfit.map(v=>v>=0?"rgba(63,185,80,.7)":"rgba(248,81,73,.7)");
+
+  const wr = winrate || {};
 
   return (
     <div className="page">
@@ -383,7 +429,7 @@ function WykreśyTab({ symbols, trades }){
           <BarChart labels={symLabels} values={symProfit} color={profitColors} label="Avg profit"/>
         </div>
         <div className="chart-wrap">
-          <h3>Win Rate per Pair (%)</h3>
+          <h3>Win Rate per Pair — per-pair stats (%)</h3>
           <BarChart
             labels={symLabels}
             values={symWinRate}
@@ -391,6 +437,22 @@ function WykreśyTab({ symbols, trades }){
             label="Win rate"
           />
         </div>
+      </div>
+
+      <div style={{borderTop:"1px solid #30363d",margin:"8px 0 12px",paddingTop:8}}>
+        <span style={{fontSize:11,color:"#8b949e",fontWeight:600,letterSpacing:".8px",textTransform:"uppercase"}}>
+          Market Regime Analysis
+          {wr.totalTrades>0 && <span style={{marginLeft:8,color:"#58a6ff"}}>{wr.totalTrades} transakcji</span>}
+        </span>
+      </div>
+
+      <div className="g2">
+        <WinRateChart title="Win Rate vs ATR (pipy)" buckets={wr.atrBuckets}/>
+        <WinRateChart title="Win Rate vs Godzina UTC" buckets={wr.hourBuckets}/>
+      </div>
+      <div className="g2">
+        <WinRateChart title="Win Rate vs Spread (pipy)" buckets={wr.spreadBuckets}/>
+        <WinRateChart title="Win Rate vs Symbol" buckets={wr.symbolBuckets}/>
       </div>
     </div>
   );
@@ -499,24 +561,27 @@ function App(){
   const [checks, setChecks]   = useState([]);
   const [logLines, setLog]    = useState([]);
   const [lastTs, setLastTs]   = useState(null);
+  const [winrate, setWinrate] = useState({});
 
   // fetch data
   const refresh = useCallback(async()=>{
     try {
-      const [t,s,sym,tr,ch] = await Promise.all([
+      const [t,s,sym,tr] = await Promise.all([
         api("/api/today"),
         api("/api/stats"),
         api("/api/symbols"),
         api("/api/trades?date=today"),
-        api("/api/events?type=buy_check&date=today&limit=200").then(r=>[...r,
-          ...[]]).catch(()=>[]),
       ]);
       setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
 
-      const sells = await api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]);
-      const buys  = await api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]);
-      const all   = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
+      const [sells, buys, wr] = await Promise.all([
+        api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]),
+        api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]),
+        api("/api/winrate-analysis").catch(()=>({})),
+      ]);
+      const all = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
       setChecks(all);
+      setWinrate(wr);
 
       setLastTs(new Date().toISOString());
     } catch(e){ console.error("refresh error",e); }
@@ -591,7 +656,7 @@ function App(){
       <ExportBar/>
       {tab==="LIVE"    && <LiveTab    live={live} today={today} logLines={logLines}/>}
       {tab==="ANALIZA" && <AnalyzaTab stats={stats} today={today} symbols={symbols}/>}
-      {tab==="WYKRESY" && <WykreśyTab symbols={symbols} trades={trades}/>}
+      {tab==="WYKRESY" && <WykreśyTab symbols={symbols} trades={trades} winrate={winrate}/>}
       {tab==="DECYZJE" && <DecyzjeTab checks={checks}/>}
     </>
   );
