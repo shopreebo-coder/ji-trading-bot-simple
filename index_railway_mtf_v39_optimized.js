@@ -361,31 +361,32 @@ async function manageTrades() {
 
       const peak = tradePeak[trade.id];
 
-      // PROFIT PROTECTION — close if peak >= 3 and profit drops 1 pip below peak
-      if (peak >= 3 && pips < peak - 1) {
-        const reason = "PROFIT PROTECTION";
-        console.log(
-          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
-        );
+      // SMART PROFIT LOCK
+      if (peak >= 2) {
+        const lockedProfit = Math.max(0.5, peak * 0.5);
 
-        if (pips > 0) {
-          stats.wins++;
-        } else {
-          stats.losses++;
+        if (pips <= lockedProfit) {
+          const reason = "SMART PROFIT LOCK";
+          console.log(
+            `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
+          );
+
+          if (pips > 0) stats.wins++;
+          else stats.losses++;
+
+          stats.totalTrades++;
+          stats.totalPeakPips += peak;
+          stats.totalDurationMin += minutesOpen;
+
+          await closeTrade(trade.id);
+
+          delete tradePeak[trade.id];
+          delete tradeBreakEven[trade.id];
+
+          cooldownMap[symbol] = Date.now();
+
+          continue;
         }
-
-        stats.totalTrades++;
-        stats.totalPeakPips += peak;
-        stats.totalDurationMin += minutesOpen;
-
-        await closeTrade(trade.id);
-
-        delete tradePeak[trade.id];
-        delete tradeBreakEven[trade.id];
-
-        cooldownMap[symbol] = Date.now();
-
-        continue;
       }
 
       // MOMENTUM EXIT — kept as secondary safety
@@ -818,9 +819,11 @@ async function runBot() {
 
       // SYMBOL LOOP
       for (const symbol of SYMBOLS) {
+        await manageTrades();
+
         await strategy(symbol);
 
-        await sleep(5000);
+        await sleep(2000);
       }
 
       // MANAGE OPEN TRADES
