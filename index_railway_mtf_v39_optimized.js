@@ -19,9 +19,9 @@ const ENTRY_TIMEFRAME = "M1";
 
 const RISK_PERCENT = parseFloat(process.env.RISK_PERCENT || "0.01");
 
-const MAX_OPEN_TRADES = parseInt(process.env.MAX_OPEN_TRADES || "1");
+const MAX_OPEN_TRADES = parseInt(process.env.MAX_OPEN_TRADES || "2");
 
-const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "3");
+const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
@@ -346,7 +346,6 @@ async function manageTrades() {
 
       console.log(`${symbol} -> ${pips.toFixed(2)} pips`);
 
-      // DURATION — calculated once, used by all exit logs
       const openTime = new Date(trade.openTime).getTime();
       const now = Date.now();
       const minutesOpen = (now - openTime) / 1000 / 60;
@@ -361,35 +360,31 @@ async function manageTrades() {
 
       const peak = tradePeak[trade.id];
 
-      // SMART PROFIT LOCK
-      if (peak >= 2) {
-        const lockedProfit = Math.max(0.5, peak * 0.5);
+      // PROFIT PROTECTION
+      if (peak >= 2 && pips < peak - 0.5) {
+        const reason = "PROFIT PROTECTION";
+        console.log(
+          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
+        );
 
-        if (pips <= lockedProfit) {
-          const reason = "SMART PROFIT LOCK";
-          console.log(
-            `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
-          );
+        if (pips > 0) stats.wins++;
+        else stats.losses++;
 
-          if (pips > 0) stats.wins++;
-          else stats.losses++;
+        stats.totalTrades++;
+        stats.totalPeakPips += peak;
+        stats.totalDurationMin += minutesOpen;
 
-          stats.totalTrades++;
-          stats.totalPeakPips += peak;
-          stats.totalDurationMin += minutesOpen;
+        await closeTrade(trade.id);
 
-          await closeTrade(trade.id);
+        delete tradePeak[trade.id];
+        delete tradeBreakEven[trade.id];
 
-          delete tradePeak[trade.id];
-          delete tradeBreakEven[trade.id];
+        cooldownMap[symbol] = Date.now();
 
-          cooldownMap[symbol] = Date.now();
-
-          continue;
-        }
+        continue;
       }
 
-      // MOMENTUM EXIT — kept as secondary safety
+      // MOMENTUM EXIT
       if (peak >= 8 && peak - pips >= 3) {
         const reason = "MOMENTUM LOST";
         console.log(
@@ -416,12 +411,12 @@ async function manageTrades() {
         continue;
       }
 
-      // BREAK EVEN — triggers at +2 pips, moves SL to +0.2 pip above entry
-      if (pips >= 2) {
+      // BREAK EVEN — triggers at +1.5 pips, moves SL to +0.5 pip above entry
+      if (pips >= 1.5) {
         const breakEven =
           side === "buy"
-            ? openPrice + 0.2 * pipMult
-            : openPrice - 0.2 * pipMult;
+            ? openPrice + 0.5 * pipMult
+            : openPrice - 0.5 * pipMult;
 
         const currentSL = parseFloat(trade.stopLossOrder?.price || 0);
 
@@ -533,7 +528,7 @@ async function manageTrades() {
 async function strategy(symbol) {
   try {
     // COOLDOWN
-    const cooldown = 10 * 60 * 1000; // 10 minutes
+    const cooldown = 10 * 60 * 1000;
 
     if (cooldownMap[symbol] && Date.now() - cooldownMap[symbol] <= cooldown) {
       console.log(`Cooldown -> ${symbol}`);
@@ -624,6 +619,8 @@ async function strategy(symbol) {
 
     const m1LastCandle = m1Candles[m1Candles.length - 1];
 
+    const m1PrevCandle = m1Candles[m1Candles.length - 2];
+
     const m1Bullish = bullishCandle(m1LastCandle);
 
     const m1Bearish = bearishCandle(m1LastCandle);
@@ -633,10 +630,10 @@ async function strategy(symbol) {
     // RISK
     const stopLossPips = Math.max(
       Math.floor((atr / pipMultiplier(symbol)) * 1.5),
-      12,
+      8,
     );
 
-    const takeProfitPips = Math.floor(stopLossPips * 1.8);
+    const takeProfitPips = Math.floor(stopLossPips * 1.2);
 
     const account = await getAccountInfo();
 
@@ -670,10 +667,11 @@ async function strategy(symbol) {
     console.log(
       `trend=${lastFast > lastSlow}
 candle=${bullishCandle(lastCandle)}
-ema=${emaDistance > 1}
-strength=${candleStrength > 0.04}
+ema=${emaDistance > 1.8}
+strength=${candleStrength > 0.12}
 m1trend=${m1LastFast > m1LastSlow}
 m1candle=${m1Bullish}
+m1prev=${bullishCandle(m1PrevCandle)}
 m1close=${m1LastClose > m1LastFast}
 spread=${spread.toFixed(2)} pips (limit 1.5)`,
     );
@@ -683,10 +681,11 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
     console.log(
       `trend=${lastFast < lastSlow}
 candle=${bearishCandle(lastCandle)}
-ema=${emaDistance > 1}
-strength=${candleStrength > 0.04}
+ema=${emaDistance > 1.8}
+strength=${candleStrength > 0.12}
 m1trend=${m1LastFast < m1LastSlow}
 m1candle=${m1Bearish}
+m1prev=${bearishCandle(m1PrevCandle)}
 m1close=${m1LastClose < m1LastFast}
 spread=${spread.toFixed(2)} pips (limit 1.5)`,
     );
@@ -696,14 +695,15 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
       lastFast > lastSlow &&
       lastClose > lastFast &&
       bullishCandle(lastCandle) &&
-      emaDistance > 1 &&
-      candleStrength > 0.04 &&
+      emaDistance > 1.8 &&
+      candleStrength > 0.12 &&
       m1LastFast > m1LastSlow &&
       m1Bullish &&
+      bullishCandle(m1PrevCandle) &&
       m1LastClose > m1LastFast
     ) {
       console.log(
-        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + close above fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + 2 bullish candles + close above fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
 
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
@@ -716,14 +716,15 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
       lastFast < lastSlow &&
       lastClose < lastFast &&
       bearishCandle(lastCandle) &&
-      emaDistance > 1 &&
-      candleStrength > 0.04 &&
+      emaDistance > 1.8 &&
+      candleStrength > 0.12 &&
       m1LastFast < m1LastSlow &&
       m1Bearish &&
+      bearishCandle(m1PrevCandle) &&
       m1LastClose < m1LastFast
     ) {
       console.log(
-        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + close below fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${(atr / pipMultiplier(symbol)).toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + 2 bearish candles + close below fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
 
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
@@ -805,7 +806,7 @@ async function runBot() {
         await sleep(60000);
 
         continue;
-      } // MAX OPEN TRADES
+      }
 
       const openTrades = await getOpenTrades();
 
