@@ -772,6 +772,25 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
       spread,
     });
 
+    // DECISION FINGERPRINT — 6-char hash (T=true, F=false per condition, order: trend/candle/ema/strength/m1trend/m1prev)
+    const _buyFp  = {
+      trend:    lastFast > lastSlow,
+      candle:   bullishCandle(lastCandle),
+      ema:      emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+      m1trend:  m1LastFast > m1LastSlow,
+      m1prev:   bullishCandle(m1PrevCandle),
+    };
+    const _sellFp = {
+      trend:    lastFast < lastSlow,
+      candle:   bearishCandle(lastCandle),
+      ema:      emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+      m1trend:  m1LastFast < m1LastSlow,
+      m1prev:   bearishCandle(m1PrevCandle),
+    };
+    const _fpHash = (fp) => Object.values(fp).map((v) => (v ? "T" : "F")).join("");
+
     // BUY
     if (
       lastFast > lastSlow &&
@@ -802,6 +821,8 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
         takeProfitPips,
         risk: RISK_PERCENT,
         units,
+        fingerprint: _fpHash(_buyFp),
+        fp: _buyFp,
       });
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
@@ -837,6 +858,8 @@ spread=${spread.toFixed(2)} pips (limit 1.5)`,
         takeProfitPips,
         risk: RISK_PERCENT,
         units,
+        fingerprint: _fpHash(_sellFp),
+        fp: _sellFp,
       });
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);

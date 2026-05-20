@@ -139,7 +139,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE"];
+const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -537,6 +537,90 @@ function DecyzjeTab({ checks }){
   );
 }
 
+// ── WZORCE tab ──────────────────────────────────────────────────────────────
+const FP_LABELS = ["trend","candle","ema","strength","m1trend","m1prev"];
+
+function FpBadge({ fp }){
+  if(!fp) return null;
+  const vals = Object.entries(fp);
+  return (
+    <span style={{display:"inline-flex",gap:3,flexWrap:"wrap"}}>
+      {vals.map(([k,v])=>(
+        <span key={k} title={k} style={{
+          fontSize:10,padding:"1px 5px",borderRadius:3,fontWeight:600,
+          background: v?"rgba(63,185,80,.15)":"rgba(248,81,73,.12)",
+          color:       v?"#3fb950":"#f85149",
+          border:`1px solid ${v?"#3fb95040":"#f8514940"}`,
+        }}>{k.toUpperCase().slice(0,3)}</span>
+      ))}
+    </span>
+  );
+}
+
+function FpTable({ title, rows, accent }){
+  if(!rows||rows.length===0) return (
+    <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:16,marginBottom:16}}>
+      <div style={{fontSize:11,fontWeight:600,color:"#8b949e",textTransform:"uppercase",letterSpacing:".8px",marginBottom:12}}>{title}</div>
+      <div className="empty" style={{padding:"24px 0"}}>Brak danych — za mało transakcji</div>
+    </div>
+  );
+  return (
+    <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:16,marginBottom:16,overflowX:"auto"}}>
+      <div style={{fontSize:11,fontWeight:600,color:"#8b949e",textTransform:"uppercase",letterSpacing:".8px",marginBottom:12}}>
+        {title}
+      </div>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead>
+          <tr style={{color:"#8b949e",textAlign:"left"}}>
+            <th style={{padding:"4px 8px",fontWeight:600}}>#</th>
+            <th style={{padding:"4px 8px",fontWeight:600}}>Hash</th>
+            <th style={{padding:"4px 8px",fontWeight:600}}>Warunki</th>
+            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>Win%</th>
+            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>W/L</th>
+            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>Avg pip</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r,i)=>(
+            <tr key={r.fingerprint} style={{borderTop:"1px solid #21262d",background:i%2===0?"transparent":"rgba(255,255,255,.02)"}}>
+              <td style={{padding:"5px 8px",color:"#484f58"}}>{i+1}</td>
+              <td style={{padding:"5px 8px"}}>
+                <code style={{fontSize:13,letterSpacing:2,color:accent,fontWeight:700}}>{r.fingerprint}</code>
+              </td>
+              <td style={{padding:"5px 8px"}}><FpBadge fp={r.fpDetail}/></td>
+              <td style={{padding:"5px 8px",textAlign:"right",fontWeight:700,color:r.winRate>=50?"#3fb950":"#f85149"}}>{r.winRate}%</td>
+              <td style={{padding:"5px 8px",textAlign:"right",color:"#8b949e"}}>{r.wins}/{r.losses}</td>
+              <td style={{padding:"5px 8px",textAlign:"right",color:r.avgPips>=0?"#3fb950":"#f85149",fontWeight:600}}>{r.avgPips>0?"+":""}{r.avgPips}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WzorceTab({ fingerprints }){
+  const fp = fingerprints || {};
+  const meta = fp.totalTrades > 0
+    ? <span style={{fontSize:11,color:"#484f58",marginLeft:8}}>{fp.totalTrades} transakcji · {fp.uniquePatterns||0} wzorców</span>
+    : null;
+
+  return (
+    <div className="page">
+      <div style={{marginBottom:16,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:13,color:"#8b949e"}}>
+          Hash: 6 znaków (T/F) w kolejności: <code style={{color:"#58a6ff"}}>trend · candle · ema · strength · m1trend · m1prev</code>
+        </span>
+        {meta}
+      </div>
+      <div className="g2">
+        <FpTable title="🏆 Top 20 najlepszych wzorców" rows={fp.top20}    accent="#3fb950"/>
+        <FpTable title="💀 Top 20 najgorszych wzorców" rows={fp.bottom20} accent="#f85149"/>
+      </div>
+    </div>
+  );
+}
+
 // ── Export button ──────────────────────────────────────────────────────────
 function ExportBar(){
   const today = new Date().toISOString().slice(0,10);
@@ -561,7 +645,8 @@ function App(){
   const [checks, setChecks]   = useState([]);
   const [logLines, setLog]    = useState([]);
   const [lastTs, setLastTs]   = useState(null);
-  const [winrate, setWinrate] = useState({});
+  const [winrate, setWinrate]           = useState({});
+  const [fingerprints, setFingerprints] = useState({});
 
   // fetch data
   const refresh = useCallback(async()=>{
@@ -574,14 +659,16 @@ function App(){
       ]);
       setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
 
-      const [sells, buys, wr] = await Promise.all([
+      const [sells, buys, wr, fps] = await Promise.all([
         api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]),
         api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]),
         api("/api/winrate-analysis").catch(()=>({})),
+        api("/api/fingerprints").catch(()=>({})),
       ]);
       const all = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
       setChecks(all);
       setWinrate(wr);
+      setFingerprints(fps);
 
       setLastTs(new Date().toISOString());
     } catch(e){ console.error("refresh error",e); }
@@ -658,6 +745,7 @@ function App(){
       {tab==="ANALIZA" && <AnalyzaTab stats={stats} today={today} symbols={symbols}/>}
       {tab==="WYKRESY" && <WykreśyTab symbols={symbols} trades={trades} winrate={winrate}/>}
       {tab==="DECYZJE" && <DecyzjeTab checks={checks}/>}
+      {tab==="WZORCE"  && <WzorceTab  fingerprints={fingerprints}/>}
     </>
   );
 }

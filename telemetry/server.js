@@ -463,6 +463,61 @@ app.get("/api/winrate-analysis", (req, res) => {
   res.json({ atrBuckets, hourBuckets, spreadBuckets, symbolBuckets, totalTrades: matched.length });
 });
 
+// ── API: GET /api/fingerprints ────────────────────────────────────────────────
+app.get("/api/fingerprints", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const minN   = parseInt(req.query.min || "1");
+
+  const opens  = queryEvents({ type: "trade_open",  date, limit: 5000 });
+  const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
+
+  // Match each open to its close
+  const matched = [];
+  for (const o of opens) {
+    const fp = o.data.fingerprint;
+    if (!fp) continue;
+    const close = closes.find(c => c.symbol === o.symbol && c.ts >= o.ts);
+    if (!close) continue; // still open
+
+    matched.push({
+      fingerprint: fp,
+      fpDetail:    o.data.fp || null,
+      symbol:      o.symbol,
+      side:        o.data.side,
+      won:         (close.data.profitPips || 0) > 0,
+      profitPips:  close.data.profitPips || 0,
+    });
+  }
+
+  // Group by fingerprint
+  const groups = {};
+  for (const t of matched) {
+    const k = t.fingerprint;
+    if (!groups[k]) groups[k] = { fingerprint: k, fpDetail: t.fpDetail, wins: 0, total: 0, totalPips: 0 };
+    groups[k].total++;
+    groups[k].totalPips += t.profitPips;
+    if (t.won) groups[k].wins++;
+  }
+
+  const list = Object.values(groups)
+    .filter(g => g.total >= minN)
+    .map(g => ({
+      fingerprint: g.fingerprint,
+      fpDetail:    g.fpDetail,
+      wins:        g.wins,
+      losses:      g.total - g.wins,
+      total:       g.total,
+      winRate:     parseFloat(((g.wins / g.total) * 100).toFixed(1)),
+      avgPips:     parseFloat((g.totalPips / g.total).toFixed(2)),
+    }));
+
+  const byWinRate  = (a, b) => b.winRate - a.winRate || b.total - a.total;
+  const top20    = [...list].sort(byWinRate).slice(0, 20);
+  const bottom20 = [...list].sort((a, b) => -byWinRate(a, b)).slice(0, 20);
+
+  res.json({ top20, bottom20, totalTrades: matched.length, uniquePatterns: list.length });
+});
+
 // ── API: GET /api/regime ──────────────────────────────────────────────────────
 app.get("/api/regime", (req, res) => {
   const rows = queryEvents({
