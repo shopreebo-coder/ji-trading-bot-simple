@@ -42,6 +42,8 @@ const stats = {
   wins: 0,
   losses: 0,
   totalTrades: 0,
+  totalPeakPips: 0,
+  totalDurationMin: 0,
 };
 
 const tradePeak = {};
@@ -368,6 +370,8 @@ async function manageTrades() {
         }
 
         stats.totalTrades++;
+        stats.totalPeakPips += peak;
+        stats.totalDurationMin += minutesOpen;
 
         await closeTrade(trade.id);
 
@@ -441,12 +445,14 @@ async function manageTrades() {
       // EARLY EXIT
       if (pips <= -4) {
         console.log(
-          `=== TRADE CLOSED ===\nReason: EARLY EXIT\nResult: ${pips.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+          `=== TRADE CLOSED ===\nReason: EARLY EXIT\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
         );
 
         await closeTrade(trade.id);
         stats.losses++;
         stats.totalTrades++;
+        stats.totalPeakPips += peak;
+        stats.totalDurationMin += minutesOpen;
         cooldownMap[symbol] = Date.now();
 
         continue;
@@ -455,10 +461,20 @@ async function manageTrades() {
       // MAX TIME EXIT
       if (minutesOpen >= 10 && pips < 2) {
         console.log(
-          `=== TRADE CLOSED ===\nReason: TIME EXIT\nResult: ${pips.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+          `=== TRADE CLOSED ===\nReason: TIME EXIT\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
         );
 
         await closeTrade(trade.id);
+
+        stats.totalTrades++;
+        stats.totalPeakPips += peak;
+        stats.totalDurationMin += minutesOpen;
+
+        if (pips > 0) {
+          stats.wins++;
+        } else {
+          stats.losses++;
+        }
 
         cooldownMap[symbol] = Date.now();
       }
@@ -701,6 +717,8 @@ async function runBot() {
         stats.wins = 0;
         stats.losses = 0;
         stats.totalTrades = 0;
+        stats.totalPeakPips = 0;
+        stats.totalDurationMin = 0;
       }
 
       // DAILY LIMIT
@@ -719,6 +737,20 @@ async function runBot() {
             : 0;
 
         console.log(`Winrate: ${winRate}%`);
+
+        const avgPeak =
+          stats.totalTrades > 0
+            ? (stats.totalPeakPips / stats.totalTrades).toFixed(1)
+            : 0;
+
+        const avgDuration =
+          stats.totalTrades > 0
+            ? (stats.totalDurationMin / stats.totalTrades).toFixed(1)
+            : 0;
+
+        console.log(`Avg peak profit: ${avgPeak} pips`);
+
+        console.log(`Avg trade duration: ${avgDuration} min`);
 
         console.log("MAX DAILY TRADES REACHED");
 
