@@ -47,6 +47,7 @@ const stats = {
 };
 
 const tradePeak = {};
+const tradeBreakEven = {};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -343,24 +344,28 @@ async function manageTrades() {
           ? (current - openPrice) / pipMult
           : (openPrice - current) / pipMult;
 
-      console.log(`${symbol} -> ${pips.toFixed(1)} pips`);
+      console.log(`${symbol} -> ${pips.toFixed(2)} pips`);
 
       // DURATION — calculated once, used by all exit logs
       const openTime = new Date(trade.openTime).getTime();
       const now = Date.now();
       const minutesOpen = (now - openTime) / 1000 / 60;
 
+      const breakEvenActive = !!tradeBreakEven[trade.id];
+
       // PEAK PROFIT TRACKER
       if (!tradePeak[trade.id] || pips > tradePeak[trade.id]) {
         tradePeak[trade.id] = pips;
+        console.log(`${symbol} PEAK -> ${pips.toFixed(2)}`);
       }
 
       const peak = tradePeak[trade.id];
 
-      // MOMENTUM EXIT — softened: normal pullbacks no longer trigger early close
-      if (peak >= 8 && peak - pips >= 3) {
+      // PROFIT PROTECTION — close if peak >= 3 and profit drops 1 pip below peak
+      if (peak >= 3 && pips < peak - 1) {
+        const reason = "PROFIT PROTECTION";
         console.log(
-          `=== TRADE CLOSED ===\nReason: MOMENTUM LOST\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
         if (pips > 0) {
@@ -376,16 +381,46 @@ async function manageTrades() {
         await closeTrade(trade.id);
 
         delete tradePeak[trade.id];
+        delete tradeBreakEven[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
         continue;
       }
 
-      // BREAK EVEN — delayed to pips >= 8 so trades have room to breathe
-      if (pips >= 8) {
+      // MOMENTUM EXIT — kept as secondary safety
+      if (peak >= 8 && peak - pips >= 3) {
+        const reason = "MOMENTUM LOST";
+        console.log(
+          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
+        );
+
+        if (pips > 0) {
+          stats.wins++;
+        } else {
+          stats.losses++;
+        }
+
+        stats.totalTrades++;
+        stats.totalPeakPips += peak;
+        stats.totalDurationMin += minutesOpen;
+
+        await closeTrade(trade.id);
+
+        delete tradePeak[trade.id];
+        delete tradeBreakEven[trade.id];
+
+        cooldownMap[symbol] = Date.now();
+
+        continue;
+      }
+
+      // BREAK EVEN — triggers at +2 pips, moves SL to +0.2 pip above entry
+      if (pips >= 2) {
         const breakEven =
-          side === "buy" ? openPrice + 2 * pipMult : openPrice - 2 * pipMult;
+          side === "buy"
+            ? openPrice + 0.2 * pipMult
+            : openPrice - 0.2 * pipMult;
 
         const currentSL = parseFloat(trade.stopLossOrder?.price || 0);
 
@@ -407,7 +442,8 @@ async function manageTrades() {
             { headers },
           );
 
-          console.log(`BREAK EVEN -> ${symbol}`);
+          tradeBreakEven[trade.id] = true;
+          console.log(`${symbol} BREAK EVEN ON`);
         }
       }
 
@@ -444,8 +480,9 @@ async function manageTrades() {
 
       // EARLY EXIT
       if (pips <= -4) {
+        const reason = "EARLY EXIT";
         console.log(
-          `=== TRADE CLOSED ===\nReason: EARLY EXIT\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
         await closeTrade(trade.id);
@@ -453,6 +490,10 @@ async function manageTrades() {
         stats.totalTrades++;
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
+
+        delete tradePeak[trade.id];
+        delete tradeBreakEven[trade.id];
+
         cooldownMap[symbol] = Date.now();
 
         continue;
@@ -460,8 +501,9 @@ async function manageTrades() {
 
       // MAX TIME EXIT
       if (minutesOpen >= 10 && pips < 2) {
+        const reason = "TIME EXIT";
         console.log(
-          `=== TRADE CLOSED ===\nReason: TIME EXIT\nResult: ${pips.toFixed(1)} pips\nPeak: ${peak.toFixed(1)} pips\nDuration: ${minutesOpen.toFixed(1)} min`,
+          `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
         await closeTrade(trade.id);
@@ -475,6 +517,9 @@ async function manageTrades() {
         } else {
           stats.losses++;
         }
+
+        delete tradePeak[trade.id];
+        delete tradeBreakEven[trade.id];
 
         cooldownMap[symbol] = Date.now();
       }
