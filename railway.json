@@ -1,3 +1,4 @@
 {
-  "installCommand":"CI=false pnpm install --no-frozen-lockfile"
+  "installCommand": "CI=false pnpm install --no-frozen-lockfile",
+  "startCommand": "node ./artifacts/api-server/dist/index.mjs"
 }
