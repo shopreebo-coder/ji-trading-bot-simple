@@ -1,4 +1,9 @@
 {
-  "installCommand":"CI=false pnpm install --no-frozen-lockfile",
-  "startCommand":"cd artifacts/api-server && PORT=$PORT node --enable-source-maps ./dist/index.mjs"
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "installCommand": "CI=false pnpm install --no-frozen-lockfile"
+  },
+  "deploy": {
+    "startCommand": "cd artifacts/api-server && PORT=$PORT node --enable-source-maps ./dist/index.mjs"
+  }
 }
