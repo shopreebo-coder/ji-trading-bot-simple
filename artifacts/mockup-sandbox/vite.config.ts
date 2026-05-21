@@ -15,12 +15,10 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 const basePath = process.env.BASE_PATH;
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
+const safeBasePath = basePath || "/";
 
 export default defineConfig({
-  base: basePath,
+  base: safeBasePath,
   plugins: [
     mockupPreviewPlugin(),
     react(),
