@@ -139,7 +139,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE"];
+const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -624,6 +624,195 @@ function WzorceTab({ fingerprints }){
   );
 }
 
+// ── EXCURSION tab ──────────────────────────────────────────────────────────
+// Dual-dataset bar chart for WIN vs LOSS comparison
+function CompareBarChart({ labels, winsData, lossesData }){
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(()=>{
+    if(!ref.current) return;
+    if(chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          { label:"WIN",  data: winsData,   backgroundColor:"rgba(63,185,80,.75)",  borderRadius:3 },
+          { label:"LOSS", data: lossesData, backgroundColor:"rgba(248,81,73,.65)", borderRadius:3 },
+        ],
+      },
+      options: {
+        responsive:true,
+        plugins:{ legend:{ labels:{ color:"#8b949e", boxWidth:12 } } },
+        scales:{
+          x:{ ticks:{color:"#8b949e"}, grid:{color:"#21262d"} },
+          y:{ ticks:{color:"#8b949e"}, grid:{color:"#21262d"} },
+        },
+      },
+    });
+    return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
+  },[labels,winsData,lossesData]);
+  return <canvas ref={ref}/>;
+}
+
+function ExcursionTab({ exc }){
+  const e    = exc || {};
+  const fmt  = v => v != null ? parseFloat(v).toFixed(2) : "—";
+  const fmtM = v => v != null ? parseFloat(v).toFixed(1)+" m" : "—";
+
+  const allMFE   = e.allMFE   || {};
+  const allMAE   = e.allMAE   || {};
+  const winMFE   = e.winMFE   || {};
+  const lossMFE  = e.lossMFE  || {};
+  const winMAE   = e.winMAE   || {};
+  const lossMAE  = e.lossMAE  || {};
+  const timing   = e.timing   || {};
+  const mfeHist  = e.mfeHist  || [];
+  const maeHist  = e.maeHist  || [];
+
+  const noExcData = !mfeHist.length && !maeHist.length;
+
+  // Comparison chart data
+  const cmpLabels = ["MFE avg","MFE max","MAE avg","MAE min"];
+  const cmpWins   = [winMFE.avg, winMFE.max, winMAE.avg, winMAE.min];
+  const cmpLosses = [lossMFE.avg, lossMFE.max, lossMAE.avg, lossMAE.min];
+
+  return (
+    <div className="page">
+
+      {/* ── diagnostic banner if no excursion data yet ── */}
+      {noExcData && (
+        <div style={{background:"#1c2128",border:"1px solid #d29922",borderRadius:8,padding:"14px 18px",marginBottom:20,fontSize:12,color:"#d29922"}}>
+          <strong>Brak danych MFE/MAE</strong> — te pola pojawią się dopiero po zamknięciu pierwszego trade'a przez nową wersję bota.
+          Historyczne eventy sprzed aktualizacji nie zawierają pól <code>mfe</code> / <code>mae</code>.
+        </div>
+      )}
+
+      {/* ── summary cards ── */}
+      <div className="cards">
+        <div className="card" title="Max Favorable Excursion — max zysk nierozliczony w pipach">
+          <div className="lbl">Avg MFE</div>
+          <div className="val blue">{fmt(allMFE.avg)} p</div>
+        </div>
+        <div className="card" title="Max Adverse Excursion — max nierozliczona strata w pipach">
+          <div className="lbl">Avg MAE</div>
+          <div className="val red">{fmt(allMAE.avg)} p</div>
+        </div>
+        <div className="card" title="MFE / |MAE| — ratio > 1 oznacza że trade 'widział' więcej zysku niż straty">
+          <div className="lbl">MFE/MAE ratio</div>
+          <div className={`val ${e.mfeMAERatio!=null&&e.mfeMAERatio>=1?"green":"red"}`}>
+            {e.mfeMAERatio != null ? e.mfeMAERatio : "—"}
+          </div>
+        </div>
+        <div className="card"><div className="lbl">MFE max</div><div className="val">{fmt(allMFE.max)} p</div></div>
+        <div className="card"><div className="lbl">MAE min</div><div className="val red">{fmt(allMAE.min)} p</div></div>
+        <div className="card" title="Ile minut od otwarcia aż pips > 0 po raz pierwszy">
+          <div className="lbl">Avg → Profit</div>
+          <div className="val">{fmtM(timing.timeToProfit?.avg)}</div>
+        </div>
+        <div className="card" title="Ile minut od otwarcia aż pips < 0 po raz pierwszy">
+          <div className="lbl">Avg → Drawdown</div>
+          <div className="val">{fmtM(timing.timeToDd?.avg)}</div>
+        </div>
+        <div className="card" title="Ile minut od otwarcia do aktywacji break-even SL">
+          <div className="lbl">Avg BE timing</div>
+          <div className="val yellow">{fmtM(timing.breakEven?.avg)}</div>
+        </div>
+      </div>
+
+      {/* ── histograms ── */}
+      <div className="g2">
+        <div className="chart-wrap">
+          <h3>MFE histogram — rozkład max zysku (pipy)</h3>
+          {mfeHist.length
+            ? <BarChart
+                labels={mfeHist.map(b=>b.bucket+"p")}
+                values={mfeHist.map(b=>b.count)}
+                color="rgba(63,185,80,.75)"
+                label="Transakcji"
+              />
+            : <div className="empty">Brak danych</div>
+          }
+        </div>
+        <div className="chart-wrap">
+          <h3>MAE histogram — rozkład max straty (pipy)</h3>
+          {maeHist.length
+            ? <BarChart
+                labels={maeHist.map(b=>b.bucket+"p")}
+                values={maeHist.map(b=>b.count)}
+                color="rgba(248,81,73,.65)"
+                label="Transakcji"
+              />
+            : <div className="empty">Brak danych</div>
+          }
+        </div>
+      </div>
+
+      {/* ── win vs loss comparison ── */}
+      <div className="g2">
+        <div className="chart-wrap">
+          <h3>WIN vs LOSS — porównanie excursion</h3>
+          {(winMFE.avg != null || lossMFE.avg != null)
+            ? <CompareBarChart labels={cmpLabels} winsData={cmpWins} lossesData={cmpLosses}/>
+            : <div className="empty">Brak danych</div>
+          }
+        </div>
+        <div className="panel" style={{marginBottom:0}}>
+          <div className="ph">Timing szczegółowy</div>
+          <div style={{padding:"16px"}}>
+            {[
+              ["Time to Profit avg",  timing.timeToProfit?.avg, "m",  "#3fb950"],
+              ["Time to Profit min",  timing.timeToProfit?.min, "m",  "#3fb950"],
+              ["Time to Profit max",  timing.timeToProfit?.max, "m",  "#3fb950"],
+              ["Time to Drawdown avg",timing.timeToDd?.avg,     "m",  "#f85149"],
+              ["Time to Drawdown min",timing.timeToDd?.min,     "m",  "#f85149"],
+              ["Break-even avg",      timing.breakEven?.avg,    "m",  "#d29922"],
+              ["Break-even min",      timing.breakEven?.min,    "m",  "#d29922"],
+              ["Break-even max",      timing.breakEven?.max,    "m",  "#d29922"],
+            ].map(([lbl, val, unit, col])=>(
+              <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #21262d",fontSize:12}}>
+                <span style={{color:"#8b949e"}}>{lbl}</span>
+                <span style={{fontWeight:700,color:val!=null?col:"#484f58"}}>
+                  {val != null ? parseFloat(val).toFixed(1)+unit : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── WIN vs LOSS breakdown table ── */}
+      <div className="panel">
+        <div className="ph">WIN vs LOSS — excursion breakdown</div>
+        <table>
+          <thead><tr>
+            <th>Metric</th>
+            <th style={{textAlign:"right",color:"#3fb950"}}>WIN ({e.wins||0})</th>
+            <th style={{textAlign:"right",color:"#f85149"}}>LOSS ({e.losses||0})</th>
+            <th style={{textAlign:"right"}}>ALL ({e.totalTrades||0})</th>
+          </tr></thead>
+          <tbody>
+            {[
+              ["MFE avg (p)", winMFE.avg, lossMFE.avg, allMFE.avg],
+              ["MFE max (p)", winMFE.max, lossMFE.max, allMFE.max],
+              ["MAE avg (p)", winMAE.avg, lossMAE.avg, allMAE.avg],
+              ["MAE min (p)", winMAE.min, lossMAE.min, allMAE.min],
+            ].map(([label, wv, lv, av])=>(
+              <tr key={label}>
+                <td style={{color:"#8b949e"}}>{label}</td>
+                <td style={{textAlign:"right",color:"#3fb950"}}>{wv!=null?parseFloat(wv).toFixed(2):"—"}</td>
+                <td style={{textAlign:"right",color:"#f85149"}}>{lv!=null?parseFloat(lv).toFixed(2):"—"}</td>
+                <td style={{textAlign:"right"}}>{av!=null?parseFloat(av).toFixed(2):"—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  );
+}
+
 // ── Export button ──────────────────────────────────────────────────────────
 function ExportBar(){
   const today = new Date().toISOString().slice(0,10);
@@ -650,6 +839,7 @@ function App(){
   const [lastTs, setLastTs]   = useState(null);
   const [winrate, setWinrate]           = useState({});
   const [fingerprints, setFingerprints] = useState({});
+  const [excursion, setExcursion]       = useState({});
 
   // fetch data
   const refresh = useCallback(async()=>{
@@ -662,16 +852,18 @@ function App(){
       ]);
       setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
 
-      const [sells, buys, wr, fps] = await Promise.all([
+      const [sells, buys, wr, fps, exc] = await Promise.all([
         api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]),
         api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]),
         api("/api/winrate-analysis").catch(()=>({})),
         api("/api/fingerprints").catch(()=>({})),
+        api("/api/excursion").catch(()=>({})),
       ]);
       const all = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
       setChecks(all);
       setWinrate(wr);
       setFingerprints(fps);
+      setExcursion(exc);
 
       setLastTs(new Date().toISOString());
     } catch(e){ console.error("refresh error",e); }
@@ -744,11 +936,12 @@ function App(){
       <Header botStatus={live.botStatus} ts={lastTs}/>
       <Tabs active={tab} set={setTab}/>
       <ExportBar/>
-      {tab==="LIVE"    && <LiveTab    live={live} today={today} logLines={logLines}/>}
-      {tab==="ANALIZA" && <AnalyzaTab stats={stats} today={today} symbols={symbols}/>}
-      {tab==="WYKRESY" && <WykreśyTab symbols={symbols} trades={trades} winrate={winrate}/>}
-      {tab==="DECYZJE" && <DecyzjeTab checks={checks}/>}
-      {tab==="WZORCE"  && <WzorceTab  fingerprints={fingerprints}/>}
+      {tab==="LIVE"      && <LiveTab      live={live} today={today} logLines={logLines}/>}
+      {tab==="ANALIZA"   && <AnalyzaTab   stats={stats} today={today} symbols={symbols}/>}
+      {tab==="WYKRESY"   && <WykreśyTab   symbols={symbols} trades={trades} winrate={winrate}/>}
+      {tab==="DECYZJE"   && <DecyzjeTab   checks={checks}/>}
+      {tab==="WZORCE"    && <WzorceTab    fingerprints={fingerprints}/>}
+      {tab==="EXCURSION" && <ExcursionTab exc={excursion}/>}
     </>
   );
 }

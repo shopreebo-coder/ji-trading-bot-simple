@@ -54,8 +54,14 @@ const stats = {
   totalDurationMin: 0,
 };
 
-const tradePeak = {};
+const tradePeak     = {};
 const tradeBreakEven = {};
+
+// MAE / MFE telemetry — TELEMETRY ONLY, no strategy logic
+const tradeMAE          = {};  // max adverse excursion (most negative pips seen)
+const tradeTimeToProfit = {};  // minutes from open until pips first went > 0
+const tradeTimeToDd     = {};  // minutes from open until pips first went < 0
+const tradeBeTime       = {};  // minutes from open until break-even SL was moved
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -368,6 +374,17 @@ async function manageTrades() {
 
       const peak = tradePeak[trade.id];
 
+      // MAE / MFE TRACKERS — TELEMETRY ONLY
+      if (tradeMAE[trade.id] === undefined || pips < tradeMAE[trade.id]) {
+        tradeMAE[trade.id] = pips;
+      }
+      if (tradeTimeToProfit[trade.id] === undefined && pips > 0) {
+        tradeTimeToProfit[trade.id] = parseFloat(minutesOpen.toFixed(2));
+      }
+      if (tradeTimeToDd[trade.id] === undefined && pips < 0) {
+        tradeTimeToDd[trade.id] = parseFloat(minutesOpen.toFixed(2));
+      }
+
       // PROFIT PROTECTION
       if (peak >= 4 && pips < peak - 1.5) {
         const reason = "PROFIT PROTECTION";
@@ -382,12 +399,23 @@ async function manageTrades() {
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason,
+          outcome:      pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN",
+          mfe:          parseFloat(peak.toFixed(2)),
+          mae:          parseFloat((tradeMAE[trade.id] ?? 0).toFixed(2)),
+          timeToProfit: tradeTimeToProfit[trade.id] ?? null,
+          timeToDd:     tradeTimeToDd[trade.id]     ?? null,
+          beTime:       tradeBeTime[trade.id]        ?? null,
+        });
 
         await closeTrade(trade.id);
 
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
+        delete tradeMAE[trade.id];
+        delete tradeTimeToProfit[trade.id];
+        delete tradeTimeToDd[trade.id];
+        delete tradeBeTime[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -411,12 +439,23 @@ async function manageTrades() {
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason,
+          outcome:      pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN",
+          mfe:          parseFloat(peak.toFixed(2)),
+          mae:          parseFloat((tradeMAE[trade.id] ?? 0).toFixed(2)),
+          timeToProfit: tradeTimeToProfit[trade.id] ?? null,
+          timeToDd:     tradeTimeToDd[trade.id]     ?? null,
+          beTime:       tradeBeTime[trade.id]        ?? null,
+        });
 
         await closeTrade(trade.id);
 
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
+        delete tradeMAE[trade.id];
+        delete tradeTimeToProfit[trade.id];
+        delete tradeTimeToDd[trade.id];
+        delete tradeBeTime[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -450,6 +489,9 @@ async function manageTrades() {
             { headers },
           );
 
+          if (!tradeBeTime[trade.id]) {
+            tradeBeTime[trade.id] = parseFloat(minutesOpen.toFixed(2));
+          }
           tradeBreakEven[trade.id] = true;
           console.log(`${symbol} BREAK EVEN ON`);
           logEvent({ type: "break_even", symbol, pips });
@@ -494,7 +536,14 @@ async function manageTrades() {
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason,
+          outcome:      pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN",
+          mfe:          parseFloat(peak.toFixed(2)),
+          mae:          parseFloat((tradeMAE[trade.id] ?? 0).toFixed(2)),
+          timeToProfit: tradeTimeToProfit[trade.id] ?? null,
+          timeToDd:     tradeTimeToDd[trade.id]     ?? null,
+          beTime:       tradeBeTime[trade.id]        ?? null,
+        });
 
         await closeTrade(trade.id);
         stats.losses++;
@@ -504,6 +553,10 @@ async function manageTrades() {
 
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
+        delete tradeMAE[trade.id];
+        delete tradeTimeToProfit[trade.id];
+        delete tradeTimeToDd[trade.id];
+        delete tradeBeTime[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -517,7 +570,14 @@ async function manageTrades() {
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason,
+          outcome:      pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN",
+          mfe:          parseFloat(peak.toFixed(2)),
+          mae:          parseFloat((tradeMAE[trade.id] ?? 0).toFixed(2)),
+          timeToProfit: tradeTimeToProfit[trade.id] ?? null,
+          timeToDd:     tradeTimeToDd[trade.id]     ?? null,
+          beTime:       tradeBeTime[trade.id]        ?? null,
+        });
 
         await closeTrade(trade.id);
 
@@ -533,6 +593,10 @@ async function manageTrades() {
 
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
+        delete tradeMAE[trade.id];
+        delete tradeTimeToProfit[trade.id];
+        delete tradeTimeToDd[trade.id];
+        delete tradeBeTime[trade.id];
 
         cooldownMap[symbol] = Date.now();
       }

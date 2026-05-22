@@ -555,6 +555,85 @@ app.get("/api/fingerprints", (req, res) => {
   res.json({ top20, bottom20, totalTrades: matched.length, uniquePatterns: list.length });
 });
 
+// ── API: GET /api/excursion ───────────────────────────────────────────────────
+// Returns MAE/MFE analytics for REAL executed trades only (WIN + LOSS + BREAKEVEN).
+// Cancelled/rejected signals are never in trade_close events.
+app.get("/api/excursion", (req, res) => {
+  const date = req.query.date ? parseDate(req.query.date) : undefined;
+
+  const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
+  // Only real executed trades — every trade_close is a real execution.
+  // Classify outcome for WIN/LOSS split.
+  const real   = closes.map(c => ({ ...c, oc: classifyOutcome(c.data) }));
+  const wins   = real.filter(r => r.oc === "WIN");
+  const losses = real.filter(r => r.oc === "LOSS");
+
+  function agg(arr, key) {
+    const vals = arr.map(r => r.data[key]).filter(v => v != null && Number.isFinite(v));
+    if (!vals.length) return { avg: null, min: null, max: null, n: 0 };
+    const sum = vals.reduce((a, b) => a + b, 0);
+    return {
+      avg: parseFloat((sum / vals.length).toFixed(2)),
+      min: parseFloat(Math.min(...vals).toFixed(2)),
+      max: parseFloat(Math.max(...vals).toFixed(2)),
+      n:   vals.length,
+    };
+  }
+
+  const allMFE  = agg(real,   "mfe");
+  const allMAE  = agg(real,   "mae");
+  const winMFE  = agg(wins,   "mfe");
+  const lossMFE = agg(losses, "mfe");
+  const winMAE  = agg(wins,   "mae");
+  const lossMAE = agg(losses, "mae");
+
+  const mfeMAERatio = (allMFE.avg != null && allMAE.avg != null && allMAE.avg !== 0)
+    ? parseFloat((allMFE.avg / Math.abs(allMAE.avg)).toFixed(2))
+    : null;
+
+  // Histogram: bucket by 2-pip intervals
+  function hist(arr, key, size = 2) {
+    const map = {};
+    for (const r of arr) {
+      const v = r.data[key];
+      if (v == null || !Number.isFinite(v)) continue;
+      const b = Math.round(v / size) * size;
+      map[b] = (map[b] || 0) + 1;
+    }
+    return Object.entries(map)
+      .map(([k, count]) => ({ bucket: parseFloat(k), count }))
+      .sort((a, b) => a.bucket - b.bucket);
+  }
+
+  const mfeHist = hist(real, "mfe");
+  const maeHist = hist(real, "mae");
+
+  // Win vs Loss side-by-side excursion comparison
+  const comparison = [
+    { label: "MFE avg",  win: winMFE.avg,  loss: lossMFE.avg  },
+    { label: "MFE max",  win: winMFE.max,  loss: lossMFE.max  },
+    { label: "MAE avg",  win: winMAE.avg,  loss: lossMAE.avg  },
+    { label: "MAE min",  win: winMAE.min,  loss: lossMAE.min  },
+  ];
+
+  res.json({
+    totalTrades: real.length,
+    wins:        wins.length,
+    losses:      losses.length,
+    mfeMAERatio,
+    allMFE, allMAE,
+    winMFE, lossMFE,
+    winMAE, lossMAE,
+    mfeHist, maeHist,
+    comparison,
+    timing: {
+      timeToProfit: agg(real, "timeToProfit"),
+      timeToDd:     agg(real, "timeToDd"),
+      breakEven:    agg(real, "beTime"),
+    },
+  });
+});
+
 // ── API: GET /api/regime ──────────────────────────────────────────────────────
 app.get("/api/regime", (req, res) => {
   const rows = queryEvents({
