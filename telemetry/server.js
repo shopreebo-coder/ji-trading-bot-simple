@@ -166,6 +166,27 @@ function parseDate(str) {
   return str;
 }
 
+/**
+ * classifyOutcome — TELEMETRY ONLY
+ * Uses stored `outcome` field when present (new events).
+ * Falls back to profitPips computation for historical data without outcome field.
+ *
+ * Rules:
+ *   pips < 0      → LOSS
+ *   0 ≤ pips ≤ 1.0 → BREAKEVEN  (break-even SL, near-zero TIME EXIT, etc.)
+ *   pips > 1.0    → WIN
+ *
+ * Only WIN and LOSS count toward win rate denominator.
+ * BREAKEVEN is reported separately and excluded from W/L ratio.
+ */
+function classifyOutcome(d) {
+  if (d.outcome && ["WIN", "LOSS", "BREAKEVEN"].includes(d.outcome)) return d.outcome;
+  const p = d.profitPips || 0;
+  if (p < 0)    return "LOSS";
+  if (p <= 1.0) return "BREAKEVEN";
+  return "WIN";
+}
+
 function queryEvents({ type, symbol, date, limit = 500 } = {}) {
   let sql    = "SELECT id,ts,bot_id,type,symbol,data FROM events WHERE 1=1";
   const args = [];
@@ -218,15 +239,19 @@ app.get("/api/today", (req, res) => {
   const date   = parseDate("today");
   const closes = queryEvents({ type: "trade_close", date, limit: 1000 });
 
-  let wins = 0, losses = 0, totalPeak = 0, totalDur = 0;
+  let wins = 0, losses = 0, breakevens = 0, totalPeak = 0, totalDur = 0;
   for (const c of closes) {
-    const d = c.data;
-    if ((d.profitPips || 0) > 0) wins++; else losses++;
+    const d  = c.data;
+    const oc = classifyOutcome(d);
+    if (oc === "WIN")       wins++;
+    else if (oc === "LOSS") losses++;
+    else                    breakevens++;
     totalPeak += d.peak || 0;
     totalDur  += d.duration || 0;
   }
 
-  const n   = closes.length;
+  const n            = closes.length;
+  const decisive     = wins + losses; // excludes BREAKEVEN
   const blocks = queryEvents({ date, limit: 1000 })
     .filter(e => ["spread_block","cooldown_block","correlation_block","pullback_block","margin_block"].includes(e.type));
 
@@ -238,7 +263,8 @@ app.get("/api/today", (req, res) => {
     trades:        n,
     wins,
     losses,
-    winRate:       n ? ((wins / n) * 100).toFixed(1) : "0.0",
+    breakevens,
+    winRate:       decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
     avgPeak:       n ? (totalPeak / n).toFixed(2) : "0.00",
     avgDuration:   n ? (totalDur  / n).toFixed(1) : "0.0",
     blockCounts,
@@ -252,14 +278,18 @@ app.get("/api/stats", (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
 
   const closes = queryEvents({ type: "trade_close", symbol, date, limit: 5000 });
-  let wins = 0, losses = 0, totalPeak = 0, totalDur = 0;
+  let wins = 0, losses = 0, breakevens = 0, totalPeak = 0, totalDur = 0;
   for (const c of closes) {
-    const d = c.data;
-    if ((d.profitPips || 0) > 0) wins++; else losses++;
+    const d  = c.data;
+    const oc = classifyOutcome(d);
+    if (oc === "WIN")       wins++;
+    else if (oc === "LOSS") losses++;
+    else                    breakevens++;
     totalPeak += d.peak || 0;
     totalDur  += d.duration || 0;
   }
-  const n = closes.length;
+  const n        = closes.length;
+  const decisive = wins + losses;
 
   const checks = queryEvents({ type: "buy_check",  symbol, date, limit: 5000 })
     .concat(queryEvents({ type: "sell_check", symbol, date, limit: 5000 }));
@@ -274,7 +304,8 @@ app.get("/api/stats", (req, res) => {
     trades:       n,
     wins,
     losses,
-    winRate:      n ? ((wins / n) * 100).toFixed(1) : "0.0",
+    breakevens,
+    winRate:      decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
     avgPeak:      n ? (totalPeak / n).toFixed(2) : "0.00",
     avgDuration:  n ? (totalDur  / n).toFixed(1) : "0.0",
     checksTotal:  checks.length,
@@ -292,20 +323,26 @@ app.get("/api/symbols", (req, res) => {
   const map = {};
   for (const c of closes) {
     const sym = c.symbol;
-    if (!map[sym]) map[sym] = { symbol: sym, trades: 0, wins: 0, losses: 0, totalPeak: 0, totalProfitPips: 0 };
-    const d = c.data;
+    if (!map[sym]) map[sym] = { symbol: sym, trades: 0, wins: 0, losses: 0, breakevens: 0, totalPeak: 0, totalProfitPips: 0 };
+    const d  = c.data;
+    const oc = classifyOutcome(d);
     map[sym].trades++;
-    if ((d.profitPips || 0) > 0) map[sym].wins++; else map[sym].losses++;
-    map[sym].totalPeak         += d.peak || 0;
-    map[sym].totalProfitPips   += d.profitPips || 0;
+    if (oc === "WIN")       map[sym].wins++;
+    else if (oc === "LOSS") map[sym].losses++;
+    else                    map[sym].breakevens++;
+    map[sym].totalPeak       += d.peak || 0;
+    map[sym].totalProfitPips += d.profitPips || 0;
   }
 
-  const result = Object.values(map).map(s => ({
-    ...s,
-    winRate:    s.trades ? ((s.wins / s.trades) * 100).toFixed(1) : "0.0",
-    avgPeak:    s.trades ? (s.totalPeak / s.trades).toFixed(2) : "0.00",
-    avgProfit:  s.trades ? (s.totalProfitPips / s.trades).toFixed(2) : "0.00",
-  }));
+  const result = Object.values(map).map(s => {
+    const decisive = s.wins + s.losses;
+    return {
+      ...s,
+      winRate:   decisive ? ((s.wins / decisive) * 100).toFixed(1) : "0.0",
+      avgPeak:   s.trades ? (s.totalPeak / s.trades).toFixed(2) : "0.00",
+      avgProfit: s.trades ? (s.totalProfitPips / s.trades).toFixed(2) : "0.00",
+    };
+  });
 
   res.json(result);
 });
@@ -397,7 +434,7 @@ app.get("/api/winrate-analysis", (req, res) => {
     const close  = closes.find(c => c.symbol === sym && c.ts >= openTs);
     if (!close) continue; // still open or unmatched
 
-    const won   = (close.data.profitPips || 0) > 0;
+    const won   = classifyOutcome(close.data) === "WIN";
     const pool  = regBySymbol[sym] || [];
     let best = null, bestDiff = Infinity;
     for (const r of pool) {
@@ -484,7 +521,7 @@ app.get("/api/fingerprints", (req, res) => {
       fpDetail:    o.data.fp || null,
       symbol:      o.symbol,
       side:        o.data.side,
-      won:         (close.data.profitPips || 0) > 0,
+      won:         classifyOutcome(close.data) === "WIN",
       profitPips:  close.data.profitPips || 0,
     });
   }

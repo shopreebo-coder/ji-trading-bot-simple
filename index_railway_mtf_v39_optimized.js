@@ -382,7 +382,7 @@ async function manageTrades() {
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
 
         await closeTrade(trade.id);
 
@@ -411,7 +411,7 @@ async function manageTrades() {
         stats.totalPeakPips += peak;
         stats.totalDurationMin += minutesOpen;
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
 
         await closeTrade(trade.id);
 
@@ -494,7 +494,7 @@ async function manageTrades() {
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
 
         await closeTrade(trade.id);
         stats.losses++;
@@ -517,7 +517,7 @@ async function manageTrades() {
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
 
-        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason });
+        logEvent({ type: "trade_close", symbol, profitPips: pips, peak, duration: minutesOpen, reason, outcome: pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN" });
 
         await closeTrade(trade.id);
 

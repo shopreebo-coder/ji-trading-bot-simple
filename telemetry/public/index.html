@@ -169,7 +169,9 @@ function LiveTab({ live, today, logLines }){
           <div className="val green">{today.wins||0}</div></div>
         <div className="card"><div className="lbl">Today Losses</div>
           <div className="val red">{today.losses||0}</div></div>
-        <div className="card"><div className="lbl">Win Rate</div>
+        <div className="card"><div className="lbl">Breakeven</div>
+          <div className="val yellow">{today.breakevens||0}</div></div>
+        <div className="card" title="WIN / (WIN + LOSS) — breakeveny nie liczą się do mianownika"><div className="lbl">Win Rate W/(W+L)</div>
           <div className="val">{today.winRate||"0.0"}%</div></div>
         <div className="card"><div className="lbl">Avg Peak</div>
           <div className="val">{today.avgPeak||"0.00"} p</div></div>
@@ -243,7 +245,8 @@ function AnalyzaTab({ stats, today, symbols }){
         <div className="card"><div className="lbl">Total Trades</div><div className="val blue">{stats.trades||0}</div></div>
         <div className="card"><div className="lbl">Wins</div><div className="val green">{stats.wins||0}</div></div>
         <div className="card"><div className="lbl">Losses</div><div className="val red">{stats.losses||0}</div></div>
-        <div className="card"><div className="lbl">Win Rate</div><div className="val">{stats.winRate||"0.0"}%</div></div>
+        <div className="card"><div className="lbl">Breakeven</div><div className="val yellow">{stats.breakevens||0}</div></div>
+        <div className="card" title="WIN / (WIN + LOSS) — breakeveny nie liczą się do mianownika"><div className="lbl">Win Rate W/(W+L)</div><div className="val">{stats.winRate||"0.0"}%</div></div>
         <div className="card"><div className="lbl">Avg Peak</div><div className="val">{stats.avgPeak||"0.00"} p</div></div>
         <div className="card"><div className="lbl">Avg Duration</div><div className="val">{stats.avgDuration||"0.0"} m</div></div>
         <div className="card"><div className="lbl">Checks</div><div className="val yellow">{stats.checksTotal||0}</div></div>
