@@ -4,6 +4,8 @@
     "installCommand": "CI=false pnpm install --no-frozen-lockfile"
   },
   "deploy": {
-    "startCommand": "cd artifacts/api-server && PORT=$PORT node --enable-source-maps ./dist/index.mjs"
+    "startCommand": "node telemetry/server.js",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
   }
 }
