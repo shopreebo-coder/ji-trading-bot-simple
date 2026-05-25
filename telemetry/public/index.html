@@ -229,14 +229,17 @@ function LiveTab({ live, today, logLines }){
 }
 
 // ── ANALIZA tab ────────────────────────────────────────────────────────────
-function AnalyzaTab({ stats, today, symbols }){
+function AnalyzaTab({ stats, today, symbols, confirmLag }){
   const totalBlocks = Object.values(today.blockCounts||{}).reduce((a,b)=>a+b,0);
   const blockTypes = [
-    {key:"spread_block",     label:"Spread"},
-    {key:"pullback_block",   label:"Pullback"},
-    {key:"cooldown_block",   label:"Cooldown"},
-    {key:"correlation_block",label:"Correlation"},
-    {key:"margin_block",     label:"Margin"},
+    {key:"spread_block",         label:"Spread"},
+    {key:"pullback_block",       label:"Pullback"},
+    {key:"cooldown_block",       label:"Cooldown"},
+    {key:"correlation_block",    label:"Correlation"},
+    {key:"margin_block",         label:"Margin"},
+    {key:"exhaustion_block",     label:"Exhaustion"},
+    {key:"spread_edge_block",    label:"Spread Edge"},
+    {key:"symbol_disabled_block",label:"Disabled Symbol"},
   ];
 
   return (
@@ -291,6 +294,51 @@ function AnalyzaTab({ stats, today, symbols }){
             )}
           </div>
         </div>
+      </div>
+
+      {/* ── Confirmation Lag Analysis ── */}
+      <div className="panel">
+        <div className="ph">
+          Confirmation Lag — które warunki blokują wejście najczęściej
+          <span style={{fontWeight:400,color:"#484f58"}}>checks: {(confirmLag.totalChecks||0)} · post-entry failures: {(confirmLag.postEntryFailures||0)}</span>
+        </div>
+        {(confirmLag.conditions||[]).length===0
+          ? <div className="empty" style={{padding:20}}>Brak danych — za mało buy/sell check events</div>
+          : (
+            <table>
+              <thead><tr>
+                <th>Warunek</th>
+                <th style={{textAlign:"right"}}>TRUE</th>
+                <th style={{textAlign:"right"}}>FALSE</th>
+                <th style={{textAlign:"right"}}>TRUE %</th>
+                <th style={{textAlign:"right"}}>Ocena</th>
+              </tr></thead>
+              <tbody>
+                {(confirmLag.conditions||[]).map(c=>{
+                  const rate = c.trueRate ?? 0;
+                  const col  = rate < 30 ? "#f85149" : rate < 60 ? "#d29922" : "#3fb950";
+                  const tag  = rate < 30 ? "⚠ BLOCKER" : rate < 60 ? "~ partial" : "✓ ok";
+                  return (
+                    <tr key={c.condition}>
+                      <td style={{fontWeight:600}}>{c.condition}</td>
+                      <td style={{textAlign:"right",color:"#3fb950"}}>{c.trueN}</td>
+                      <td style={{textAlign:"right",color:"#f85149"}}>{c.falseN}</td>
+                      <td style={{textAlign:"right"}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8}}>
+                          <div style={{width:80,background:"#21262d",borderRadius:3,height:8,overflow:"hidden"}}>
+                            <div style={{width:rate+"%",height:"100%",background:col,borderRadius:3}}/>
+                          </div>
+                          <span style={{color:col,fontWeight:700,minWidth:40}}>{rate}%</span>
+                        </div>
+                      </td>
+                      <td style={{textAlign:"right",color:col,fontSize:11}}>{tag}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
+        }
       </div>
     </div>
   );
@@ -840,6 +888,7 @@ function App(){
   const [winrate, setWinrate]           = useState({});
   const [fingerprints, setFingerprints] = useState({});
   const [excursion, setExcursion]       = useState({});
+  const [confirmLag, setConfirmLag]     = useState({});
 
   // fetch data
   const refresh = useCallback(async()=>{
@@ -852,18 +901,20 @@ function App(){
       ]);
       setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
 
-      const [sells, buys, wr, fps, exc] = await Promise.all([
+      const [sells, buys, wr, fps, exc, lag] = await Promise.all([
         api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]),
         api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]),
         api("/api/winrate-analysis").catch(()=>({})),
         api("/api/fingerprints").catch(()=>({})),
         api("/api/excursion").catch(()=>({})),
+        api("/api/confirmation-lag").catch(()=>({})),
       ]);
       const all = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
       setChecks(all);
       setWinrate(wr);
       setFingerprints(fps);
       setExcursion(exc);
+      setConfirmLag(lag);
 
       setLastTs(new Date().toISOString());
     } catch(e){ console.error("refresh error",e); }
@@ -937,7 +988,7 @@ function App(){
       <Tabs active={tab} set={setTab}/>
       <ExportBar/>
       {tab==="LIVE"      && <LiveTab      live={live} today={today} logLines={logLines}/>}
-      {tab==="ANALIZA"   && <AnalyzaTab   stats={stats} today={today} symbols={symbols}/>}
+      {tab==="ANALIZA"   && <AnalyzaTab   stats={stats} today={today} symbols={symbols} confirmLag={confirmLag}/>}
       {tab==="WYKRESY"   && <WykreśyTab   symbols={symbols} trades={trades} winrate={winrate}/>}
       {tab==="DECYZJE"   && <DecyzjeTab   checks={checks}/>}
       {tab==="WZORCE"    && <WzorceTab    fingerprints={fingerprints}/>}

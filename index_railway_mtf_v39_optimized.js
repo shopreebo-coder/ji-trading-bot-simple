@@ -19,7 +19,10 @@ const BASE_URL =
     ? "https://api-fxtrade.oanda.com"
     : "https://api-fxpractice.oanda.com";
 
-const SYMBOLS = process.env.SYMBOLS.split(",");
+const SYMBOLS          = process.env.SYMBOLS.split(",");
+// DISABLED_SYMBOLS — set in Railway env to pause weak pairs without redeploy
+// e.g. DISABLED_SYMBOLS=AUD_USD,NZD_USD
+const DISABLED_SYMBOLS = (process.env.DISABLED_SYMBOLS || "").split(",").filter(Boolean);
 
 const MAIN_TIMEFRAME = process.env.TIMEFRAME || "M5";
 
@@ -61,7 +64,8 @@ const tradeBreakEven = {};
 const tradeMAE          = {};  // max adverse excursion (most negative pips seen)
 const tradeTimeToProfit = {};  // minutes from open until pips first went > 0
 const tradeTimeToDd     = {};  // minutes from open until pips first went < 0
-const tradeBeTime       = {};  // minutes from open until break-even SL was moved
+const tradeBeTime           = {};  // minutes from open until break-even SL was moved
+const tradePostEntryLogged  = {};  // flag: post_entry_failure telemetry fired for this trade
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -385,6 +389,19 @@ async function manageTrades() {
         tradeTimeToDd[trade.id] = parseFloat(minutesOpen.toFixed(2));
       }
 
+      // POST-ENTRY FAILURE DETECTION — TELEMETRY ONLY
+      // Fires once if trade drops >1.5 pips adverse within first 3 minutes.
+      // Indicates bad entry timing or entry into exhausted move.
+      if (minutesOpen < 3 && pips < -1.5 && !tradePostEntryLogged[trade.id]) {
+        tradePostEntryLogged[trade.id] = true;
+        logEvent({ type: "post_entry_failure", symbol,
+          pips:        parseFloat(pips.toFixed(2)),
+          minutesOpen: parseFloat(minutesOpen.toFixed(2)),
+          mae:         parseFloat((tradeMAE[trade.id] ?? pips).toFixed(2)),
+        });
+        console.log(`POST-ENTRY FAILURE -> ${symbol} pips=${pips.toFixed(2)} at ${minutesOpen.toFixed(1)}m`);
+      }
+
       // PROFIT PROTECTION
       if (peak >= 4 && pips < peak - 1.5) {
         const reason = "PROFIT PROTECTION";
@@ -416,6 +433,7 @@ async function manageTrades() {
         delete tradeTimeToProfit[trade.id];
         delete tradeTimeToDd[trade.id];
         delete tradeBeTime[trade.id];
+        delete tradePostEntryLogged[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -456,6 +474,7 @@ async function manageTrades() {
         delete tradeTimeToProfit[trade.id];
         delete tradeTimeToDd[trade.id];
         delete tradeBeTime[trade.id];
+        delete tradePostEntryLogged[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -557,6 +576,7 @@ async function manageTrades() {
         delete tradeTimeToProfit[trade.id];
         delete tradeTimeToDd[trade.id];
         delete tradeBeTime[trade.id];
+        delete tradePostEntryLogged[trade.id];
 
         cooldownMap[symbol] = Date.now();
 
@@ -597,6 +617,7 @@ async function manageTrades() {
         delete tradeTimeToProfit[trade.id];
         delete tradeTimeToDd[trade.id];
         delete tradeBeTime[trade.id];
+        delete tradePostEntryLogged[trade.id];
 
         cooldownMap[symbol] = Date.now();
       }
@@ -643,6 +664,13 @@ async function strategy(symbol) {
       }
     }
 
+    // DISABLED SYMBOLS — controlled via env var, no redeploy needed
+    if (DISABLED_SYMBOLS.includes(symbol)) {
+      console.log(`DISABLED BLOCK -> ${symbol}`);
+      logEvent({ type: "symbol_disabled_block", symbol });
+      return;
+    }
+
     // REAL SPREAD FILTER
     const spread = await getSpread(symbol);
 
@@ -683,6 +711,51 @@ async function strategy(symbol) {
 
     // CANDLE STRENGTH
     const candleStrength = candleBodySize(lastCandle) / atr;
+
+    // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ───
+    // Reject entries where the move is already consumed before execution.
+    const atrPips          = atr / pipMultiplier(symbol);
+    const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
+
+    if (candleStrength > 0.65) {
+      // Last M5 candle body already consumed >65% of ATR — move exhausted
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)}`);
+      logEvent({ type: "exhaustion_block", symbol,
+        reason:           "candle_overexpanded",
+        expansionRatio:   parseFloat(candleStrength.toFixed(3)),
+        priceStretchPips: parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:          parseFloat(atrPips.toFixed(2)),
+      });
+      return;
+    }
+
+    if (priceStretchPips > atrPips * 0.5) {
+      // Price already >50% ATR away from fast EMA — overextended
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)}`);
+      logEvent({ type: "exhaustion_block", symbol,
+        reason:           "price_overextended",
+        expansionRatio:   parseFloat(candleStrength.toFixed(3)),
+        priceStretchPips: parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:          parseFloat(atrPips.toFixed(2)),
+      });
+      return;
+    }
+
+    // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ──────
+    // Block if spread cost too large relative to expected ATR capture (30% ATR).
+    // edgeRatio < 1.8 means spread > 56% of expected move — not tradeable.
+    const expectedCapturePips = atrPips * 0.30;
+    const edgeRatio           = expectedCapturePips / spread;
+    if (edgeRatio < 1.8) {
+      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p`);
+      logEvent({ type: "spread_edge_block", symbol,
+        edgeRatio:           parseFloat(edgeRatio.toFixed(2)),
+        expectedCapturePips: parseFloat(expectedCapturePips.toFixed(2)),
+        atrPips:             parseFloat(atrPips.toFixed(2)),
+        spread,
+      });
+      return;
+    }
 
     // MARKET REGIME SNAPSHOT — logged at every evaluation cycle
     const _rNow = new Date();

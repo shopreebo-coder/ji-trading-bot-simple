@@ -253,7 +253,8 @@ app.get("/api/today", (req, res) => {
   const n            = closes.length;
   const decisive     = wins + losses; // excludes BREAKEVEN
   const blocks = queryEvents({ date, limit: 1000 })
-    .filter(e => ["spread_block","cooldown_block","correlation_block","pullback_block","margin_block"].includes(e.type));
+    .filter(e => ["spread_block","cooldown_block","correlation_block","pullback_block","margin_block",
+                  "exhaustion_block","spread_edge_block","symbol_disabled_block"].includes(e.type));
 
   const blockCounts = {};
   for (const b of blocks) blockCounts[b.type] = (blockCounts[b.type] || 0) + 1;
@@ -631,6 +632,49 @@ app.get("/api/excursion", (req, res) => {
       timeToDd:     agg(real, "timeToDd"),
       breakEven:    agg(real, "beTime"),
     },
+  });
+});
+
+// ── API: GET /api/confirmation-lag ───────────────────────────────────────────
+// Counts how often each entry condition is TRUE vs FALSE across all buy/sell checks.
+// Lowest trueRate = most restrictive condition = likely the lag source.
+app.get("/api/confirmation-lag", (req, res) => {
+  const date = req.query.date ? parseDate(req.query.date) : undefined;
+
+  const checks = queryEvents({ type: "buy_check",  date, limit: 5000 })
+    .concat(queryEvents({ type: "sell_check", date, limit: 5000 }));
+
+  const conditions = ["trend","candle","ema","strength","m1trend","m1candle","m1prev","m1close"];
+  const counts = {};
+  for (const k of conditions) counts[k] = { trueN: 0, falseN: 0, total: 0 };
+
+  for (const c of checks) {
+    const d = c.data;
+    for (const k of conditions) {
+      if (d[k] !== undefined) {
+        counts[k].total++;
+        if (d[k]) counts[k].trueN++;
+        else       counts[k].falseN++;
+      }
+    }
+  }
+
+  const result = conditions
+    .map(k => ({
+      condition: k,
+      total:     counts[k].total,
+      trueN:     counts[k].trueN,
+      falseN:    counts[k].falseN,
+      trueRate:  counts[k].total ? parseFloat((counts[k].trueN / counts[k].total * 100).toFixed(1)) : null,
+    }))
+    .sort((a, b) => (a.trueRate ?? 100) - (b.trueRate ?? 100)); // most restrictive first
+
+  res.json({
+    totalChecks:      checks.length,
+    conditions:       result,
+    mostRestrictive:  result[0]    || null,
+    leastRestrictive: result[result.length - 1] || null,
+    postEntryFailures: queryEvents({ type: "post_entry_failure", date, limit: 500 }).length,
   });
 });
 
