@@ -14,8 +14,8 @@ const path       = require("path");
 const { spawn }  = require("child_process");
 const { db, emitter, getLastId } = require("./index");
 
-const PORT = process.env.PORT || 3001;
-const app  = express();
+const PORT   = process.env.PORT || 3001;
+const app    = express();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -172,9 +172,9 @@ function parseDate(str) {
  * Falls back to profitPips computation for historical data without outcome field.
  *
  * Rules:
- *   pips < 0       → LOSS
- *   0 ≤ pips ≤ 1.0 → BREAKEVEN
- *   pips > 1.0     → WIN
+ *   pips < 0      → LOSS
+ *   0 ≤ pips ≤ 1.0 → BREAKEVEN  (break-even SL, near-zero TIME EXIT, etc.)
+ *   pips > 1.0    → WIN
  *
  * Only WIN and LOSS count toward win rate denominator.
  * BREAKEVEN is reported separately and excluded from W/L ratio.
@@ -190,9 +190,9 @@ function classifyOutcome(d) {
 function queryEvents({ type, symbol, date, limit = 500 } = {}) {
   let sql    = "SELECT id,ts,bot_id,type,symbol,data FROM events WHERE 1=1";
   const args = [];
-  if (type)   { sql += " AND type=?";            args.push(type); }
-  if (symbol) { sql += " AND symbol=?";          args.push(symbol); }
-  if (date)   { sql += " AND substr(ts,1,10)=?"; args.push(date); }
+  if (type)   { sql += " AND type=?";                args.push(type); }
+  if (symbol) { sql += " AND symbol=?";              args.push(symbol); }
+  if (date)   { sql += " AND substr(ts,1,10)=?";     args.push(date); }
   sql += " ORDER BY id DESC LIMIT ?";
   args.push(limit);
   return db.prepare(sql).all(...args).map(r => ({ ...r, data: JSON.parse(r.data) }));
@@ -217,6 +217,7 @@ app.get("/api/trades", (req, res) => {
   const opens  = queryEvents({ type: "trade_open",  symbol, date, limit: 1000 });
   const closes = queryEvents({ type: "trade_close", symbol, date, limit: 1000 });
 
+  // match by symbol + nearest timestamp
   const closeMap = {};
   for (const c of closes) {
     const key = c.symbol;
@@ -225,7 +226,7 @@ app.get("/api/trades", (req, res) => {
   }
 
   const trades = opens.map(o => {
-    const pool  = closeMap[o.symbol] || [];
+    const pool = closeMap[o.symbol] || [];
     const match = pool.find(c => c.ts >= o.ts);
     return { open: o.data, close: match?.data || null };
   });
@@ -249,9 +250,9 @@ app.get("/api/today", (req, res) => {
     totalDur  += d.duration || 0;
   }
 
-  const n        = closes.length;
-  const decisive = wins + losses;
-  const blocks   = queryEvents({ date, limit: 1000 })
+  const n            = closes.length;
+  const decisive     = wins + losses; // excludes BREAKEVEN
+  const blocks = queryEvents({ date, limit: 1000 })
     .filter(e => ["spread_block","cooldown_block","correlation_block","pullback_block","margin_block",
                   "exhaustion_block","spread_edge_block","symbol_disabled_block"].includes(e.type));
 
@@ -260,15 +261,15 @@ app.get("/api/today", (req, res) => {
 
   res.json({
     date,
-    trades:      n,
+    trades:        n,
     wins,
     losses,
     breakevens,
-    winRate:     decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
-    avgPeak:     n ? (totalPeak / n).toFixed(2) : "0.00",
-    avgDuration: n ? (totalDur  / n).toFixed(1) : "0.0",
+    winRate:       decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
+    avgPeak:       n ? (totalPeak / n).toFixed(2) : "0.00",
+    avgDuration:   n ? (totalDur  / n).toFixed(1) : "0.0",
     blockCounts,
-    dailyTrades: live.dailyTrades,
+    dailyTrades:   live.dailyTrades,
   });
 });
 
@@ -301,17 +302,17 @@ app.get("/api/stats", (req, res) => {
   for (const b of allBlocks) blockCounts[b.type] = (blockCounts[b.type] || 0) + 1;
 
   res.json({
-    trades:      n,
+    trades:       n,
     wins,
     losses,
     breakevens,
-    winRate:     decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
-    avgPeak:     n ? (totalPeak / n).toFixed(2) : "0.00",
-    avgDuration: n ? (totalDur  / n).toFixed(1) : "0.0",
-    checksTotal: checks.length,
+    winRate:      decisive ? ((wins / decisive) * 100).toFixed(1) : "0.0",
+    avgPeak:      n ? (totalPeak / n).toFixed(2) : "0.00",
+    avgDuration:  n ? (totalDur  / n).toFixed(1) : "0.0",
+    checksTotal:  checks.length,
     blockCounts,
-    botStatus:   live.botStatus,
-    dailyTrades: live.dailyTrades,
+    botStatus:    live.botStatus,
+    dailyTrades:  live.dailyTrades,
   });
 });
 
@@ -350,9 +351,9 @@ app.get("/api/symbols", (req, res) => {
 // ── API: GET /api/live ────────────────────────────────────────────────────────
 app.get("/api/live", (req, res) => {
   res.json({
-    botStatus:    live.botStatus,
-    dailyTrades:  live.dailyTrades,
-    openTrades:   Object.values(live.openTrades),
+    botStatus:   live.botStatus,
+    dailyTrades: live.dailyTrades,
+    openTrades:  Object.values(live.openTrades),
     recentBlocks: live.recentBlocks,
   });
 });
@@ -364,10 +365,11 @@ app.get("/api/export", (req, res) => {
   const rows   = queryEvents({ date, limit: 50000 });
 
   if (format === "csv") {
-    const cols    = ["id","ts","bot_id","type","symbol"];
+    const cols = ["id","ts","bot_id","type","symbol"];
+    // collect all data keys
     const dataKeys = new Set();
     rows.forEach(r => Object.keys(r.data).forEach(k => dataKeys.add(k)));
-    const dkArr  = [...dataKeys].filter(k => !["type","symbol","ts","botId","timestamp"].includes(k));
+    const dkArr = [...dataKeys].filter(k => !["type","symbol","ts","botId","timestamp"].includes(k));
     const header = [...cols, ...dkArr].join(",");
     const lines  = rows.map(r => {
       const base = [r.id, r.ts, r.bot_id, r.type, r.symbol || ""].map(v => `"${v}"`).join(",");
@@ -398,39 +400,43 @@ app.get("/api/events/stream", (req, res) => {
 
   sseClients.add(res);
 
+  // send current live state immediately
   res.write(`data: ${JSON.stringify({ source: "live", type: "init", live: {
-    botStatus:    live.botStatus,
-    dailyTrades:  live.dailyTrades,
-    openTrades:   Object.values(live.openTrades),
+    botStatus:   live.botStatus,
+    dailyTrades: live.dailyTrades,
+    openTrades:  Object.values(live.openTrades),
     recentBlocks: live.recentBlocks,
   } })}\n\n`);
 
+  // keepalive
   const ka = setInterval(() => { try { res.write(": ka\n\n"); } catch (_) {} }, 25000);
   req.on("close", () => { clearInterval(ka); sseClients.delete(res); });
 });
 
 // ── API: GET /api/winrate-analysis ───────────────────────────────────────────
 app.get("/api/winrate-analysis", (req, res) => {
-  const date = req.query.date ? parseDate(req.query.date) : undefined;
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
 
-  const opens  = queryEvents({ type: "trade_open",    date, limit: 5000  });
-  const closes = queryEvents({ type: "trade_close",   date, limit: 5000  });
-  const regime = queryEvents({ type: "market_regime", date, limit: 50000 });
+  const opens  = queryEvents({ type: "trade_open",     date, limit: 5000  });
+  const closes = queryEvents({ type: "trade_close",    date, limit: 5000  });
+  const regime = queryEvents({ type: "market_regime",  date, limit: 50000 });
 
+  // Index regime by symbol for fast lookup
   const regBySymbol = {};
   for (const r of regime) {
     (regBySymbol[r.symbol] = regBySymbol[r.symbol] || []).push(r);
   }
 
+  // Match each open trade with its close, then nearest regime snapshot
   const matched = [];
   for (const o of opens) {
     const sym    = o.symbol;
     const openTs = o.ts;
     const close  = closes.find(c => c.symbol === sym && c.ts >= openTs);
-    if (!close) continue;
+    if (!close) continue; // still open or unmatched
 
-    const won    = classifyOutcome(close.data) === "WIN";
-    const pool   = regBySymbol[sym] || [];
+    const won   = classifyOutcome(close.data) === "WIN";
+    const pool  = regBySymbol[sym] || [];
     let best = null, bestDiff = Infinity;
     for (const r of pool) {
       const diff = Math.abs(new Date(r.ts) - new Date(openTs));
@@ -445,10 +451,6 @@ app.get("/api/winrate-analysis", (req, res) => {
       emaDistance: best?.data?.emaDistance  ?? null,
       hour:        best?.data?.hour         ?? new Date(openTs).getUTCHours(),
       dow:         best?.data?.dow          ?? new Date(openTs).getUTCDay(),
-      // NEW: session and bucket fields from enriched trade_open data
-      session:     close.data.session       ?? o.data.session  ?? null,
-      volBucket:   close.data.volatilityBucket ?? o.data.volatilityBucket ?? null,
-      trendBkt:    close.data.trendBucket      ?? o.data.trendBucket      ?? null,
     });
   }
 
@@ -494,32 +496,26 @@ app.get("/api/winrate-analysis", (req, res) => {
     return "1.5+";
   });
 
-  const symbolBuckets  = bucketWinRate(matched, t => t.symbol);
-  const sessionBuckets = bucketWinRate(matched, t => t.session);
-  const volBuckets     = bucketWinRate(matched, t => t.volBucket);
-  const trendBuckets   = bucketWinRate(matched, t => t.trendBkt);
+  const symbolBuckets = bucketWinRate(matched, t => t.symbol);
 
-  res.json({
-    atrBuckets, hourBuckets, spreadBuckets, symbolBuckets,
-    sessionBuckets, volBuckets, trendBuckets,
-    totalTrades: matched.length,
-  });
+  res.json({ atrBuckets, hourBuckets, spreadBuckets, symbolBuckets, totalTrades: matched.length });
 });
 
 // ── API: GET /api/fingerprints ────────────────────────────────────────────────
 app.get("/api/fingerprints", (req, res) => {
-  const date = req.query.date ? parseDate(req.query.date) : undefined;
-  const minN = parseInt(req.query.min || "1");
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const minN   = parseInt(req.query.min || "1");
 
   const opens  = queryEvents({ type: "trade_open",  date, limit: 5000 });
   const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
 
+  // Match each open to its close
   const matched = [];
   for (const o of opens) {
     const fp = o.data.fingerprint;
     if (!fp) continue;
     const close = closes.find(c => c.symbol === o.symbol && c.ts >= o.ts);
-    if (!close) continue;
+    if (!close) continue; // still open
 
     matched.push({
       fingerprint: fp,
@@ -531,6 +527,7 @@ app.get("/api/fingerprints", (req, res) => {
     });
   }
 
+  // Group by fingerprint
   const groups = {};
   for (const t of matched) {
     const k = t.fingerprint;
@@ -553,17 +550,21 @@ app.get("/api/fingerprints", (req, res) => {
     }));
 
   const byWinRate  = (a, b) => b.winRate - a.winRate || b.total - a.total;
-  const top20      = [...list].sort(byWinRate).slice(0, 20);
-  const bottom20   = [...list].sort((a, b) => -byWinRate(a, b)).slice(0, 20);
+  const top20    = [...list].sort(byWinRate).slice(0, 20);
+  const bottom20 = [...list].sort((a, b) => -byWinRate(a, b)).slice(0, 20);
 
   res.json({ top20, bottom20, totalTrades: matched.length, uniquePatterns: list.length });
 });
 
 // ── API: GET /api/excursion ───────────────────────────────────────────────────
+// Returns MAE/MFE analytics for REAL executed trades only (WIN + LOSS + BREAKEVEN).
+// Cancelled/rejected signals are never in trade_close events.
 app.get("/api/excursion", (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
 
   const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
+  // Only real executed trades — every trade_close is a real execution.
+  // Classify outcome for WIN/LOSS split.
   const real   = closes.map(c => ({ ...c, oc: classifyOutcome(c.data) }));
   const wins   = real.filter(r => r.oc === "WIN");
   const losses = real.filter(r => r.oc === "LOSS");
@@ -591,6 +592,7 @@ app.get("/api/excursion", (req, res) => {
     ? parseFloat((allMFE.avg / Math.abs(allMAE.avg)).toFixed(2))
     : null;
 
+  // Histogram: bucket by 2-pip intervals
   function hist(arr, key, size = 2) {
     const map = {};
     for (const r of arr) {
@@ -607,16 +609,13 @@ app.get("/api/excursion", (req, res) => {
   const mfeHist = hist(real, "mfe");
   const maeHist = hist(real, "mae");
 
+  // Win vs Loss side-by-side excursion comparison
   const comparison = [
     { label: "MFE avg",  win: winMFE.avg,  loss: lossMFE.avg  },
     { label: "MFE max",  win: winMFE.max,  loss: lossMFE.max  },
     { label: "MAE avg",  win: winMAE.avg,  loss: lossMAE.avg  },
     { label: "MAE min",  win: winMAE.min,  loss: lossMAE.min  },
   ];
-
-  // EXIT EFFICIENCY analytics — TELEMETRY ONLY
-  const exitEff  = agg(real, "exitEfficiency");
-  const entryEff = agg(real, "entryEfficiencyPips");
 
   res.json({
     totalTrades: real.length,
@@ -628,8 +627,6 @@ app.get("/api/excursion", (req, res) => {
     winMAE, lossMAE,
     mfeHist, maeHist,
     comparison,
-    exitEfficiency:  exitEff,
-    entryEfficiency: entryEff,
     timing: {
       timeToProfit: agg(real, "timeToProfit"),
       timeToDd:     agg(real, "timeToDd"),
@@ -670,13 +667,13 @@ app.get("/api/confirmation-lag", (req, res) => {
       falseN:    counts[k].falseN,
       trueRate:  counts[k].total ? parseFloat((counts[k].trueN / counts[k].total * 100).toFixed(1)) : null,
     }))
-    .sort((a, b) => (a.trueRate ?? 100) - (b.trueRate ?? 100));
+    .sort((a, b) => (a.trueRate ?? 100) - (b.trueRate ?? 100)); // most restrictive first
 
   res.json({
     totalChecks:      checks.length,
     conditions:       result,
-    mostRestrictive:  result[0]                  || null,
-    leastRestrictive: result[result.length - 1]  || null,
+    mostRestrictive:  result[0]    || null,
+    leastRestrictive: result[result.length - 1] || null,
     postEntryFailures: queryEvents({ type: "post_entry_failure", date, limit: 500 }).length,
   });
 });
@@ -690,234 +687,6 @@ app.get("/api/regime", (req, res) => {
     limit:  parseInt(req.query.limit || "1000"),
   });
   res.json(rows);
-});
-
-// ── API: GET /api/session-performance ────────────────────────────────────────
-// Aggregates trade_close events by market session (ASIA/LONDON/OVERLAP/NEW_YORK/DEAD_ZONE).
-// Returns win rate, avg profit, avg MFE per session for regime-based analysis.
-app.get("/api/session-performance", (req, res) => {
-  const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
-
-  const map = {};
-  for (const c of closes) {
-    const session = c.data.session || "UNKNOWN";
-    if (!map[session]) map[session] = { session, trades: 0, wins: 0, losses: 0, totalPips: 0, totalMFE: 0, totalExit: 0, exitN: 0 };
-    const d  = c.data;
-    const oc = classifyOutcome(d);
-    map[session].trades++;
-    if (oc === "WIN")       map[session].wins++;
-    else if (oc === "LOSS") map[session].losses++;
-    map[session].totalPips += d.profitPips || 0;
-    map[session].totalMFE  += d.mfe        || 0;
-    if (d.exitEfficiency != null) {
-      map[session].totalExit += d.exitEfficiency;
-      map[session].exitN++;
-    }
-  }
-
-  const result = Object.values(map).map(s => {
-    const decisive = s.wins + s.losses;
-    return {
-      session:      s.session,
-      trades:       s.trades,
-      wins:         s.wins,
-      losses:       s.losses,
-      winRate:      decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : 0,
-      avgPips:      s.trades ? parseFloat((s.totalPips / s.trades).toFixed(2)) : 0,
-      avgMFE:       s.trades ? parseFloat((s.totalMFE  / s.trades).toFixed(2)) : 0,
-      avgExitEff:   s.exitN  ? parseFloat((s.totalExit / s.exitN).toFixed(1))  : null,
-    };
-  }).sort((a, b) => b.winRate - a.winRate);
-
-  res.json(result);
-});
-
-// ── API: GET /api/blocked-outcomes ───────────────────────────────────────────
-// Returns blocked_outcome events for filter effectiveness analysis.
-// Shows whether filtered signals would have been profitable 15 min later.
-app.get("/api/blocked-outcomes", (req, res) => {
-  const date  = req.query.date ? parseDate(req.query.date) : undefined;
-  const rows  = queryEvents({ type: "blocked_outcome", date, limit: 2000 });
-
-  const byType = {};
-  for (const r of rows) {
-    const bt = r.data.blockType || "unknown";
-    if (!byType[bt]) byType[bt] = { blockType: bt, total: 0, moved: 0, stagnant: 0, totalMovePips: 0 };
-    byType[bt].total++;
-    byType[bt].totalMovePips += r.data.absoluteMovePips || 0;
-    if (r.data.wouldHaveOutcome === "MOVED") byType[bt].moved++;
-    else                                      byType[bt].stagnant++;
-  }
-
-  const summary = Object.values(byType).map(b => ({
-    blockType:     b.blockType,
-    total:         b.total,
-    moved:         b.moved,
-    stagnant:      b.stagnant,
-    movedPct:      b.total ? parseFloat(((b.moved / b.total) * 100).toFixed(1)) : 0,
-    avgMovePips:   b.total ? parseFloat((b.totalMovePips / b.total).toFixed(2)) : 0,
-  })).sort((a, b) => b.movedPct - a.movedPct);
-
-  res.json({ summary, recent: rows.slice(0, 50).map(r => r.data), total: rows.length });
-});
-
-// ── API: GET /api/drift ───────────────────────────────────────────────────────
-// Returns recent strategy_drift_alert events for monitoring.
-app.get("/api/drift", (req, res) => {
-  const date = req.query.date ? parseDate(req.query.date) : undefined;
-  const rows = queryEvents({ type: "strategy_drift_alert", date, limit: 100 });
-  res.json({ alerts: rows.map(r => ({ ts: r.ts, ...r.data })), total: rows.length });
-});
-
-// ── API: GET /api/insights ────────────────────────────────────────────────────
-// Aggregated decision intelligence — best/worst session, symbol, fingerprint,
-// exit efficiency, filter cost analysis, regime performance.
-// Powers the INSIGHTS tab in the dashboard.
-app.get("/api/insights", (req, res) => {
-  const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close",  date, limit: 10000 });
-  const opens  = queryEvents({ type: "trade_open",   date, limit: 10000 });
-  const blocks = queryEvents({ date, limit: 20000 })
-    .filter(e => e.type.endsWith("_block") && !e.type.startsWith("signal_"));
-
-  // ── Session performance ───────────────────────────────────────────────────
-  const sessionMap = {};
-  for (const c of closes) {
-    const s = c.data.session || "UNKNOWN";
-    if (!sessionMap[s]) sessionMap[s] = { wins: 0, losses: 0, totalPips: 0, totalMFE: 0, totalExitEff: 0, exitN: 0 };
-    const oc = classifyOutcome(c.data);
-    if (oc === "WIN")       sessionMap[s].wins++;
-    else if (oc === "LOSS") sessionMap[s].losses++;
-    sessionMap[s].totalPips    += c.data.profitPips || 0;
-    sessionMap[s].totalMFE     += c.data.mfe        || 0;
-    if (c.data.exitEfficiency != null) {
-      sessionMap[s].totalExitEff += c.data.exitEfficiency;
-      sessionMap[s].exitN++;
-    }
-  }
-  const sessionStats = Object.entries(sessionMap).map(([session, s]) => {
-    const decisive = s.wins + s.losses;
-    return {
-      session,
-      winRate:    decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : 0,
-      avgPips:    (s.wins + s.losses) ? parseFloat((s.totalPips / (s.wins + s.losses)).toFixed(2)) : 0,
-      avgMFE:     (s.wins + s.losses) ? parseFloat((s.totalMFE  / (s.wins + s.losses)).toFixed(2)) : 0,
-      avgExitEff: s.exitN ? parseFloat((s.totalExitEff / s.exitN).toFixed(1)) : null,
-      trades:     s.wins + s.losses,
-    };
-  });
-  const bestSession  = sessionStats.sort((a, b) => b.winRate - a.winRate)[0] || null;
-  const worstSession = [...sessionStats].sort((a, b) => a.winRate - b.winRate)[0] || null;
-
-  // ── Symbol performance ────────────────────────────────────────────────────
-  const symMap = {};
-  for (const c of closes) {
-    const sym = c.symbol;
-    if (!symMap[sym]) symMap[sym] = { wins: 0, losses: 0, totalPips: 0 };
-    const oc = classifyOutcome(c.data);
-    if (oc === "WIN")       symMap[sym].wins++;
-    else if (oc === "LOSS") symMap[sym].losses++;
-    symMap[sym].totalPips += c.data.profitPips || 0;
-  }
-  const symStats = Object.entries(symMap).map(([symbol, s]) => {
-    const decisive = s.wins + s.losses;
-    return { symbol, winRate: decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : 0, trades: decisive, avgPips: decisive ? parseFloat((s.totalPips / decisive).toFixed(2)) : 0 };
-  });
-  const worstSymbol = symStats.sort((a, b) => a.winRate - b.winRate)[0] || null;
-  const bestSymbol  = [...symStats].sort((a, b) => b.winRate - a.winRate)[0] || null;
-
-  // ── Most expensive filter (most blocks) ──────────────────────────────────
-  const blockCounts = {};
-  for (const b of blocks) {
-    blockCounts[b.type] = (blockCounts[b.type] || 0) + 1;
-  }
-  const blockArr         = Object.entries(blockCounts).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count);
-  const mostExpensiveFilter = blockArr[0] || null;
-  const totalBlocks         = blockArr.reduce((s, b) => s + b.count, 0);
-
-  // ── Exit efficiency ───────────────────────────────────────────────────────
-  const effVals = closes
-    .map(c => c.data.exitEfficiency)
-    .filter(v => v != null && Number.isFinite(v));
-  const avgExitEfficiency = effVals.length
-    ? parseFloat((effVals.reduce((a, b) => a + b, 0) / effVals.length).toFixed(1))
-    : null;
-  const lowestExitEff = effVals.length ? parseFloat(Math.min(...effVals).toFixed(1)) : null;
-
-  // ── Entry efficiency ──────────────────────────────────────────────────────
-  const entryVals = closes
-    .map(c => c.data.entryEfficiencyPips)
-    .filter(v => v != null && Number.isFinite(v));
-  const avgEntryEfficiency = entryVals.length
-    ? parseFloat((entryVals.reduce((a, b) => a + b, 0) / entryVals.length).toFixed(2))
-    : null;
-
-  // ── Fingerprint ───────────────────────────────────────────────────────────
-  const fpGroups = {};
-  for (const o of opens) {
-    const fp = o.data.fingerprint;
-    if (!fp) continue;
-    const close = closes.find(c => c.symbol === o.symbol && c.ts >= o.ts);
-    if (!close) continue;
-    if (!fpGroups[fp]) fpGroups[fp] = { wins: 0, total: 0, totalPips: 0 };
-    fpGroups[fp].total++;
-    fpGroups[fp].totalPips += close.data.profitPips || 0;
-    if (classifyOutcome(close.data) === "WIN") fpGroups[fp].wins++;
-  }
-  const fpList = Object.entries(fpGroups)
-    .map(([fp, g]) => ({ fp, winRate: parseFloat(((g.wins / g.total) * 100).toFixed(1)), avgPips: parseFloat((g.totalPips / g.total).toFixed(2)), total: g.total }))
-    .filter(g => g.total >= 2);
-  const bestFingerprint  = fpList.sort((a, b) => b.winRate - a.winRate)[0] || null;
-  const worstFingerprint = [...fpList].sort((a, b) => a.winRate - b.winRate)[0] || null;
-
-  // ── Volatility regime performance ─────────────────────────────────────────
-  const volMap = {};
-  for (const c of closes) {
-    const vb = c.data.volatilityBucket || "UNKNOWN";
-    if (!volMap[vb]) volMap[vb] = { wins: 0, losses: 0, totalPips: 0, totalMFE: 0 };
-    const oc = classifyOutcome(c.data);
-    if (oc === "WIN")       volMap[vb].wins++;
-    else if (oc === "LOSS") volMap[vb].losses++;
-    volMap[vb].totalPips += c.data.profitPips || 0;
-    volMap[vb].totalMFE  += c.data.mfe        || 0;
-  }
-  const volStats = Object.entries(volMap).map(([bucket, v]) => {
-    const decisive = v.wins + v.losses;
-    return { bucket, winRate: decisive ? parseFloat(((v.wins / decisive) * 100).toFixed(1)) : 0, avgMFE: decisive ? parseFloat((v.totalMFE / decisive).toFixed(2)) : 0, trades: decisive };
-  });
-  const highestMFERegime = volStats.sort((a, b) => b.avgMFE - a.avgMFE)[0] || null;
-  const bestVolRegime    = [...volStats].sort((a, b) => b.winRate - a.winRate)[0] || null;
-
-  // ── Post-entry failures ───────────────────────────────────────────────────
-  const postEntryFailures = queryEvents({ type: "post_entry_failure", date, limit: 500 }).length;
-
-  // ── Drift alerts ──────────────────────────────────────────────────────────
-  const driftAlerts = queryEvents({ type: "strategy_drift_alert", date, limit: 10 });
-
-  res.json({
-    summary: {
-      totalTrades:        closes.length,
-      totalBlocks,
-      avgExitEfficiency,
-      avgEntryEfficiency,
-      postEntryFailures,
-      driftAlertCount:   driftAlerts.length,
-    },
-    bestSession,
-    worstSession,
-    bestSymbol,
-    worstSymbol,
-    mostExpensiveFilter,
-    blockBreakdown: blockArr,
-    bestFingerprint,
-    worstFingerprint,
-    highestMFERegime,
-    bestVolRegime,
-    sessionStats,
-    volStats,
-    recentDriftAlerts: driftAlerts.slice(0, 3).map(r => ({ ts: r.ts, ...r.data })),
-  });
 });
 
 // ── root → dashboard ──────────────────────────────────────────────────────────

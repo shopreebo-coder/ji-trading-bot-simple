@@ -24,8 +24,8 @@ a{color:#58a6ff;text-decoration:none}
 .ts{font-size:11px;color:#484f58}
 
 /* tabs */
-.tabs{display:flex;gap:2px;background:#161b22;border-bottom:1px solid #30363d;padding:0 24px}
-.tab{padding:10px 18px;cursor:pointer;font-size:13px;font-weight:500;color:#8b949e;border-bottom:2px solid transparent;transition:all .15s}
+.tabs{display:flex;gap:2px;background:#161b22;border-bottom:1px solid #30363d;padding:0 24px;overflow-x:auto;flex-shrink:0}
+.tab{padding:10px 18px;cursor:pointer;font-size:13px;font-weight:500;color:#8b949e;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
 .tab:hover{color:#e6edf3}
 .tab.active{color:#58a6ff;border-bottom-color:#58a6ff}
 
@@ -39,10 +39,22 @@ a{color:#58a6ff;text-decoration:none}
 .card .val{font-size:24px;font-weight:700}
 .val.blue{color:#58a6ff}.val.green{color:#3fb950}.val.red{color:#f85149}.val.yellow{color:#d29922}
 
+/* insight card */
+.icard{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.icard .ititle{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.8px}
+.icard .ivalue{font-size:18px;font-weight:700;color:#e6edf3}
+.icard .isub{font-size:11px;color:#484f58}
+.icard.good .ivalue{color:#3fb950}
+.icard.warn .ivalue{color:#d29922}
+.icard.bad  .ivalue{color:#f85149}
+.icard.info .ivalue{color:#58a6ff}
+
 /* grid */
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
-@media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:1000px){.g4{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
 
 /* panel */
 .panel{background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:16px}
@@ -63,6 +75,7 @@ tr:hover td{background:#1c2128}
 .be{background:#1a2e3a;color:#58a6ff}
 .ok{background:#1a3a26;color:#3fb950}.fail{background:#3a1a1a;color:#f85149}
 .accepted{background:#1a3a26;color:#3fb950}.rejected{background:#3a2a00;color:#d29922}
+.tag-session{background:#1a2540;color:#79c0ff;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600}
 
 /* pips colors */
 .pp{color:#3fb950;font-weight:600}.pn{color:#f85149;font-weight:600}.pz{color:#8b949e}
@@ -105,6 +118,15 @@ tr:hover td{background:#1c2128}
 .bar-row .btrack{flex:1;background:#21262d;border-radius:3px;height:12px;overflow:hidden}
 .bar-row .bfill{height:100%;border-radius:3px;background:#58a6ff;transition:width .4s}
 .bar-row .bval{width:45px;font-size:11px;color:#e6edf3;text-align:right;flex-shrink:0}
+
+/* drift alert */
+.drift-alert{background:#2d1f00;border:1px solid #d29922;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:12px}
+.drift-alert .da-title{color:#d29922;font-weight:700;margin-bottom:4px}
+.drift-alert .da-body{color:#8b949e}
+
+/* section divider */
+.sec-divider{border-top:1px solid #30363d;margin:12px 0 16px;padding-top:8px}
+.sec-label{font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
 </style>
 </head>
 <body>
@@ -122,6 +144,8 @@ function fmtPips(v){
   return <span className={v>0?"pp":v<0?"pn":"pz"}>{v>0?"+":""}{v.toFixed(2)}</span>;
 }
 function minsOpen(t){ return ((Date.now()-t)/60000).toFixed(1); }
+function pct(v){ return v==null?"—":v.toFixed(1)+"%"; }
+function fmtNum(v,dec=2){ return v==null?"—":parseFloat(v).toFixed(dec); }
 
 async function api(path){ const r=await fetch(path); return r.json(); }
 
@@ -139,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION"];
+const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -443,7 +467,6 @@ function WinRateChart({ title, buckets, noDataMsg }){
 }
 
 function WykreśyTab({ symbols, trades, winrate }){
-  // hour histogram from open trades
   const hourCounts = Array(24).fill(0);
   trades.filter(t=>t.open?.timestamp).forEach(t=>{
     const h = new Date(t.open.timestamp).getUTCHours();
@@ -503,501 +526,494 @@ function WykreśyTab({ symbols, trades, winrate }){
       </div>
       <div className="g2">
         <WinRateChart title="Win Rate vs Spread (pipy)" buckets={wr.spreadBuckets}/>
-        <WinRateChart title="Win Rate vs Symbol" buckets={wr.symbolBuckets}/>
+        <WinRateChart title="Win Rate per Symbol" buckets={wr.symbolBuckets}/>
       </div>
+      <div className="g2">
+        <WinRateChart title="Win Rate per Session" buckets={wr.sessionBuckets}/>
+        <WinRateChart title="Win Rate per Volatility Regime" buckets={wr.volBuckets}/>
+      </div>
+      <WinRateChart title="Win Rate per Trend Strength" buckets={wr.trendBuckets}/>
     </div>
   );
 }
 
 // ── DECYZJE tab ────────────────────────────────────────────────────────────
-const CHECK_KEYS = ["trend","candle","ema","strength","m1trend","m1candle","m1prev","m1close"];
-
-function DecisionCard({ ev }){
-  const d = ev.data;
-  const side = ev.type === "buy_check" ? "buy" : "sell";
-  const conditions = CHECK_KEYS.map(k=>({ key:k, val: d[k] }));
-  const accepted = conditions.every(c=>c.val===true);
-  const rejected = !accepted;
-  const failReasons = conditions.filter(c=>c.val===false).map(c=>c.key);
-
-  return (
-    <div className="dcard">
-      <div className="dhead">
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
-          <span className="sym">{d.symbol}</span>
-          <span className={`tag ${side}`}>{side.toUpperCase()} CHECK</span>
-          <span className={`tag ${accepted?"accepted":"rejected"}`}>{accepted?"ACCEPTED":"REJECTED"}</span>
-        </div>
-        <span className="time">{hms(d.ts||ev.ts)} UTC</span>
-      </div>
-      {rejected && failReasons.length>0 && (
-        <div style={{marginBottom:8,fontSize:11,color:"#d29922"}}>
-          Rejected: {failReasons.join(", ")}
-        </div>
-      )}
-      <div className="conditions">
-        {conditions.map(({key,val})=>(
-          <div className="cond" key={key}>
-            <span className="cname">{key}</span>
-            <span className={`cv ${val?"t":"f"}`}>{val?"✓":"✗"}</span>
-          </div>
-        ))}
-        {d.entryDistance!=null&&(
-          <div className="cond">
-            <span className="cname">entry dist</span>
-            <span className="cv t">{parseFloat(d.entryDistance).toFixed(2)} p</span>
-          </div>
-        )}
-        {d.spread!=null&&(
-          <div className="cond">
-            <span className="cname">spread</span>
-            <span className="cv t">{parseFloat(d.spread).toFixed(2)} p</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DecyzjeTab({ checks }){
-  const [filter, setFilter] = useState("all");
-  const filtered = checks
-    .filter(c=>filter==="all"||(filter==="rejected"&&!CHECK_KEYS.every(k=>c.data[k]===true))||(filter==="accepted"&&CHECK_KEYS.every(k=>c.data[k]===true)))
-    .slice(0,80);
+function DecyzjeTab({ events }){
+  const checks = events.filter(e=>e.type==="buy_check"||e.type==="sell_check").slice(0,50);
+  if(!checks.length) return <div className="page"><div className="empty" style={{marginTop:40}}>No decision events yet</div></div>;
 
   return (
     <div className="page">
-      <div style={{display:"flex",gap:8,marginBottom:16,alignItems:"center"}}>
-        <span style={{fontSize:12,color:"#8b949e"}}>Filter:</span>
-        {["all","accepted","rejected"].map(f=>(
-          <button key={f} onClick={()=>setFilter(f)}
-            style={{padding:"4px 12px",borderRadius:5,border:"1px solid",cursor:"pointer",fontSize:11,fontWeight:600,
-              borderColor:filter===f?"#58a6ff":"#30363d",
-              background:filter===f?"#1f3a4a":"#161b22",
-              color:filter===f?"#58a6ff":"#8b949e"}}>
-            {f.toUpperCase()}
-          </button>
-        ))}
-        <span style={{marginLeft:"auto",fontSize:11,color:"#484f58"}}>{filtered.length} entries</span>
+      {checks.map((e,i)=>{
+        const d = e.data;
+        const allConds = {
+          trend:d.trend,candle:d.candle,ema:d.ema,strength:d.strength,
+          m1trend:d.m1trend,m1candle:d.m1candle,m1prev:d.m1prev,m1close:d.m1close,
+        };
+        const passCount = Object.values(allConds).filter(Boolean).length;
+        const allPass   = passCount===8;
+        return (
+          <div className="dcard" key={i}>
+            <div className="dhead">
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <span className="sym">{e.symbol}</span>
+                <span className={`tag ${e.type==="buy_check"?"buy":"sell"}`}>{e.type==="buy_check"?"BUY":"SELL"}</span>
+                {d.session && <span className="tag-session">{d.session}</span>}
+                {allPass && <span className="tag ok">✓ SIGNAL</span>}
+              </div>
+              <span className="time">{hms(e.ts)} UTC · spread {d.spread?.toFixed(2)||"?"} p</span>
+            </div>
+            <div style={{display:"flex",gap:16,marginBottom:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,color:"#8b949e"}}>EMA dist: <b style={{color:"#e6edf3"}}>{d.emaDistance?.toFixed(1)||"?"}p</b></span>
+              <span style={{fontSize:11,color:"#8b949e"}}>Candle str: <b style={{color:"#e6edf3"}}>{d.candleStrength?.toFixed(2)||"?"}</b></span>
+              <span style={{fontSize:11,color:"#8b949e"}}>Entry dist: <b style={{color:"#e6edf3"}}>{d.entryDistance?.toFixed(2)||"?"}p</b></span>
+              <span style={{fontSize:11,color:"#8b949e"}}>Pass: <b style={{color: allPass?"#3fb950":passCount>=6?"#d29922":"#f85149"}}>{passCount}/8</b></span>
+              {d.volatilityBucket && <span style={{fontSize:11,color:"#8b949e"}}>Vol: <b style={{color:"#e6edf3"}}>{d.volatilityBucket}</b></span>}
+              {d.trendBucket      && <span style={{fontSize:11,color:"#8b949e"}}>Trend: <b style={{color:"#e6edf3"}}>{d.trendBucket}</b></span>}
+            </div>
+            <div className="conditions">
+              {Object.entries(allConds).map(([k,v])=>(
+                <div className="cond" key={k}>
+                  <span className="cname">{k}</span>
+                  <span className={`cv ${v?"t":"f"}`}>{v?"✓":"✗"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── WZORCE tab ─────────────────────────────────────────────────────────────
+function WzorceTab({ fps }){
+  if(!fps) return <div className="page"><div className="loading">Loading…</div></div>;
+  const { top20=[], bottom20=[], totalTrades=0, uniquePatterns=0 } = fps;
+  function FpTable({ title, rows, color }){
+    return (
+      <div className="panel">
+        <div className="ph">{title}</div>
+        <div className="pb">
+          {!rows.length ? <div className="empty">No data</div> : (
+            <table><thead><tr>
+              <th>Pattern</th><th>Win%</th><th>W</th><th>L</th><th>Avg P</th>
+            </tr></thead><tbody>
+              {rows.map((r,i)=>(
+                <tr key={i}>
+                  <td><code style={{fontSize:11,letterSpacing:1,color:"#8b949e"}}>{r.fingerprint}</code></td>
+                  <td><span style={{color}}>{r.winRate}%</span></td>
+                  <td style={{color:"#3fb950"}}>{r.wins}</td>
+                  <td style={{color:"#f85149"}}>{r.losses}</td>
+                  <td>{fmtPips(r.avgPips)}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          )}
+        </div>
       </div>
-      {filtered.length===0
-        ? <div className="empty">No check events yet</div>
-        : filtered.map((c,i)=><DecisionCard key={i} ev={c}/>)
-      }
-    </div>
-  );
-}
-
-// ── WZORCE tab ──────────────────────────────────────────────────────────────
-const FP_LABELS = ["trend","candle","ema","strength","m1trend","m1prev"];
-
-function FpBadge({ fp }){
-  if(!fp) return null;
-  const vals = Object.entries(fp);
-  return (
-    <span style={{display:"inline-flex",gap:3,flexWrap:"wrap"}}>
-      {vals.map(([k,v])=>(
-        <span key={k} title={k} style={{
-          fontSize:10,padding:"1px 5px",borderRadius:3,fontWeight:600,
-          background: v?"rgba(63,185,80,.15)":"rgba(248,81,73,.12)",
-          color:       v?"#3fb950":"#f85149",
-          border:`1px solid ${v?"#3fb95040":"#f8514940"}`,
-        }}>{k.toUpperCase().slice(0,3)}</span>
-      ))}
-    </span>
-  );
-}
-
-function FpTable({ title, rows, accent }){
-  if(!rows||rows.length===0) return (
-    <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:16,marginBottom:16}}>
-      <div style={{fontSize:11,fontWeight:600,color:"#8b949e",textTransform:"uppercase",letterSpacing:".8px",marginBottom:12}}>{title}</div>
-      <div className="empty" style={{padding:"24px 0"}}>Brak danych — za mało transakcji</div>
-    </div>
-  );
-  return (
-    <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:16,marginBottom:16,overflowX:"auto"}}>
-      <div style={{fontSize:11,fontWeight:600,color:"#8b949e",textTransform:"uppercase",letterSpacing:".8px",marginBottom:12}}>
-        {title}
-      </div>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead>
-          <tr style={{color:"#8b949e",textAlign:"left"}}>
-            <th style={{padding:"4px 8px",fontWeight:600}}>#</th>
-            <th style={{padding:"4px 8px",fontWeight:600}}>Hash</th>
-            <th style={{padding:"4px 8px",fontWeight:600}}>Warunki</th>
-            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>Win%</th>
-            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>W/L</th>
-            <th style={{padding:"4px 8px",fontWeight:600,textAlign:"right"}}>Avg pip</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r,i)=>(
-            <tr key={r.fingerprint} style={{borderTop:"1px solid #21262d",background:i%2===0?"transparent":"rgba(255,255,255,.02)"}}>
-              <td style={{padding:"5px 8px",color:"#484f58"}}>{i+1}</td>
-              <td style={{padding:"5px 8px"}}>
-                <code style={{fontSize:13,letterSpacing:2,color:accent,fontWeight:700}}>{r.fingerprint}</code>
-              </td>
-              <td style={{padding:"5px 8px"}}><FpBadge fp={r.fpDetail}/></td>
-              <td style={{padding:"5px 8px",textAlign:"right",fontWeight:700,color:r.winRate>=50?"#3fb950":"#f85149"}}>{r.winRate}%</td>
-              <td style={{padding:"5px 8px",textAlign:"right",color:"#8b949e"}}>{r.wins}/{r.losses}</td>
-              <td style={{padding:"5px 8px",textAlign:"right",color:r.avgPips>=0?"#3fb950":"#f85149",fontWeight:600}}>{r.avgPips>0?"+":""}{r.avgPips}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function WzorceTab({ fingerprints }){
-  const fp = fingerprints || {};
-  const meta = fp.totalTrades > 0
-    ? <span style={{fontSize:11,color:"#484f58",marginLeft:8}}>{fp.totalTrades} transakcji · {fp.uniquePatterns||0} wzorców</span>
-    : null;
-
+    );
+  }
   return (
     <div className="page">
-      <div style={{marginBottom:16,display:"flex",alignItems:"center",gap:8}}>
-        <span style={{fontSize:13,color:"#8b949e"}}>
-          Hash: 6 znaków (T/F) w kolejności: <code style={{color:"#58a6ff"}}>trend · candle · ema · strength · m1trend · m1prev</code>
-        </span>
-        {meta}
+      <div className="cards">
+        <div className="card"><div className="lbl">Total Trades</div><div className="val blue">{totalTrades}</div></div>
+        <div className="card"><div className="lbl">Unique Patterns</div><div className="val">{uniquePatterns}</div></div>
       </div>
       <div className="g2">
-        <FpTable title="🏆 Top 20 najlepszych wzorców" rows={fp.top20}    accent="#3fb950"/>
-        <FpTable title="💀 Top 20 najgorszych wzorców" rows={fp.bottom20} accent="#f85149"/>
+        <FpTable title="Best Patterns (highest win rate)" rows={top20}    color="#3fb950"/>
+        <FpTable title="Worst Patterns (lowest win rate)"  rows={bottom20} color="#f85149"/>
       </div>
     </div>
   );
 }
 
 // ── EXCURSION tab ──────────────────────────────────────────────────────────
-// Dual-dataset bar chart for WIN vs LOSS comparison
-function CompareBarChart({ labels, winsData, lossesData }){
-  const ref = useRef(null);
-  const chartRef = useRef(null);
-  useEffect(()=>{
-    if(!ref.current) return;
-    if(chartRef.current) chartRef.current.destroy();
-    chartRef.current = new Chart(ref.current, {
-      type: "bar",
-      data: {
-        labels,
-        datasets: [
-          { label:"WIN",  data: winsData,   backgroundColor:"rgba(63,185,80,.75)",  borderRadius:3 },
-          { label:"LOSS", data: lossesData, backgroundColor:"rgba(248,81,73,.65)", borderRadius:3 },
-        ],
-      },
-      options: {
-        responsive:true,
-        plugins:{ legend:{ labels:{ color:"#8b949e", boxWidth:12 } } },
-        scales:{
-          x:{ ticks:{color:"#8b949e"}, grid:{color:"#21262d"} },
-          y:{ ticks:{color:"#8b949e"}, grid:{color:"#21262d"} },
-        },
-      },
-    });
-    return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
-  },[labels,winsData,lossesData]);
-  return <canvas ref={ref}/>;
-}
-
 function ExcursionTab({ exc }){
-  const e    = exc || {};
-  const fmt  = v => v != null ? parseFloat(v).toFixed(2) : "—";
-  const fmtM = v => v != null ? parseFloat(v).toFixed(1)+" m" : "—";
+  if(!exc) return <div className="page"><div className="loading">Loading…</div></div>;
+  const { mfeHist=[], maeHist=[], comparison=[], timing={}, allMFE={}, allMAE={}, exitEfficiency={}, entryEfficiency={} } = exc;
 
-  const allMFE   = e.allMFE   || {};
-  const allMAE   = e.allMAE   || {};
-  const winMFE   = e.winMFE   || {};
-  const lossMFE  = e.lossMFE  || {};
-  const winMAE   = e.winMAE   || {};
-  const lossMAE  = e.lossMAE  || {};
-  const timing   = e.timing   || {};
-  const mfeHist  = e.mfeHist  || [];
-  const maeHist  = e.maeHist  || [];
-
-  const noExcData = !mfeHist.length && !maeHist.length;
-
-  // Comparison chart data
-  const cmpLabels = ["MFE avg","MFE max","MAE avg","MAE min"];
-  const cmpWins   = [winMFE.avg, winMFE.max, winMAE.avg, winMAE.min];
-  const cmpLosses = [lossMFE.avg, lossMFE.max, lossMAE.avg, lossMAE.min];
+  function StatRow({ label, val }){
+    return (
+      <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #21262d",fontSize:12}}>
+        <span style={{color:"#8b949e"}}>{label}</span>
+        <span style={{fontWeight:600,color:"#e6edf3"}}>{val==null?"—":val}</span>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
-
-      {/* ── diagnostic banner if no excursion data yet ── */}
-      {noExcData && (
-        <div style={{background:"#1c2128",border:"1px solid #d29922",borderRadius:8,padding:"14px 18px",marginBottom:20,fontSize:12,color:"#d29922"}}>
-          <strong>Brak danych MFE/MAE</strong> — te pola pojawią się dopiero po zamknięciu pierwszego trade'a przez nową wersję bota.
-          Historyczne eventy sprzed aktualizacji nie zawierają pól <code>mfe</code> / <code>mae</code>.
-        </div>
-      )}
-
-      {/* ── summary cards ── */}
-      <div className="cards">
-        <div className="card" title="Max Favorable Excursion — max zysk nierozliczony w pipach">
-          <div className="lbl">Avg MFE</div>
-          <div className="val blue">{fmt(allMFE.avg)} p</div>
-        </div>
-        <div className="card" title="Max Adverse Excursion — max nierozliczona strata w pipach">
-          <div className="lbl">Avg MAE</div>
-          <div className="val red">{fmt(allMAE.avg)} p</div>
-        </div>
-        <div className="card" title="MFE / |MAE| — ratio > 1 oznacza że trade 'widział' więcej zysku niż straty">
-          <div className="lbl">MFE/MAE ratio</div>
-          <div className={`val ${e.mfeMAERatio!=null&&e.mfeMAERatio>=1?"green":"red"}`}>
-            {e.mfeMAERatio != null ? e.mfeMAERatio : "—"}
+      <div className="g3">
+        <div className="panel">
+          <div className="ph">MAE / MFE Summary</div>
+          <div style={{padding:"12px 16px"}}>
+            <StatRow label="MFE avg (all)" val={allMFE.avg!=null?allMFE.avg.toFixed(2)+" p":null}/>
+            <StatRow label="MFE max"       val={allMFE.max!=null?allMFE.max.toFixed(2)+" p":null}/>
+            <StatRow label="MAE avg (all)" val={allMAE.avg!=null?allMAE.avg.toFixed(2)+" p":null}/>
+            <StatRow label="MAE min"       val={allMAE.min!=null?allMAE.min.toFixed(2)+" p":null}/>
+            <StatRow label="MFE/MAE ratio" val={exc.mfeMAERatio!=null?exc.mfeMAERatio:null}/>
+            <StatRow label="Trades"        val={exc.totalTrades}/>
           </div>
         </div>
-        <div className="card"><div className="lbl">MFE max</div><div className="val">{fmt(allMFE.max)} p</div></div>
-        <div className="card"><div className="lbl">MAE min</div><div className="val red">{fmt(allMAE.min)} p</div></div>
-        <div className="card" title="Ile minut od otwarcia aż pips > 0 po raz pierwszy">
-          <div className="lbl">Avg → Profit</div>
-          <div className="val">{fmtM(timing.timeToProfit?.avg)}</div>
+        <div className="panel">
+          <div className="ph">Timing Analytics</div>
+          <div style={{padding:"12px 16px"}}>
+            <StatRow label="Avg time to profit" val={timing.timeToProfit?.avg!=null?timing.timeToProfit.avg.toFixed(1)+" m":null}/>
+            <StatRow label="Avg time to DD"     val={timing.timeToDd?.avg!=null?timing.timeToDd.avg.toFixed(1)+" m":null}/>
+            <StatRow label="Avg BE time"         val={timing.breakEven?.avg!=null?timing.breakEven.avg.toFixed(1)+" m":null}/>
+          </div>
         </div>
-        <div className="card" title="Ile minut od otwarcia aż pips < 0 po raz pierwszy">
-          <div className="lbl">Avg → Drawdown</div>
-          <div className="val">{fmtM(timing.timeToDd?.avg)}</div>
-        </div>
-        <div className="card" title="Ile minut od otwarcia do aktywacji break-even SL">
-          <div className="lbl">Avg BE timing</div>
-          <div className="val yellow">{fmtM(timing.breakEven?.avg)}</div>
-        </div>
-      </div>
-
-      {/* ── histograms ── */}
-      <div className="g2">
-        <div className="chart-wrap">
-          <h3>MFE histogram — rozkład max zysku (pipy)</h3>
-          {mfeHist.length
-            ? <BarChart
-                labels={mfeHist.map(b=>b.bucket+"p")}
-                values={mfeHist.map(b=>b.count)}
-                color="rgba(63,185,80,.75)"
-                label="Transakcji"
-              />
-            : <div className="empty">Brak danych</div>
-          }
-        </div>
-        <div className="chart-wrap">
-          <h3>MAE histogram — rozkład max straty (pipy)</h3>
-          {maeHist.length
-            ? <BarChart
-                labels={maeHist.map(b=>b.bucket+"p")}
-                values={maeHist.map(b=>b.count)}
-                color="rgba(248,81,73,.65)"
-                label="Transakcji"
-              />
-            : <div className="empty">Brak danych</div>
-          }
+        <div className="panel">
+          <div className="ph">Efficiency Metrics</div>
+          <div style={{padding:"12px 16px"}}>
+            <StatRow label="Avg exit efficiency"  val={exitEfficiency?.avg!=null?exitEfficiency.avg.toFixed(1)+"%":null}/>
+            <StatRow label="Best exit efficiency" val={exitEfficiency?.max!=null?exitEfficiency.max.toFixed(1)+"%":null}/>
+            <StatRow label="Worst exit efficiency"val={exitEfficiency?.min!=null?exitEfficiency.min.toFixed(1)+"%":null}/>
+            <StatRow label="Avg entry eff (2m)"   val={entryEfficiency?.avg!=null?entryEfficiency.avg.toFixed(2)+" p":null}/>
+            <StatRow label="Best entry (2m)"      val={entryEfficiency?.max!=null?entryEfficiency.max.toFixed(2)+" p":null}/>
+          </div>
         </div>
       </div>
 
-      {/* ── win vs loss comparison ── */}
       <div className="g2">
-        <div className="chart-wrap">
-          <h3>WIN vs LOSS — porównanie excursion</h3>
-          {(winMFE.avg != null || lossMFE.avg != null)
-            ? <CompareBarChart labels={cmpLabels} winsData={cmpWins} lossesData={cmpLosses}/>
-            : <div className="empty">Brak danych</div>
-          }
+        <div className="panel">
+          <div className="ph">Win vs Loss Comparison</div>
+          <div className="pb">
+            <table><thead><tr><th>Metric</th><th style={{color:"#3fb950"}}>WIN</th><th style={{color:"#f85149"}}>LOSS</th></tr></thead>
+            <tbody>
+              {comparison.map((r,i)=>(
+                <tr key={i}>
+                  <td style={{color:"#8b949e"}}>{r.label}</td>
+                  <td style={{color:"#3fb950",fontWeight:600}}>{r.win!=null?r.win.toFixed(2)+" p":"—"}</td>
+                  <td style={{color:"#f85149",fontWeight:600}}>{r.loss!=null?r.loss.toFixed(2)+" p":"—"}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
         </div>
-        <div className="panel" style={{marginBottom:0}}>
-          <div className="ph">Timing szczegółowy</div>
-          <div style={{padding:"16px"}}>
-            {[
-              ["Time to Profit avg",  timing.timeToProfit?.avg, "m",  "#3fb950"],
-              ["Time to Profit min",  timing.timeToProfit?.min, "m",  "#3fb950"],
-              ["Time to Profit max",  timing.timeToProfit?.max, "m",  "#3fb950"],
-              ["Time to Drawdown avg",timing.timeToDd?.avg,     "m",  "#f85149"],
-              ["Time to Drawdown min",timing.timeToDd?.min,     "m",  "#f85149"],
-              ["Break-even avg",      timing.breakEven?.avg,    "m",  "#d29922"],
-              ["Break-even min",      timing.breakEven?.min,    "m",  "#d29922"],
-              ["Break-even max",      timing.breakEven?.max,    "m",  "#d29922"],
-            ].map(([lbl, val, unit, col])=>(
-              <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #21262d",fontSize:12}}>
-                <span style={{color:"#8b949e"}}>{lbl}</span>
-                <span style={{fontWeight:700,color:val!=null?col:"#484f58"}}>
-                  {val != null ? parseFloat(val).toFixed(1)+unit : "—"}
-                </span>
+        <div className="chart-wrap">
+          <h3>MFE Distribution (pips)</h3>
+          <BarChart
+            labels={mfeHist.map(b=>b.bucket+" p")}
+            values={mfeHist.map(b=>b.count)}
+            color="rgba(63,185,80,.7)"
+            label="Count"
+          />
+        </div>
+      </div>
+      <div className="chart-wrap">
+        <h3>MAE Distribution (pips)</h3>
+        <BarChart
+          labels={maeHist.map(b=>b.bucket+" p")}
+          values={maeHist.map(b=>b.count)}
+          color="rgba(248,81,73,.7)"
+          label="Count"
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── INSIGHTS tab ───────────────────────────────────────────────────────────
+function InsightsTab({ insights, blockedOutcomes, drift }){
+  if(!insights) return <div className="page"><div className="loading">Loading insights…</div></div>;
+
+  const { summary={}, bestSession, worstSession, bestSymbol, worstSymbol,
+          mostExpensiveFilter, bestFingerprint, worstFingerprint,
+          highestMFERegime, recentDriftAlerts=[], sessionStats=[], volStats=[],
+          blockBreakdown=[] } = insights;
+
+  function InsightCard({ title, value, sub, kind="info" }){
+    return (
+      <div className={`icard ${kind}`}>
+        <div className="ititle">{title}</div>
+        <div className="ivalue">{value||"—"}</div>
+        {sub && <div className="isub">{sub}</div>}
+      </div>
+    );
+  }
+
+  const bestSessionStr  = bestSession  ? `${bestSession.session} — ${bestSession.winRate}% WR (${bestSession.trades}t)` : null;
+  const worstSessionStr = worstSession ? `${worstSession.session} — ${worstSession.winRate}% WR (${worstSession.trades}t)` : null;
+  const bestSymStr      = bestSymbol   ? `${bestSymbol.symbol} — ${bestSymbol.winRate}% WR` : null;
+  const worstSymStr     = worstSymbol  ? `${worstSymbol.symbol} — ${worstSymbol.winRate}% WR` : null;
+  const filterStr       = mostExpensiveFilter ? `${mostExpensiveFilter.type.replace("_"," ")} (${mostExpensiveFilter.count})` : null;
+  const bestFpStr       = bestFingerprint  ? `${bestFingerprint.fp} — ${bestFingerprint.winRate}% WR` : null;
+  const worstFpStr      = worstFingerprint ? `${worstFingerprint.fp} — ${worstFingerprint.winRate}% WR` : null;
+  const mfeRegStr       = highestMFERegime ? `${highestMFERegime.bucket} — avg MFE ${highestMFERegime.avgMFE}p` : null;
+
+  const exitEffColor = summary.avgExitEfficiency == null ? "info" : summary.avgExitEfficiency >= 60 ? "good" : summary.avgExitEfficiency >= 35 ? "warn" : "bad";
+  const entryEffColor = summary.avgEntryEfficiency == null ? "info" : summary.avgEntryEfficiency >= 2 ? "good" : summary.avgEntryEfficiency >= 0 ? "warn" : "bad";
+
+  return (
+    <div className="page">
+      {/* ── Summary cards ── */}
+      <div className="sec-label">Decision Intelligence Summary</div>
+      <div className="cards" style={{gridTemplateColumns:"repeat(auto-fill,minmax(155px,1fr))"}}>
+        <div className="card"><div className="lbl">Total Trades</div><div className="val blue">{summary.totalTrades||0}</div></div>
+        <div className="card"><div className="lbl">Total Blocks</div><div className="val yellow">{summary.totalBlocks||0}</div></div>
+        <div className="card"><div className="lbl">Avg Exit Eff</div><div className={`val ${exitEffColor==="good"?"green":exitEffColor==="bad"?"red":"yellow"}`}>{summary.avgExitEfficiency!=null?summary.avgExitEfficiency.toFixed(1)+"%":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg Entry Eff</div><div className={`val ${entryEffColor==="good"?"green":entryEffColor==="bad"?"red":"yellow"}`}>{summary.avgEntryEfficiency!=null?summary.avgEntryEfficiency.toFixed(2)+"p":"—"}</div></div>
+        <div className="card"><div className="lbl">Post-Entry Fails</div><div className="val red">{summary.postEntryFailures||0}</div></div>
+        <div className="card"><div className="lbl">Drift Alerts</div><div className={`val ${(summary.driftAlertCount||0)>0?"yellow":""}`}>{summary.driftAlertCount||0}</div></div>
+      </div>
+
+      {/* ── Key insights grid ── */}
+      <div className="sec-label" style={{marginTop:8}}>Key Insights</div>
+      <div className="g4">
+        <InsightCard title="Best Session"          value={bestSession?.session}       sub={bestSession  ? `${bestSession.winRate}% WR · ${bestSession.trades} trades` : null}  kind="good"/>
+        <InsightCard title="Worst Session"         value={worstSession?.session}      sub={worstSession ? `${worstSession.winRate}% WR · ${worstSession.trades} trades` : null} kind="bad"/>
+        <InsightCard title="Best Symbol"           value={bestSymbol?.symbol}         sub={bestSymStr}  kind="good"/>
+        <InsightCard title="Worst Symbol"          value={worstSymbol?.symbol}        sub={worstSymStr} kind="bad"/>
+        <InsightCard title="Most Blocked Filter"   value={mostExpensiveFilter?.type?.replace(/_block/,"")||"—"} sub={filterStr} kind="warn"/>
+        <InsightCard title="Best Fingerprint"      value={bestFingerprint?.fp}        sub={bestFpStr}   kind="good"/>
+        <InsightCard title="Worst Fingerprint"     value={worstFingerprint?.fp}       sub={worstFpStr}  kind="bad"/>
+        <InsightCard title="Highest MFE Regime"    value={highestMFERegime?.bucket}   sub={mfeRegStr}   kind="info"/>
+      </div>
+
+      {/* ── Session performance table ── */}
+      <div className="g2">
+        <div className="panel">
+          <div className="ph">Session Performance</div>
+          <div className="pb">
+            {sessionStats.length===0 ? <div className="empty">No session data — trades need session field</div> : (
+              <table><thead><tr>
+                <th>Session</th><th>Trades</th><th>Win%</th><th>Avg P</th><th>Avg MFE</th><th>Exit Eff</th>
+              </tr></thead><tbody>
+                {sessionStats.sort((a,b)=>b.winRate-a.winRate).map((s,i)=>(
+                  <tr key={i}>
+                    <td><span className="tag-session">{s.session}</span></td>
+                    <td>{s.trades}</td>
+                    <td><span className={s.winRate>=50?"pp":"pn"}>{s.winRate}%</span></td>
+                    <td>{fmtPips(s.avgPips)}</td>
+                    <td>{s.avgMFE!=null?s.avgMFE.toFixed(2)+"p":"—"}</td>
+                    <td>{s.avgExitEff!=null?s.avgExitEff.toFixed(1)+"%":"—"}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="ph">Volatility Regime Performance</div>
+          <div className="pb">
+            {volStats.length===0 ? <div className="empty">No volatility data — needs trade_close with volatilityBucket</div> : (
+              <table><thead><tr>
+                <th>Regime</th><th>Trades</th><th>Win%</th><th>Avg MFE</th>
+              </tr></thead><tbody>
+                {volStats.sort((a,b)=>b.avgMFE-a.avgMFE).map((v,i)=>(
+                  <tr key={i}>
+                    <td><b>{v.bucket}</b></td>
+                    <td>{v.trades}</td>
+                    <td><span className={v.winRate>=50?"pp":"pn"}>{v.winRate}%</span></td>
+                    <td>{v.avgMFE!=null?v.avgMFE.toFixed(2)+"p":"—"}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Filter effectiveness (blocked outcomes) ── */}
+      <div className="panel">
+        <div className="ph">
+          Filter Effectiveness — Blocked Outcome Analysis (15-min window)
+          <span style={{fontWeight:400,color:"#484f58"}}>total blocked outcomes logged: {blockedOutcomes?.total||0}</span>
+        </div>
+        {!(blockedOutcomes?.summary?.length) ? (
+          <div className="empty" style={{padding:16}}>
+            No blocked outcome data yet — collects after 15 min per blocked signal.
+            <br/><span style={{fontSize:11,color:"#484f58"}}>Purpose: detect whether filters protect edge or destroy opportunity</span>
+          </div>
+        ) : (
+          <table><thead><tr>
+            <th>Filter</th><th>Total</th><th>Moved%</th><th>Stagnant%</th><th>Avg Move</th><th>Verdict</th>
+          </tr></thead><tbody>
+            {(blockedOutcomes.summary||[]).map((b,i)=>{
+              const verdict = b.movedPct > 60 ? "⚠ Filter may cost edge" : b.movedPct < 30 ? "✓ Filter protecting" : "~ Neutral";
+              const verdictColor = b.movedPct > 60 ? "#f85149" : b.movedPct < 30 ? "#3fb950" : "#d29922";
+              return (
+                <tr key={i}>
+                  <td><b>{b.blockType.replace(/_block/,"").replace(/_/," ")}</b></td>
+                  <td>{b.total}</td>
+                  <td><span style={{color:"#f85149"}}>{b.movedPct}%</span></td>
+                  <td><span style={{color:"#3fb950"}}>{(100-b.movedPct).toFixed(1)}%</span></td>
+                  <td>{b.avgMovePips.toFixed(2)}p</td>
+                  <td style={{color:verdictColor,fontSize:11,fontWeight:600}}>{verdict}</td>
+                </tr>
+              );
+            })}
+          </tbody></table>
+        )}
+      </div>
+
+      {/* ── Block breakdown ── */}
+      <div className="panel">
+        <div className="ph">All-Time Block Breakdown</div>
+        <div style={{padding:"16px"}}>
+          {blockBreakdown.length===0 ? <div className="empty">No blocks logged</div> : blockBreakdown.map((b,i)=>{
+            const total = blockBreakdown.reduce((s,x)=>s+x.count,0);
+            const pct   = total>0 ? Math.round(b.count/total*100) : 0;
+            return (
+              <div className="bar-row" key={i}>
+                <div className="blbl">{b.type.replace(/_block/,"").replace(/_/," ")}</div>
+                <div className="btrack"><div className="bfill" style={{width:pct+"%",background:"#d29922"}}/></div>
+                <div className="bval">{b.count} <span className="pz">({pct}%)</span></div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Strategy drift alerts ── */}
+      <div className="panel">
+        <div className="ph">
+          Strategy Drift Monitor
+          <span style={{fontWeight:400,color:"#484f58"}}>Rolling 20-trade window vs all-time. Alert fires at &gt;20% deviation.</span>
+        </div>
+        {drift?.alerts?.length===0 ? (
+          <div className="empty" style={{padding:16}}>No drift alerts — strategy behavior is consistent with all-time baseline.</div>
+        ) : (
+          <div style={{padding:12}}>
+            {(drift?.alerts||[]).map((a,i)=>(
+              <div className="drift-alert" key={i}>
+                <div className="da-title">⚠ DRIFT ALERT — {hms(a.ts)} UTC</div>
+                <div className="da-body">
+                  Window WR: <b style={{color:"#d29922"}}>{a.windowWinRate}%</b> vs All-time: <b>{a.allTimeWinRate}%</b>
+                  {" · "} Drift: <b style={{color:"#f85149"}}>{a.driftPct}%</b>
+                  {" · "} Window avg pips: <b>{a.windowAvgPips}</b>
+                  {" · "} All-time avg pips: <b>{a.allTimeAvgPips}</b>
+                  <br/><span style={{fontSize:11,color:"#484f58"}}>Window size: {a.windowSize} trades · All-time: {a.allTimeTotal} trades</span>
+                </div>
               </div>
             ))}
           </div>
-        </div>
+        )}
       </div>
-
-      {/* ── WIN vs LOSS breakdown table ── */}
-      <div className="panel">
-        <div className="ph">WIN vs LOSS — excursion breakdown</div>
-        <table>
-          <thead><tr>
-            <th>Metric</th>
-            <th style={{textAlign:"right",color:"#3fb950"}}>WIN ({e.wins||0})</th>
-            <th style={{textAlign:"right",color:"#f85149"}}>LOSS ({e.losses||0})</th>
-            <th style={{textAlign:"right"}}>ALL ({e.totalTrades||0})</th>
-          </tr></thead>
-          <tbody>
-            {[
-              ["MFE avg (p)", winMFE.avg, lossMFE.avg, allMFE.avg],
-              ["MFE max (p)", winMFE.max, lossMFE.max, allMFE.max],
-              ["MAE avg (p)", winMAE.avg, lossMAE.avg, allMAE.avg],
-              ["MAE min (p)", winMAE.min, lossMAE.min, allMAE.min],
-            ].map(([label, wv, lv, av])=>(
-              <tr key={label}>
-                <td style={{color:"#8b949e"}}>{label}</td>
-                <td style={{textAlign:"right",color:"#3fb950"}}>{wv!=null?parseFloat(wv).toFixed(2):"—"}</td>
-                <td style={{textAlign:"right",color:"#f85149"}}>{lv!=null?parseFloat(lv).toFixed(2):"—"}</td>
-                <td style={{textAlign:"right"}}>{av!=null?parseFloat(av).toFixed(2):"—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
     </div>
   );
 }
 
-// ── Export button ──────────────────────────────────────────────────────────
-function ExportBar(){
-  const today = new Date().toISOString().slice(0,10);
-  return (
-    <div style={{padding:"10px 24px",background:"#161b22",borderBottom:"1px solid #30363d",display:"flex",gap:10,alignItems:"center"}}>
-      <span style={{fontSize:11,color:"#8b949e",marginRight:4}}>Export:</span>
-      <a className="btn primary" href={`/api/export?date=today&format=json`} download={`forex_${today}.json`}>⬇ JSON</a>
-      <a className="btn" href={`/api/export?date=today&format=csv`} download={`forex_${today}.csv`}>⬇ CSV</a>
-      <span style={{fontSize:11,color:"#484f58",marginLeft:8}}>today ({today})</span>
-    </div>
-  );
-}
-
-// ── App root ───────────────────────────────────────────────────────────────
+// ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
-  const [tab, setTab]         = useState("LIVE");
-  const [live, setLive]       = useState({ botStatus:"starting", dailyTrades:0, openTrades:[], recentBlocks:[] });
-  const [today, setToday]     = useState({});
-  const [stats, setStats]     = useState({});
-  const [symbols, setSymbols] = useState([]);
-  const [trades, setTrades]   = useState([]);
-  const [checks, setChecks]   = useState([]);
-  const [logLines, setLog]    = useState([]);
-  const [lastTs, setLastTs]   = useState(null);
-  const [winrate, setWinrate]           = useState({});
-  const [fingerprints, setFingerprints] = useState({});
-  const [excursion, setExcursion]       = useState({});
-  const [confirmLag, setConfirmLag]     = useState({});
+  const [tab,    setTab]    = useState("LIVE");
+  const [live,   setLive]   = useState({ botStatus:"starting", openTrades:[], recentBlocks:[], dailyTrades:0 });
+  const [today,  setToday]  = useState({});
+  const [stats,  setStats]  = useState({});
+  const [symbols,setSymbols]= useState([]);
+  const [trades, setTrades] = useState([]);
+  const [winrate,setWinrate]= useState({});
+  const [fps,    setFps]    = useState(null);
+  const [exc,    setExc]    = useState(null);
+  const [confirmLag, setConfirmLag] = useState({});
+  const [insights,   setInsights]   = useState(null);
+  const [blockedOut, setBlockedOut] = useState(null);
+  const [drift,      setDrift]      = useState(null);
+  const [events, setEvents] = useState([]);
+  const [logLines,setLogLines]=useState([]);
+  const [ts,     setTs]     = useState(null);
 
-  // fetch data
-  const refresh = useCallback(async()=>{
-    try {
-      const [t,s,sym,tr] = await Promise.all([
-        api("/api/today"),
-        api("/api/stats"),
-        api("/api/symbols"),
-        api("/api/trades?date=today"),
-      ]);
-      setToday(t); setStats(s); setSymbols(sym); setTrades(tr);
+  // Fetch all data
+  async function refresh(){
+    const [todayData, statsData, symsData, tradesData, wrData, lagData] = await Promise.all([
+      api("/api/today"), api("/api/stats"), api("/api/symbols"),
+      api("/api/trades"), api("/api/winrate-analysis"), api("/api/confirmation-lag"),
+    ]);
+    setToday(todayData);
+    setStats(statsData);
+    setSymbols(symsData);
+    setTrades(tradesData);
+    setWinrate(wrData);
+    setConfirmLag(lagData);
+    setTs(new Date().toISOString());
+  }
 
-      const [sells, buys, wr, fps, exc, lag] = await Promise.all([
-        api("/api/events?type=sell_check&date=today&limit=200").catch(()=>[]),
-        api("/api/events?type=buy_check&date=today&limit=200").catch(()=>[]),
-        api("/api/winrate-analysis").catch(()=>({})),
-        api("/api/fingerprints").catch(()=>({})),
-        api("/api/excursion").catch(()=>({})),
-        api("/api/confirmation-lag").catch(()=>({})),
-      ]);
-      const all = [...buys,...sells].sort((a,b)=>b.ts.localeCompare(a.ts));
-      setChecks(all);
-      setWinrate(wr);
-      setFingerprints(fps);
-      setExcursion(exc);
-      setConfirmLag(lag);
+  async function refreshInsights(){
+    const [ins, bo, dr] = await Promise.all([
+      api("/api/insights"), api("/api/blocked-outcomes"), api("/api/drift"),
+    ]);
+    setInsights(ins);
+    setBlockedOut(bo);
+    setDrift(dr);
+  }
 
-      setLastTs(new Date().toISOString());
-    } catch(e){ console.error("refresh error",e); }
-  },[]);
+  async function refreshFps(){ const d=await api("/api/fingerprints"); setFps(d); }
+  async function refreshExc(){ const d=await api("/api/excursion");    setExc(d); }
+  async function refreshEvents(){ const d=await api("/api/events?limit=100"); setEvents(d); }
 
-  // initial + periodic refresh
   useEffect(()=>{
     refresh();
-    const id = setInterval(refresh, 30000);
+    const id=setInterval(refresh,30000);
     return ()=>clearInterval(id);
-  },[refresh]);
+  },[]);
 
-  // SSE
+  // Load tab-specific data on demand
+  useEffect(()=>{
+    if(tab==="WZORCE")   refreshFps();
+    if(tab==="EXCURSION")refreshExc();
+    if(tab==="DECYZJE")  refreshEvents();
+    if(tab==="INSIGHTS") refreshInsights();
+  },[tab]);
+
+  // SSE for live updates
   useEffect(()=>{
     const es = new EventSource("/api/events/stream");
-    es.onmessage = (ev)=>{
-      const msg = JSON.parse(ev.data);
-      setLastTs(new Date().toISOString());
-
+    es.onmessage = (e)=>{
+      const msg = JSON.parse(e.data);
       if(msg.source==="live"){
         if(msg.type==="init"){
-          setLive(msg.live||{});
+          setLive(prev=>({...prev,...msg.live}));
         } else if(msg.type==="pips"){
-          setLive(prev=>({
-            ...prev,
-            openTrades: prev.openTrades.map(t=>t.symbol===msg.symbol?{...t,pips:msg.pips}:t)
-          }));
+          setLive(prev=>{
+            const trades={...prev.openTrades.reduce((a,t)=>({...a,[t.symbol]:t}),{})};
+            if(trades[msg.symbol]) trades[msg.symbol]={...trades[msg.symbol],pips:msg.pips};
+            return {...prev,openTrades:Object.values(trades)};
+          });
         } else if(msg.type==="trade_opened"){
-          setLive(prev=>({
-            ...prev,
-            openTrades:[...prev.openTrades,{symbol:msg.symbol,side:msg.side,pips:0,peak:0,breakEven:false,entryTime:Date.now()}]
-          }));
-          refresh();
+          setLive(prev=>({...prev,openTrades:[...prev.openTrades.filter(t=>t.symbol!==msg.symbol),{symbol:msg.symbol,side:msg.side,pips:0,peak:0,breakEven:false,entryTime:Date.now()}]}));
         } else if(msg.type==="trade_closed"){
           setLive(prev=>({...prev,openTrades:prev.openTrades.filter(t=>t.symbol!==msg.symbol)}));
           refresh();
-        } else if(msg.type==="bot_status"){
-          setLive(prev=>({...prev,botStatus:msg.status}));
         } else if(msg.type==="daily_count"){
           setLive(prev=>({...prev,dailyTrades:msg.value}));
         } else if(msg.type==="block"){
+          setLogLines(prev=>[{t:new Date().toISOString(),line:msg.line},...prev].slice(0,200));
           setLive(prev=>({...prev,recentBlocks:[{t:new Date().toISOString(),line:msg.line},...(prev.recentBlocks||[])].slice(0,20)}));
+        } else if(msg.type==="bot_status"){
+          setLive(prev=>({...prev,botStatus:msg.status}));
         }
       }
-
       if(msg.source==="db"){
-        const t=msg.type;
-        const line = t+" "+(msg.symbol||"")+" "+(msg.data?.reason||"");
-        setLog(prev=>[...prev,{t:msg.ts,line:line.trim()}].slice(-200));
-        if(t==="buy_check"||t==="sell_check"){
-          setChecks(prev=>[{...msg,data:msg.data||{}},...prev].slice(0,300));
-        }
-        if(t==="trade_open"||t==="trade_close"){
-          refresh();
-        }
+        const line = msg.type+" "+( msg.symbol||"" );
+        setLogLines(prev=>[{t:new Date().toISOString(),line},...prev].slice(0,200));
+        setTs(new Date().toISOString());
       }
     };
-    es.onerror=()=>setLive(prev=>({...prev,botStatus:"stopped"}));
-    return()=>es.close();
-  },[refresh]);
+    return ()=>es.close();
+  },[]);
 
-  // auto-scroll log
-  useEffect(()=>{
-    const el=document.getElementById("livelog");
-    if(el) el.scrollTop=el.scrollHeight;
-  },[logLines]);
+  const liveWithArray = {...live, openTrades: Array.isArray(live.openTrades)?live.openTrades:Object.values(live.openTrades||{})};
 
   return (
     <>
-      <Header botStatus={live.botStatus} ts={lastTs}/>
+      <Header botStatus={liveWithArray.botStatus} ts={ts}/>
       <Tabs active={tab} set={setTab}/>
-      <ExportBar/>
-      {tab==="LIVE"      && <LiveTab      live={live} today={today} logLines={logLines}/>}
-      {tab==="ANALIZA"   && <AnalyzaTab   stats={stats} today={today} symbols={symbols} confirmLag={confirmLag}/>}
-      {tab==="WYKRESY"   && <WykreśyTab   symbols={symbols} trades={trades} winrate={winrate}/>}
-      {tab==="DECYZJE"   && <DecyzjeTab   checks={checks}/>}
-      {tab==="WZORCE"    && <WzorceTab    fingerprints={fingerprints}/>}
-      {tab==="EXCURSION" && <ExcursionTab exc={excursion}/>}
+      {tab==="LIVE"      && <LiveTab     live={liveWithArray} today={today} logLines={logLines}/>}
+      {tab==="ANALIZA"   && <AnalyzaTab  stats={stats} today={today} symbols={symbols} confirmLag={confirmLag}/>}
+      {tab==="WYKRESY"   && <WykreśyTab  symbols={symbols} trades={trades} winrate={winrate}/>}
+      {tab==="DECYZJE"   && <DecyzjeTab  events={events}/>}
+      {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
+      {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
+      {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift}/>}
     </>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
 </script>
 </body>
 </html>
