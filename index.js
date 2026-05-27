@@ -83,6 +83,19 @@ const lastSnapshotTime = {};
 const spreadHistory = {};   // symbol → number[] (last 200 readings)
 const lastMidPrice  = {};   // symbol → last mid price (blocked outcome tracking)
 
+// ── ROLLING BLOCK COUNTERS — TELEMETRY ONLY ───────────────────────────────────
+// Incremented at each filter block. Printed every 5 min via startBlockSummaryPrinter().
+// NO strategy decision reads these counters. Purpose: identify dominant choke points.
+const blockCounters = {
+  spread_block:      0,
+  pullback_block:    0,
+  cooldown_block:    0,
+  exhaustion_block:  0,
+  correlation_block: 0,
+  margin_block:      0,
+  spread_edge_block: 0,
+};
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -598,7 +611,7 @@ async function manageTrades() {
       }
 
       // ── PROFIT PROTECTION ─────────────────────────────────────────────────
-      if (peak >= 6 && pips < peak - 3) {
+      if (peak >= 4 && pips < peak - 1.5) {
         const reason = "PROFIT PROTECTION";
         console.log(
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
@@ -642,7 +655,7 @@ async function manageTrades() {
       }
 
       // ── BREAK EVEN — triggers at +3 pips, moves SL to +0.5 pip above entry ─
-   if (pips >= 5) {
+      if (pips >= 3) {
         const breakEven =
           side === "buy"
             ? openPrice + 0.5 * pipMult
@@ -766,9 +779,13 @@ async function strategy(symbol) {
     logEvent({ type: "signal_detected", signalId, symbol, session, hourUTC, dow: evalTime.getUTCDay() });
 
     // ── COOLDOWN ──────────────────────────────────────────────────────────
-    const cooldown = 10 * 60 * 1000;
+    // Reduced 10→5 min: M5/M1 structure doesn't need 10-min lockout;
+    // 5 min still prevents re-entry on same candle cluster. TELEMETRY BENEFIT:
+    // more trade samples per session. RISK IMPACT: minimal — all other filters intact.
+    const cooldown = 5 * 60 * 1000;
     if (cooldownMap[symbol] && Date.now() - cooldownMap[symbol] <= cooldown) {
       console.log(`Cooldown -> ${symbol}`);
+      blockCounters.cooldown_block++;                                         // TELEMETRY ONLY
       logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooldown_block" });
       logEvent({ type: "cooldown_block", signalId, symbol, session });
       if (lastMidPrice[symbol]) {
@@ -798,6 +815,7 @@ async function strategy(symbol) {
     for (const trade of openTrades) {
       if (CORRELATED[symbol]?.includes(trade.instrument)) {
         console.log(`CORRELATION BLOCK -> ${symbol}`);
+        blockCounters.correlation_block++;                                    // TELEMETRY ONLY
         logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "correlation_block" });
         logEvent({ type: "correlation_block", signalId, symbol, session });
         if (lastMidPrice[symbol]) {
@@ -826,6 +844,7 @@ async function strategy(symbol) {
 
     if (spread > 1.5) {
       console.log(`SPREAD BLOCK -> ${symbol}`);
+      blockCounters.spread_block++;                                           // TELEMETRY ONLY
       logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "spread_block", spread, spreadPercentile: spreadPctile });
       logEvent({ type: "spread_block", signalId, symbol, session, spread, spreadPercentile: spreadPctile });
       if (lastMidPrice[symbol]) {
@@ -872,6 +891,7 @@ async function strategy(symbol) {
 
     if (candleStrength > 0.65) {
       console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)}`);
+      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "exhaustion_block", subReason: "candle_overexpanded",
@@ -896,6 +916,7 @@ async function strategy(symbol) {
 
     if (priceStretchPips > atrPips * 0.5) {
       console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)}`);
+      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "exhaustion_block", subReason: "price_overextended",
@@ -923,6 +944,7 @@ async function strategy(symbol) {
     const edgeRatio           = expectedCapturePips / spread;
     if (edgeRatio < 1.8) {
       console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p`);
+      blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "spread_edge_block", edgeRatio: parseFloat(edgeRatio.toFixed(2)),
@@ -988,8 +1010,9 @@ async function strategy(symbol) {
     console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
 
     // PULLBACK FILTER — reject entries where price is more than 1 pip from EMA9
-    if (entryDistance > 2) {
+    if (entryDistance > 1) {
       console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)}`);
+      blockCounters.pullback_block++;                                         // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "pullback_block", entryDistance,
@@ -1022,6 +1045,7 @@ async function strategy(symbol) {
 
     if (marginPercent > 50) {
       console.log("MARGIN PROTECTION ACTIVE");
+      blockCounters.margin_block++;                                           // TELEMETRY ONLY
       logEvent({ type: "margin_block", signalId, symbol, session, marginPercent });
       return;
     }
@@ -1271,4 +1295,23 @@ async function runBot() {
   }
 }
 
+// ── BLOCK SUMMARY PRINTER — TELEMETRY ONLY ───────────────────────────────────
+// Prints rolling block counters every 5 minutes.
+// Counters are NEVER read by any strategy, filter, or risk logic.
+// Sole purpose: surface dominant choke points for human review before optimization.
+function startBlockSummaryPrinter() {
+  setInterval(() => {
+    console.log("===== BLOCK SUMMARY =====");
+    console.log(`spread_block: ${blockCounters.spread_block}`);
+    console.log(`pullback_block: ${blockCounters.pullback_block}`);
+    console.log(`cooldown_block: ${blockCounters.cooldown_block}`);
+    console.log(`exhaustion_block: ${blockCounters.exhaustion_block}`);
+    console.log(`correlation_block: ${blockCounters.correlation_block}`);
+    console.log(`margin_block: ${blockCounters.margin_block}`);
+    console.log(`spread_edge_block: ${blockCounters.spread_edge_block}`);
+    console.log("=========================");
+  }, 5 * 60 * 1000); // every 5 minutes
+}
+
+startBlockSummaryPrinter();
 runBot();
