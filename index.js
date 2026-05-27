@@ -598,7 +598,7 @@ async function manageTrades() {
       }
 
       // ── PROFIT PROTECTION ─────────────────────────────────────────────────
-      if (peak >= 4 && pips < peak - 1.5) {
+      if (peak >= 6 && pips < peak - 3) {
         const reason = "PROFIT PROTECTION";
         console.log(
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
