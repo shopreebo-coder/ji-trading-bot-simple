@@ -942,7 +942,7 @@ async function strategy(symbol) {
     // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ───
     const expectedCapturePips = atrPips * 0.30;
     const edgeRatio           = expectedCapturePips / spread;
-    if (edgeRatio < 1.8) {
+    if (edgeRatio < 1.0) {
       console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p`);
       blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
       logEvent({
