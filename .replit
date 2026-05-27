@@ -38,3 +38,8 @@ externalPort = 3000
 [[ports]]
 localPort = 8083
 externalPort = 3001
+
+[userenv]
+
+[userenv.shared]
+MAX_OPEN_TRADES = "3"
