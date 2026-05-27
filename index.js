@@ -642,7 +642,7 @@ async function manageTrades() {
       }
 
       // ── BREAK EVEN — triggers at +3 pips, moves SL to +0.5 pip above entry ─
-      if (pips >= 3) {
+   if (pips >= 5) {
         const breakEven =
           side === "buy"
             ? openPrice + 0.5 * pipMult
