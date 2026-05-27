@@ -988,7 +988,7 @@ async function strategy(symbol) {
     console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
 
     // PULLBACK FILTER — reject entries where price is more than 1 pip from EMA9
-    if (entryDistance > 1) {
+    if (entryDistance > 2) {
       console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)}`);
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
