@@ -96,6 +96,12 @@ const blockCounters = {
   spread_edge_block: 0,
 };
 
+// ── CONDITION-GATE BLOCK COUNTERS — TELEMETRY ONLY ───────────────────────────
+// Tracks how often each entry gate condition is FALSE after all pre-filters pass.
+// Shows whether entry paralysis lives in pre-filters or in the condition gate itself.
+// NEVER read by any strategy logic.
+const conditionBlockCounters = {};
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -842,8 +848,10 @@ async function strategy(symbol) {
 
     console.log(`${symbol} SPREAD -> ${spread.toFixed(2)} pips`);
 
-    if (spread > 1.5) {
-      console.log(`SPREAD BLOCK -> ${symbol}`);
+    // CALIBRATION v1: spread 1.5→2.0 — was blocking on mildly elevated spreads
+    // that still offered positive expected value. 2.0 is still tight vs retail norms.
+    if (spread > 2.0) {
+      console.log(`SPREAD BLOCK -> ${symbol} (${spread.toFixed(2)}p > 2.0 limit)`);
       blockCounters.spread_block++;                                           // TELEMETRY ONLY
       logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "spread_block", spread, spreadPercentile: spreadPctile });
       logEvent({ type: "spread_block", signalId, symbol, session, spread, spreadPercentile: spreadPctile });
@@ -889,8 +897,10 @@ async function strategy(symbol) {
     // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ─
     const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
 
-    if (candleStrength > 0.65) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)}`);
+    // CALIBRATION v1: candle exhaustion 0.65→0.75 — 0.65 was firing on normal
+    // strong-trend candles. 0.75 still blocks genuinely overextended spikes.
+    if (candleStrength > 0.75) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit 0.75)`);
       blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
@@ -914,8 +924,11 @@ async function strategy(symbol) {
       return;
     }
 
-    if (priceStretchPips > atrPips * 0.5) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)}`);
+    // CALIBRATION v1: price stretch 0.50→0.65 ATR — 0.5× ATR fires in all genuine
+    // trending moves (price IS stretched from EMA when trend is real). 0.65× still
+    // blocks late-entry parabolic extensions without blocking normal trends.
+    if (priceStretchPips > atrPips * 0.65) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)} (limit 0.65×ATR)`);
       blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
@@ -942,8 +955,10 @@ async function strategy(symbol) {
     // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ───
     const expectedCapturePips = atrPips * 0.30;
     const edgeRatio           = expectedCapturePips / spread;
-    if (edgeRatio < 1.8) {
-      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p`);
+    // CALIBRATION v1: edge ratio 1.8→1.5 — requires ATR×0.3 / spread > 1.5, meaning
+    // ATR must be 5× spread. Still ensures positive expected value after spread cost.
+    if (edgeRatio < 1.5) {
+      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p (limit 1.5)`);
       blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
@@ -1009,9 +1024,11 @@ async function strategy(symbol) {
     const entryDistance = Math.abs(m1LastClose - m1LastFast) / pipMultiplier(symbol);
     console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
 
-    // PULLBACK FILTER — reject entries where price is more than 1 pip from EMA9
-    if (entryDistance > 1) {
-      console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)}`);
+    // CALIBRATION v1: pullback window 1.0→1.5 pip — 1 pip was creating a near-impossible
+    // condition: price must be above EMA9 (to satisfy m1close condition) but also within
+    // 1 pip of it. 1.5 pip allows normal pullback entries while still rejecting overextensions.
+    if (entryDistance > 1.5) {
+      console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)} (limit 1.5p)`);
       blockCounters.pullback_block++;                                         // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
@@ -1053,20 +1070,88 @@ async function strategy(symbol) {
     // SAFETY CAP — 500 units max for small account
     const units = Math.min(calculateUnits(balance, stopLossPips, symbol), 500);
 
-    // DEBUG
-    console.log(`${symbol} EMA DIST -> ${emaDistance.toFixed(1)}`);
-    console.log(`${symbol} CANDLE STR -> ${candleStrength.toFixed(2)}`);
-    console.log(`${symbol} M1 FAST -> ${m1LastFast.toFixed(5)}`);
+    // ── STEP 1: ENTRY PIPELINE TRACE — TELEMETRY ONLY ────────────────────────
+    // Full per-condition visibility. Fires after ALL pre-filters pass.
+    // ENTRY_DECISION: ALLOW fires before placeTrade; BLOCK fires when gate fails.
+    const _T = (v) => v ? "✓" : "✗";
 
-    console.log(`${symbol} BUY CHECK:`);
-    console.log(
-      `trend=${lastFast > lastSlow}\ncandle=${bullishCandle(lastCandle)}\nema=${emaDistance > 1.8}\nstrength=${candleStrength > 0.12}\nm1trend=${m1LastFast > m1LastSlow}\nm1candle=${m1Bullish}\nm1prev=${bullishCandle(m1PrevCandle)}\nm1close=${m1LastClose > m1LastFast}\nspread=${spread.toFixed(2)} pips (limit 1.5)`,
-    );
+    const _m5b = {
+      trend:    lastFast > lastSlow,
+      close:    lastClose > lastFast,
+      candle:   bullishCandle(lastCandle),
+      ema:      emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+    };
+    const _m1b = {
+      trend:  m1LastFast > m1LastSlow,
+      candle: m1Bullish,
+      prev:   bullishCandle(m1PrevCandle),
+      close:  m1LastClose > m1LastFast,
+    };
+    const _m5s = {
+      trend:    lastFast < lastSlow,
+      close:    lastClose < lastFast,
+      candle:   bearishCandle(lastCandle),
+      ema:      emaDistance > 1.8,
+      strength: candleStrength > 0.12,
+    };
+    const _m1s = {
+      trend:  m1LastFast < m1LastSlow,
+      candle: m1Bearish,
+      prev:   bearishCandle(m1PrevCandle),
+      close:  m1LastClose < m1LastFast,
+    };
 
-    console.log(`${symbol} SELL CHECK:`);
-    console.log(
-      `trend=${lastFast < lastSlow}\ncandle=${bearishCandle(lastCandle)}\nema=${emaDistance > 1.8}\nstrength=${candleStrength > 0.12}\nm1trend=${m1LastFast < m1LastSlow}\nm1candle=${m1Bearish}\nm1prev=${bearishCandle(m1PrevCandle)}\nm1close=${m1LastClose < m1LastFast}\nspread=${spread.toFixed(2)} pips (limit 1.5)`,
-    );
+    const _buyAll  = Object.values(_m5b).every(Boolean) && Object.values(_m1b).every(Boolean);
+    const _sellAll = Object.values(_m5s).every(Boolean) && Object.values(_m1s).every(Boolean);
+
+    // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
+    // Counts how often each condition is FALSE after all pre-filters pass.
+    // Reveals whether entry paralysis is in pre-filters or gate conditions.
+    if (!_buyAll) {
+      for (const [k, v] of Object.entries({ ..._m5b, ..._m1b })) {
+        if (!v) conditionBlockCounters["buy_" + k] = (conditionBlockCounters["buy_" + k] || 0) + 1;
+      }
+    }
+    if (!_sellAll) {
+      for (const [k, v] of Object.entries({ ..._m5s, ..._m1s })) {
+        if (!v) conditionBlockCounters["sell_" + k] = (conditionBlockCounters["sell_" + k] || 0) + 1;
+      }
+    }
+
+    const _buyFirstFail  = Object.entries({ ..._m5b, ..._m1b }).find(([, v]) => !v)?.[0] || null;
+    const _sellFirstFail = Object.entries({ ..._m5s, ..._m1s }).find(([, v]) => !v)?.[0] || null;
+    const _direction     = _buyAll ? "BUY" : _sellAll ? "SELL" : "NONE";
+
+    console.log(`\n===== ENTRY PIPELINE: ${symbol} [${session}] =====`);
+    console.log(`  ATR: ${atrPips.toFixed(1)}p  Spread: ${spread.toFixed(2)}p  EMA-dist: ${emaDistance.toFixed(1)}p  Candle-str: ${candleStrength.toFixed(2)}  Entry-dist: ${entryDistance.toFixed(2)}p`);
+    console.log(`  M5-BUY : trend${_T(_m5b.trend)} close${_T(_m5b.close)} candle${_T(_m5b.candle)} ema${_T(_m5b.ema)} str${_T(_m5b.strength)}  | M1-BUY : trend${_T(_m1b.trend)} candle${_T(_m1b.candle)} prev${_T(_m1b.prev)} close${_T(_m1b.close)}`);
+    console.log(`  M5-SELL: trend${_T(_m5s.trend)} close${_T(_m5s.close)} candle${_T(_m5s.candle)} ema${_T(_m5s.ema)} str${_T(_m5s.strength)}  | M1-SELL: trend${_T(_m1s.trend)} candle${_T(_m1s.candle)} prev${_T(_m1s.prev)} close${_T(_m1s.close)}`);
+    if (_buyAll) {
+      console.log(`  ENTRY_DECISION: ALLOW BUY`);
+    } else if (_sellAll) {
+      console.log(`  ENTRY_DECISION: ALLOW SELL`);
+    } else {
+      const _buyReject  = _buyFirstFail  ? `buy→${_buyFirstFail}`  : "";
+      const _sellReject = _sellFirstFail ? `sell→${_sellFirstFail}` : "";
+      console.log(`  ENTRY_DECISION: BLOCK  first-fail: ${[_buyReject,_sellReject].filter(Boolean).join(" | ")}`);
+      // Log gate block to telemetry DB — shows patterns that pass ALL filters but miss gate
+      logEvent({
+        type:          "entry_blocked_at_gate",
+        signalId,      symbol, session,
+        direction:     _direction,
+        buyFirstFail:  _buyFirstFail,
+        sellFirstFail: _sellFirstFail,
+        m5Buy:  _m5b,  m1Buy:  _m1b,
+        m5Sell: _m5s,  m1Sell: _m1s,
+        spread, atrPips: parseFloat(atrPips.toFixed(2)),
+        emaDistance: parseFloat(emaDistance.toFixed(2)),
+        candleStrength: parseFloat(candleStrength.toFixed(3)),
+        entryDistance:  parseFloat(entryDistance.toFixed(2)),
+        session,
+      });
+    }
+    console.log(`===============================================`);
 
     // BUY CHECK — log structured decision
     logEvent({
@@ -1301,16 +1386,30 @@ async function runBot() {
 // Sole purpose: surface dominant choke points for human review before optimization.
 function startBlockSummaryPrinter() {
   setInterval(() => {
-    console.log("===== BLOCK SUMMARY =====");
-    console.log(`spread_block: ${blockCounters.spread_block}`);
-    console.log(`pullback_block: ${blockCounters.pullback_block}`);
-    console.log(`cooldown_block: ${blockCounters.cooldown_block}`);
-    console.log(`exhaustion_block: ${blockCounters.exhaustion_block}`);
-    console.log(`correlation_block: ${blockCounters.correlation_block}`);
-    console.log(`margin_block: ${blockCounters.margin_block}`);
+    // PRE-FILTER BLOCKS — fires before M5/M1 analysis
+    console.log("===== BLOCK SUMMARY (PRE-FILTER) =====");
+    console.log(`spread_block:      ${blockCounters.spread_block}`);
     console.log(`spread_edge_block: ${blockCounters.spread_edge_block}`);
-    console.log("=========================");
-  }, 5 * 60 * 1000); // every 5 minutes
+    console.log(`exhaustion_block:  ${blockCounters.exhaustion_block}`);
+    console.log(`pullback_block:    ${blockCounters.pullback_block}`);
+    console.log(`cooldown_block:    ${blockCounters.cooldown_block}`);
+    console.log(`correlation_block: ${blockCounters.correlation_block}`);
+    console.log(`margin_block:      ${blockCounters.margin_block}`);
+    console.log("======================================");
+
+    // CONDITION-GATE BLOCKS — fires after all pre-filters pass, at entry gate
+    // Non-zero = signals reached the gate but a specific condition failed
+    const cgKeys = Object.keys(conditionBlockCounters).sort(
+      (a, b) => conditionBlockCounters[b] - conditionBlockCounters[a]
+    );
+    if (cgKeys.length > 0) {
+      console.log("===== BLOCK SUMMARY (GATE CONDITIONS) =====");
+      for (const k of cgKeys) {
+        console.log(`  ${k}: ${conditionBlockCounters[k]}`);
+      }
+      console.log("===========================================");
+    }
+  }, 5 * 60 * 1000); // every 5 minutes — TELEMETRY ONLY
 }
 
 startBlockSummaryPrinter();
