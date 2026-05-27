@@ -102,6 +102,26 @@ const blockCounters = {
 // NEVER read by any strategy logic.
 const conditionBlockCounters = {};
 
+// ── GATE PASS-RATE COUNTERS — TELEMETRY ONLY ─────────────────────────────────
+// Accumulates per-condition pass rates across every pipeline evaluation.
+// "Passes" = condition is TRUE for at least one direction (buy OR sell).
+// Directional-neutral conditions (ema, strength) track once.
+// Printed every 5 min as GATE_PASS_RATE — shows which condition is hardest to satisfy.
+// NEVER read by any strategy logic.
+const gatePassCounters = {
+  total:       0,
+  m5_trend:    0,  // lastFast > lastSlow  (buy) or < (sell)
+  m5_candle:   0,  // bullishOrNeutralCandle OR bearishOrNeutralCandle on M5 last
+  m5_close:    0,  // lastClose > lastFast (buy) or < (sell)
+  m5_ema:      0,  // emaDistance > 1.8 (same for both)
+  m5_strength: 0,  // candleStrength > 0.12 (same for both)
+  m1_trend:    0,  // m1LastFast > m1LastSlow (buy) or < (sell)
+  m1_candle:   0,  // m1Bullish or m1Bearish (current M1 candle)
+  m1_prev:     0,  // bullishOrNeutralCandle(m1PrevCandle) or bearish equiv
+  m1_close:    0,  // m1LastClose > m1LastFast (buy) or < (sell)
+  any_signal:  0,  // both buy AND sell fully pass
+};
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -310,6 +330,31 @@ function bearishCandle(candle) {
 
 function candleBodySize(candle) {
   return Math.abs(parseFloat(candle.mid.c) - parseFloat(candle.mid.o));
+}
+
+// ── CALIBRATION v2: Neutral candle helpers ────────────────────────────────────
+// Body-to-range ratio measures how "decisive" a candle is. A doji/inside bar
+// (body < 40% of high-low range) is indecision, not counter-trend — it should
+// not block an otherwise aligned entry. Only strongly counter-directional bars
+// (body ≥ 40% of range AND wrong direction) now block.
+// Used ONLY for M5 last candle and M1 prev candle confirmation.
+// Core M1 current candle and all trend conditions remain strict.
+function candleBodyRatio(candle) {
+  const body  = Math.abs(parseFloat(candle.mid.c) - parseFloat(candle.mid.o));
+  const range = Math.max(parseFloat(candle.mid.h) - parseFloat(candle.mid.l), 0.000001);
+  return body / range;
+}
+
+function bullishOrNeutralCandle(candle) {
+  // Passes: green candle OR doji/indecision (body < 40% of range)
+  // Blocks: strongly bearish candle (red + body ≥ 40% of range)
+  return bullishCandle(candle) || candleBodyRatio(candle) < 0.40;
+}
+
+function bearishOrNeutralCandle(candle) {
+  // Passes: red candle OR doji/indecision (body < 40% of range)
+  // Blocks: strongly bullish candle (green + body ≥ 40% of range)
+  return bearishCandle(candle) || candleBodyRatio(candle) < 0.40;
 }
 
 // ── ACCOUNT DATA ──────────────────────────────────────────────────────────────
@@ -1075,30 +1120,34 @@ async function strategy(symbol) {
     // ENTRY_DECISION: ALLOW fires before placeTrade; BLOCK fires when gate fails.
     const _T = (v) => v ? "✓" : "✗";
 
+    // CALIBRATION v2: candle conditions use bullishOrNeutralCandle for M5 last bar
+    // and M1 prev bar. These allow doji/indecision candles (body < 40% range).
+    // M1 CURRENT candle (m1Bullish/m1Bearish) stays strict — requires actual direction.
+    // All trend conditions (lastFast/lastSlow, m1LastFast/m1LastSlow) stay strict.
     const _m5b = {
       trend:    lastFast > lastSlow,
       close:    lastClose > lastFast,
-      candle:   bullishCandle(lastCandle),
+      candle:   bullishOrNeutralCandle(lastCandle),     // v2: doji M5 bar ok in confirmed trend
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
     };
     const _m1b = {
       trend:  m1LastFast > m1LastSlow,
-      candle: m1Bullish,
-      prev:   bullishCandle(m1PrevCandle),
+      candle: m1Bullish,                                 // strict: current M1 candle must be green
+      prev:   bullishOrNeutralCandle(m1PrevCandle),      // v2: doji prev bar ok
       close:  m1LastClose > m1LastFast,
     };
     const _m5s = {
       trend:    lastFast < lastSlow,
       close:    lastClose < lastFast,
-      candle:   bearishCandle(lastCandle),
+      candle:   bearishOrNeutralCandle(lastCandle),     // v2: doji M5 bar ok in confirmed trend
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
     };
     const _m1s = {
       trend:  m1LastFast < m1LastSlow,
-      candle: m1Bearish,
-      prev:   bearishCandle(m1PrevCandle),
+      candle: m1Bearish,                                 // strict: current M1 candle must be red
+      prev:   bearishOrNeutralCandle(m1PrevCandle),      // v2: doji prev bar ok
       close:  m1LastClose < m1LastFast,
     };
 
@@ -1106,18 +1155,39 @@ async function strategy(symbol) {
     const _sellAll = Object.values(_m5s).every(Boolean) && Object.values(_m1s).every(Boolean);
 
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
-    // Counts how often each condition is FALSE after all pre-filters pass.
-    // Reveals whether entry paralysis is in pre-filters or gate conditions.
+    // Use unique keys per tier to prevent m5/m1 key collision.
+    // m5_* and m1_* allow us to distinguish where each tier fails.
     if (!_buyAll) {
-      for (const [k, v] of Object.entries({ ..._m5b, ..._m1b })) {
-        if (!v) conditionBlockCounters["buy_" + k] = (conditionBlockCounters["buy_" + k] || 0) + 1;
+      for (const [k, v] of Object.entries(_m5b)) {
+        if (!v) conditionBlockCounters["buy_m5_" + k] = (conditionBlockCounters["buy_m5_" + k] || 0) + 1;
+      }
+      for (const [k, v] of Object.entries(_m1b)) {
+        if (!v) conditionBlockCounters["buy_m1_" + k] = (conditionBlockCounters["buy_m1_" + k] || 0) + 1;
       }
     }
     if (!_sellAll) {
-      for (const [k, v] of Object.entries({ ..._m5s, ..._m1s })) {
-        if (!v) conditionBlockCounters["sell_" + k] = (conditionBlockCounters["sell_" + k] || 0) + 1;
+      for (const [k, v] of Object.entries(_m5s)) {
+        if (!v) conditionBlockCounters["sell_m5_" + k] = (conditionBlockCounters["sell_m5_" + k] || 0) + 1;
+      }
+      for (const [k, v] of Object.entries(_m1s)) {
+        if (!v) conditionBlockCounters["sell_m1_" + k] = (conditionBlockCounters["sell_m1_" + k] || 0) + 1;
       }
     }
+
+    // GATE_PASS_RATE counters — TELEMETRY ONLY
+    // Tracks per-condition pass rate across all pipeline evaluations.
+    // "Passes" = condition TRUE for at least one direction (buy OR sell).
+    gatePassCounters.total++;
+    if (_m5b.trend    || _m5s.trend)    gatePassCounters.m5_trend++;
+    if (_m5b.candle   || _m5s.candle)   gatePassCounters.m5_candle++;
+    if (_m5b.close    || _m5s.close)    gatePassCounters.m5_close++;
+    if (_m5b.ema)                        gatePassCounters.m5_ema++;      // same both dirs
+    if (_m5b.strength)                   gatePassCounters.m5_strength++; // same both dirs
+    if (_m1b.trend    || _m1s.trend)    gatePassCounters.m1_trend++;
+    if (_m1b.candle   || _m1s.candle)   gatePassCounters.m1_candle++;
+    if (_m1b.prev     || _m1s.prev)     gatePassCounters.m1_prev++;
+    if (_m1b.close    || _m1s.close)    gatePassCounters.m1_close++;
+    if (_buyAll       || _sellAll)       gatePassCounters.any_signal++;
 
     const _buyFirstFail  = Object.entries({ ..._m5b, ..._m1b }).find(([, v]) => !v)?.[0] || null;
     const _sellFirstFail = Object.entries({ ..._m5s, ..._m1s }).find(([, v]) => !v)?.[0] || null;
@@ -1153,34 +1223,34 @@ async function strategy(symbol) {
     }
     console.log(`===============================================`);
 
-    // BUY CHECK — log structured decision
+    // BUY CHECK — log structured decision (conditions match gate v2)
     logEvent({
       type: "buy_check",
       signalId, symbol, session,
       trend:    lastFast > lastSlow,
-      candle:   bullishCandle(lastCandle),
+      candle:   bullishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
       m1trend:  m1LastFast > m1LastSlow,
       m1candle: m1Bullish,
-      m1prev:   bullishCandle(m1PrevCandle),
+      m1prev:   bullishOrNeutralCandle(m1PrevCandle), // v2
       m1close:  m1LastClose > m1LastFast,
       entryDistance, emaDistance, candleStrength, spread,
       volatilityBucket: volBkt, trendBucket: trendBkt,
       spreadBucket: spreadBkt, compressionBucket: comprBkt,
     });
 
-    // SELL CHECK — log structured decision
+    // SELL CHECK — log structured decision (conditions match gate v2)
     logEvent({
       type: "sell_check",
       signalId, symbol, session,
       trend:    lastFast < lastSlow,
-      candle:   bearishCandle(lastCandle),
+      candle:   bearishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
       m1trend:  m1LastFast < m1LastSlow,
       m1candle: m1Bearish,
-      m1prev:   bearishCandle(m1PrevCandle),
+      m1prev:   bearishOrNeutralCandle(m1PrevCandle), // v2
       m1close:  m1LastClose < m1LastFast,
       entryDistance, emaDistance, candleStrength, spread,
       volatilityBucket: volBkt, trendBucket: trendBkt,
@@ -1188,21 +1258,22 @@ async function strategy(symbol) {
     });
 
     // DECISION FINGERPRINT — 6-char hash (T=true, F=false per condition)
+    // Updated to match gate v2 candle conditions for accurate fingerprint correlation.
     const _buyFp = {
       trend:    lastFast > lastSlow,
-      candle:   bullishCandle(lastCandle),
+      candle:   bullishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
       m1trend:  m1LastFast > m1LastSlow,
-      m1prev:   bullishCandle(m1PrevCandle),
+      m1prev:   bullishOrNeutralCandle(m1PrevCandle), // v2
     };
     const _sellFp = {
       trend:    lastFast < lastSlow,
-      candle:   bearishCandle(lastCandle),
+      candle:   bearishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > 0.12,
       m1trend:  m1LastFast < m1LastSlow,
-      m1prev:   bearishCandle(m1PrevCandle),
+      m1prev:   bearishOrNeutralCandle(m1PrevCandle), // v2
     };
     const _fpHash = (fp) => Object.values(fp).map((v) => (v ? "T" : "F")).join("");
 
@@ -1225,19 +1296,23 @@ async function strategy(symbol) {
     };
 
     // ── BUY ───────────────────────────────────────────────────────────────
+    // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
+    // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
     if (
       lastFast > lastSlow &&
       lastClose > lastFast &&
-      bullishCandle(lastCandle) &&
+      bullishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
       candleStrength > 0.12 &&
       m1LastFast > m1LastSlow &&
       m1Bullish &&
-      bullishCandle(m1PrevCandle) &&
+      bullishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose > m1LastFast
     ) {
+      const _m5CandleType = bullishCandle(lastCandle) ? "bullish" : "neutral-doji";
+      const _m1PrevType   = bullishCandle(m1PrevCandle) ? "bullish" : "neutral-doji";
       console.log(
-        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + 2 bullish candles + close above fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + bullish candle + ${_m1PrevType} prev + close above EMA9\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
@@ -1257,19 +1332,23 @@ async function strategy(symbol) {
     }
 
     // ── SELL ──────────────────────────────────────────────────────────────
+    // CALIBRATION v2: M5 last candle and M1 prev candle use bearishOrNeutralCandle
+    // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
     if (
       lastFast < lastSlow &&
       lastClose < lastFast &&
-      bearishCandle(lastCandle) &&
+      bearishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
       candleStrength > 0.12 &&
       m1LastFast < m1LastSlow &&
       m1Bearish &&
-      bearishCandle(m1PrevCandle) &&
+      bearishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose < m1LastFast
     ) {
+      const _m5CandleType = bearishCandle(lastCandle) ? "bearish" : "neutral-doji";
+      const _m1PrevType   = bearishCandle(m1PrevCandle) ? "bearish" : "neutral-doji";
       console.log(
-        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + 2 bearish candles + close below fast EMA\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips} pips\nTP: ${takeProfitPips} pips\nRR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + bearish candle + ${_m1PrevType} prev + close below EMA9\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
@@ -1408,6 +1487,24 @@ function startBlockSummaryPrinter() {
         console.log(`  ${k}: ${conditionBlockCounters[k]}`);
       }
       console.log("===========================================");
+    }
+
+    // GATE_PASS_RATE — per-condition pass rate since last restart
+    if (gatePassCounters.total > 0) {
+      const pct = (n) => (n / gatePassCounters.total * 100).toFixed(0) + "%";
+      console.log("===== GATE_PASS_RATE =====");
+      console.log(`  evaluations:  ${gatePassCounters.total}`);
+      console.log(`  m5_trend:     ${pct(gatePassCounters.m5_trend)}   (buy or sell M5 EMA20>EMA50)`);
+      console.log(`  m5_candle:    ${pct(gatePassCounters.m5_candle)}   (M5 last bar non-reversal)`);
+      console.log(`  m5_close:     ${pct(gatePassCounters.m5_close)}   (M5 close on correct EMA side)`);
+      console.log(`  m5_ema:       ${pct(gatePassCounters.m5_ema)}   (EMA dist > 1.8p)`);
+      console.log(`  m5_strength:  ${pct(gatePassCounters.m5_strength)}   (candle body > 12% ATR)`);
+      console.log(`  m1_trend:     ${pct(gatePassCounters.m1_trend)}   (M1 EMA9 aligned)`);
+      console.log(`  m1_candle:    ${pct(gatePassCounters.m1_candle)}   (M1 current candle directional)`);
+      console.log(`  m1_prev:      ${pct(gatePassCounters.m1_prev)}   (M1 prev bar non-reversal)`);
+      console.log(`  m1_close:     ${pct(gatePassCounters.m1_close)}   (M1 close on correct EMA9 side)`);
+      console.log(`  any_signal:   ${pct(gatePassCounters.any_signal)}   (full gate pass — trade eligible)`);
+      console.log("==========================");
     }
   }, 5 * 60 * 1000); // every 5 minutes — TELEMETRY ONLY
 }
