@@ -269,10 +269,68 @@ function recordClosedTrade({ win, pips, mfe, duration }) {
 // the filter fired. Purpose: measure whether filters protect or destroy edge.
 // NO strategy logic reads blocked_outcome events.
 async function checkBlockedOutcomes() {
-  const now      = Date.now();
-  const DELAY_MS = 15 * 60 * 1000;
-  let   processed = 0;
+  const now           = Date.now();
+  const DELAY_MS      = 15 * 60 * 1000;
+  const EARLY_DELAY_MS = 3 * 60 * 1000;
+  let   processed      = 0;
+  let   earlyProcessed = 0;
 
+  // ── 3-MIN EARLY CHECK — TELEMETRY ONLY ──────────────────────────────────
+  // Fires once per signal (guarded by earlyChecked flag) between 3–15 min after block.
+  // Logs blocked_outcome_3min events — faster feedback than the 15-min full check.
+  // For exhaustion blocks: checks whether price moved in the blocked trade direction
+  // (continuedTrend / exhaustionRecovery fields) — measures filter false-positive rate.
+  // NEVER reads or modifies any strategy state. Signal remains in blockedSignals
+  // for the 15-min full check regardless of earlyChecked status.
+  for (const [, b] of Object.entries(blockedSignals)) {
+    if (b.earlyChecked)                           continue;
+    if (now - b.blockTime < EARLY_DELAY_MS)       continue;
+    if (now - b.blockTime >= DELAY_MS)            continue; // 15-min loop handles these
+    if (earlyProcessed >= 3)                      break;
+
+    try {
+      const priceData = await axios.get(
+        `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/pricing`,
+        { headers, params: { instruments: b.symbol } },
+      );
+      const ask     = parseFloat(priceData.data.prices[0].asks[0].price);
+      const bid     = parseFloat(priceData.data.prices[0].bids[0].price);
+      const midNow  = (ask + bid) / 2;
+      const pipMult = pipMultiplier(b.symbol);
+      const rawMove = (midNow - b.blockPrice) / pipMult;
+      const absPips = parseFloat(Math.abs(rawMove).toFixed(2));
+
+      const earlyPayload = {
+        type:             "blocked_outcome_3min",
+        signalId:         b.signalId,
+        symbol:           b.symbol,
+        blockType:        b.blockType,
+        blockPrice:       b.blockPrice,
+        currentPrice:     parseFloat(midNow.toFixed(5)),
+        absoluteMovePips: absPips,
+        rawMovePips:      parseFloat(rawMove.toFixed(2)),
+        minutesElapsed:   parseFloat(((now - b.blockTime) / 60000).toFixed(1)),
+      };
+
+      // EXHAUSTION RECOVERY — did price continue in the intended trade direction?
+      // trendDir stored at block time: "up" = M5 was bullish, "down" = bearish.
+      // > 2p continuation = exhaustionRecovery:true → filter may have been wrong.
+      if (b.blockType === "exhaustion_block" && b.trendDir) {
+        const continuedTrend = b.trendDir === "up" ? rawMove > 2.0 : rawMove < -2.0;
+        earlyPayload.trendDir           = b.trendDir;
+        earlyPayload.continuedTrend     = continuedTrend;
+        earlyPayload.exhaustionRecovery = continuedTrend;
+      }
+
+      logEvent(earlyPayload);
+      b.earlyChecked = true;
+      earlyProcessed++;
+    } catch (_) {
+      b.earlyChecked = true; // prevent retry spin on persistent API errors
+    }
+  }
+
+  // ── 15-MIN FULL CHECK ────────────────────────────────────────────────────
   for (const [id, b] of Object.entries(blockedSignals)) {
     if (now - b.blockTime < DELAY_MS) continue;
     if (processed >= 5) break; // cap API calls per cycle
@@ -989,20 +1047,20 @@ async function strategy(symbol) {
     // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ─
     const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
 
-    // CALIBRATION v3: Regime-aware exhaustion — base thresholds scaled by exhaustionMultiplier.
-    // Telemetry evidence: exhaustion_block ≈ 60% of all evaluations; avg post-block move ≈ 7p
-    // (market trended after block — filter was suppressing valid continuation entries).
+    // CALIBRATION v3.1: Regime-aware exhaustion — hotfix recalibration.
+    // Evidence: exhaustion_block still ≈ 60% of evals post-v3; avg post-block move ≈ 7p.
+    // HOTFIX: stretch base 0.95→1.10 (candle base stays 1.10); mults 1.2/0.7→1.35/0.90.
     //
-    // STRONG_TREND (emaDistance ≥ 5p): multiplier 1.2 — sustained EMA separation means
-    //   large candles and stretch from EMA are EXPECTED (trend continuation, not reversal).
-    //   Effective limits: candle > 1.32 body/ATR | stretch > 1.14× ATR  (rarely fires)
+    // STRONG_TREND (emaDistance ≥ 5p): multiplier 1.35
+    //   Effective limits: candle > 1.485 body/ATR | stretch > 1.485× ATR  (essentially never fires)
+    //   Sustained EMA separation: large candles + stretch are EXPECTED — trend continuation.
     //
-    // MEDIUM/WEAK TREND (emaDistance < 5p): multiplier 0.7 — less developed trend needs
-    //   tighter guard against entering a fading move.
-    //   Effective limits: candle > 0.77 body/ATR | stretch > 0.665× ATR
-    const exhaustionMultiplier   = trendBkt === "STRONG_TREND" ? 1.2 : 0.7;
+    // MEDIUM/WEAK TREND (emaDistance < 5p): multiplier 0.90
+    //   Effective limits: candle > 0.99 body/ATR | stretch > 0.99× ATR
+    //   (v3 was 0.77/0.665 — hotfix allows moderate trend continuation moves through)
+    const exhaustionMultiplier   = trendBkt === "STRONG_TREND" ? 1.35 : 0.90;
     const candleExhaustionLimit  = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
-    const stretchExhaustionLimit = parseFloat((0.95 * exhaustionMultiplier).toFixed(3));
+    const stretchExhaustionLimit = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
 
     if (candleStrength > candleExhaustionLimit) {
       console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit=${candleExhaustionLimit} regime=${trendBkt} mult=${exhaustionMultiplier})`);
@@ -1027,6 +1085,7 @@ async function strategy(symbol) {
         blockedSignals[signalId] = {
           signalId, symbol, blockType: "exhaustion_block",
           blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
         };
       }
       return;
@@ -1055,6 +1114,7 @@ async function strategy(symbol) {
         blockedSignals[signalId] = {
           signalId, symbol, blockType: "exhaustion_block",
           blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
         };
       }
       return;
