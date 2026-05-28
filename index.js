@@ -122,6 +122,37 @@ const gatePassCounters = {
   any_signal:  0,  // both buy AND sell fully pass
 };
 
+// ── PRE-FILTER FUNNEL COUNTERS — TELEMETRY ONLY ──────────────────────────────
+// Tracks the full evaluation funnel from strategy() entry to trade placement.
+// evaluations:     past cooldown/correlation/disabled (before spread fetch)
+// spread_pass:     passed spread ≤ 2.0 check
+// exhaustion_pass: passed both exhaustion checks (candle + price stretch)
+// spread_edge_pass: passed edge ratio check
+// gate_reached:    past pullback + margin — reached BUY/SELL evaluation
+// entry_allowed:   trade actually placed (BUY or SELL fired)
+// Printed every 5 min as PRE_FILTER_PASS_RATE. NEVER read by strategy logic.
+const preFilterCounters = {
+  evaluations:      0,
+  spread_pass:      0,
+  exhaustion_pass:  0,
+  spread_edge_pass: 0,
+  gate_reached:     0,
+  entry_allowed:    0,
+};
+
+// ── FILTER EFFECTIVENESS COUNTERS — TELEMETRY ONLY ───────────────────────────
+// In-memory tally of post-block market outcomes by filter type.
+// Updated by checkBlockedOutcomes() when the 15-min delayed price check resolves.
+// "trended": absPips > 5 — market moved significantly after block (filter may have
+//            suppressed a valid entry — evidence to relax threshold further).
+// "flat":    absPips ≤ 5 — market stagnant (filter may have protected correctly).
+// avg_move_pips = totalMovePips / blocked — true average regardless of threshold.
+// NEVER read by strategy logic. Purpose: evidence-based threshold calibration.
+const filterEffectivenessCounters = {
+  exhaustion:  { blocked: 0, trended: 0, flat: 0, totalMovePips: 0 },
+  spread_edge: { blocked: 0, trended: 0, flat: 0, totalMovePips: 0 },
+};
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -270,6 +301,18 @@ async function checkBlockedOutcomes() {
         minutesElapsed:   parseFloat(((now - b.blockTime) / 60000).toFixed(1)),
         wouldHaveOutcome: absPips > 1.0 ? "MOVED" : "STAGNANT",
       });
+
+      // FILTER EFFECTIVENESS — TELEMETRY ONLY
+      // Tallies per-type post-block market moves. > 5p = market trended after block.
+      if (b.blockType === "exhaustion_block" || b.blockType === "spread_edge_block") {
+        const key = b.blockType === "exhaustion_block" ? "exhaustion" : "spread_edge";
+        const eff = filterEffectivenessCounters[key];
+        eff.blocked++;
+        eff.totalMovePips += absPips;
+        if (absPips > 5) eff.trended++;
+        else             eff.flat++;
+      }
+
       processed++;
     } catch (_) {
       // silent — telemetry failure never affects bot
@@ -887,6 +930,8 @@ async function strategy(symbol) {
       return;
     }
 
+    preFilterCounters.evaluations++;                                          // TELEMETRY ONLY
+
     // ── REAL SPREAD FILTER ────────────────────────────────────────────────
     const spread       = await getSpread(symbol);
     const spreadPctile = getSpreadPercentile(symbol, spread);
@@ -908,6 +953,8 @@ async function strategy(symbol) {
       }
       return;
     }
+
+    preFilterCounters.spread_pass++;                                          // TELEMETRY ONLY
 
     // ── M5 ANALYSIS ───────────────────────────────────────────────────────
     const candles = await getCandles(symbol, 100, MAIN_TIMEFRAME);
@@ -942,23 +989,39 @@ async function strategy(symbol) {
     // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ─
     const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
 
-    // CALIBRATION v1: candle exhaustion 0.65→0.75 — 0.65 was firing on normal
-    // strong-trend candles. 0.75 still blocks genuinely overextended spikes.
-    if (candleStrength > 0.75) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit 0.75)`);
+    // CALIBRATION v3: Regime-aware exhaustion — base thresholds scaled by exhaustionMultiplier.
+    // Telemetry evidence: exhaustion_block ≈ 60% of all evaluations; avg post-block move ≈ 7p
+    // (market trended after block — filter was suppressing valid continuation entries).
+    //
+    // STRONG_TREND (emaDistance ≥ 5p): multiplier 1.2 — sustained EMA separation means
+    //   large candles and stretch from EMA are EXPECTED (trend continuation, not reversal).
+    //   Effective limits: candle > 1.32 body/ATR | stretch > 1.14× ATR  (rarely fires)
+    //
+    // MEDIUM/WEAK TREND (emaDistance < 5p): multiplier 0.7 — less developed trend needs
+    //   tighter guard against entering a fading move.
+    //   Effective limits: candle > 0.77 body/ATR | stretch > 0.665× ATR
+    const exhaustionMultiplier   = trendBkt === "STRONG_TREND" ? 1.2 : 0.7;
+    const candleExhaustionLimit  = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
+    const stretchExhaustionLimit = parseFloat((0.95 * exhaustionMultiplier).toFixed(3));
+
+    if (candleStrength > candleExhaustionLimit) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit=${candleExhaustionLimit} regime=${trendBkt} mult=${exhaustionMultiplier})`);
       blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "exhaustion_block", subReason: "candle_overexpanded",
       });
       logEvent({
-        type:             "exhaustion_block",
+        type:                 "exhaustion_block",
         signalId, symbol, session,
-        reason:           "candle_overexpanded",
-        expansionRatio:   parseFloat(candleStrength.toFixed(3)),
-        priceStretchPips: parseFloat(priceStretchPips.toFixed(2)),
-        atrPips:          parseFloat(atrPips.toFixed(2)),
-        volatilityBucket: volBkt,
+        reason:               "candle_overexpanded",
+        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
+        candleExhaustionLimit,
+        exhaustionMultiplier,
+        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:              parseFloat(atrPips.toFixed(2)),
+        volatilityBucket:     volBkt,
+        trendBucket:          trendBkt,
       });
       if (lastMidPrice[symbol]) {
         blockedSignals[signalId] = {
@@ -969,24 +1032,24 @@ async function strategy(symbol) {
       return;
     }
 
-    // CALIBRATION v1: price stretch 0.50→0.65 ATR — 0.5× ATR fires in all genuine
-    // trending moves (price IS stretched from EMA when trend is real). 0.65× still
-    // blocks late-entry parabolic extensions without blocking normal trends.
-    if (priceStretchPips > atrPips * 0.65) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)} (limit 0.65×ATR)`);
+    if (priceStretchPips > atrPips * stretchExhaustionLimit) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)} (limit=${stretchExhaustionLimit}×ATR regime=${trendBkt})`);
       blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
         reason: "exhaustion_block", subReason: "price_overextended",
       });
       logEvent({
-        type:             "exhaustion_block",
+        type:                 "exhaustion_block",
         signalId, symbol, session,
-        reason:           "price_overextended",
-        expansionRatio:   parseFloat(candleStrength.toFixed(3)),
-        priceStretchPips: parseFloat(priceStretchPips.toFixed(2)),
-        atrPips:          parseFloat(atrPips.toFixed(2)),
-        volatilityBucket: volBkt,
+        reason:               "price_overextended",
+        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
+        stretchExhaustionLimit,
+        exhaustionMultiplier,
+        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:              parseFloat(atrPips.toFixed(2)),
+        volatilityBucket:     volBkt,
+        trendBucket:          trendBkt,
       });
       if (lastMidPrice[symbol]) {
         blockedSignals[signalId] = {
@@ -996,14 +1059,17 @@ async function strategy(symbol) {
       }
       return;
     }
+    preFilterCounters.exhaustion_pass++;                                      // TELEMETRY ONLY
 
     // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ───
     const expectedCapturePips = atrPips * 0.30;
     const edgeRatio           = expectedCapturePips / spread;
-    // CALIBRATION v1: edge ratio 1.8→1.5 — requires ATR×0.3 / spread > 1.5, meaning
-    // ATR must be 5× spread. Still ensures positive expected value after spread cost.
-    if (edgeRatio < 1.5) {
-      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p (limit 1.5)`);
+    // CALIBRATION v3: edge ratio 1.5→1.15 — telemetry shows spread_edge_block ≈ 24%
+    // of all evaluations; avg post-block move ≈ 11p. Blocked setups were expanding.
+    // 1.15 still requires expectedCapturePips > spread × 1.15 — positive expected value
+    // after spread cost is preserved. Formula: ATR×0.3 / spread > 1.15 → ATR > 3.83× spread.
+    if (edgeRatio < 1.15) {
+      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p (limit 1.15)`);
       blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
       logEvent({
         type: "signal_filtered", signalId, symbol, session,
@@ -1027,6 +1093,7 @@ async function strategy(symbol) {
       }
       return;
     }
+    preFilterCounters.spread_edge_pass++;                                     // TELEMETRY ONLY
 
     // ── MARKET REGIME SNAPSHOT — TELEMETRY ONLY ───────────────────────────
     logEvent({
@@ -1114,6 +1181,8 @@ async function strategy(symbol) {
 
     // SAFETY CAP — 500 units max for small account
     const units = Math.min(calculateUnits(balance, stopLossPips, symbol), 500);
+
+    preFilterCounters.gate_reached++;                                         // TELEMETRY ONLY
 
     // ── STEP 1: ENTRY PIPELINE TRACE — TELEMETRY ONLY ────────────────────────
     // Full per-condition visibility. Fires after ALL pre-filters pass.
@@ -1329,6 +1398,7 @@ async function strategy(symbol) {
       });
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
+      preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY
     }
 
     // ── SELL ──────────────────────────────────────────────────────────────
@@ -1365,6 +1435,7 @@ async function strategy(symbol) {
       });
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
+      preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY
     }
   } catch (err) {
     console.log(`Strategy error ${symbol}`, err.message);
@@ -1505,6 +1576,35 @@ function startBlockSummaryPrinter() {
       console.log(`  m1_close:     ${pct(gatePassCounters.m1_close)}   (M1 close on correct EMA9 side)`);
       console.log(`  any_signal:   ${pct(gatePassCounters.any_signal)}   (full gate pass — trade eligible)`);
       console.log("==========================");
+    }
+
+    // PRE_FILTER_PASS_RATE — full funnel from strategy() entry to trade placed
+    if (preFilterCounters.evaluations > 0) {
+      const pf = preFilterCounters;
+      const pct = (n, d) => d > 0 ? (n / d * 100).toFixed(0) + "%" : "n/a";
+      console.log("===== PRE_FILTER_PASS_RATE =====");
+      console.log(`  evaluations:      ${pf.evaluations}  (past cooldown/correlation/disabled)`);
+      console.log(`  spread_pass:      ${pct(pf.spread_pass, pf.evaluations)}  (${pf.spread_pass}/${pf.evaluations})`);
+      console.log(`  exhaustion_pass:  ${pct(pf.exhaustion_pass, pf.spread_pass)}  of spread_pass (${pf.exhaustion_pass}/${pf.spread_pass})`);
+      console.log(`  spread_edge_pass: ${pct(pf.spread_edge_pass, pf.exhaustion_pass)}  of exhaustion_pass (${pf.spread_edge_pass}/${pf.exhaustion_pass})`);
+      console.log(`  gate_reached:     ${pct(pf.gate_reached, pf.spread_edge_pass)}  of spread_edge_pass (${pf.gate_reached}/${pf.spread_edge_pass})`);
+      console.log(`  entry_allowed:    ${pct(pf.entry_allowed, pf.evaluations)}  overall  (${pf.entry_allowed}/${pf.evaluations} evals → trade)`);
+      console.log("================================");
+    }
+
+    // FILTER EFFECTIVENESS — post-block market move by filter type
+    const _printEff = (label, eff) => {
+      if (eff.blocked === 0) return;
+      const avgMove = (eff.totalMovePips / eff.blocked).toFixed(1);
+      const trendPct = (eff.trended / eff.blocked * 100).toFixed(0);
+      const flatPct  = (eff.flat     / eff.blocked * 100).toFixed(0);
+      console.log(`  ${label}: blocked=${eff.blocked} trended(>5p)=${trendPct}% flat=${flatPct}% avg_move=${avgMove}p`);
+    };
+    if (filterEffectivenessCounters.exhaustion.blocked > 0 || filterEffectivenessCounters.spread_edge.blocked > 0) {
+      console.log("===== FILTER EFFECTIVENESS (15-min post-block) =====");
+      _printEff("exhaustion ", filterEffectivenessCounters.exhaustion);
+      _printEff("spread_edge", filterEffectivenessCounters.spread_edge);
+      console.log("====================================================");
     }
   }, 5 * 60 * 1000); // every 5 minutes — TELEMETRY ONLY
 }
