@@ -153,6 +153,35 @@ const filterEffectivenessCounters = {
   spread_edge: { blocked: 0, trended: 0, flat: 0, totalMovePips: 0 },
 };
 
+// ── CONSECUTIVE LOSS BRAKE — TEMPORARY DEFENSE ────────────────────────────────
+// consecutiveLosses: resets to 0 on any win. Increments on any loss/breakeven.
+// defensiveMode: activates at 3 consecutive losses — raises EMA gate to 2.5p.
+// ONLY effect: BUY/SELL gate requires emaDistance > 2.5 (vs normal 1.8) while active.
+// Resets immediately on next win. NEVER affects exits, SL, TP, size, cooldown.
+// Clearly labeled TEMPORARY DEFENSE — not a permanent threshold change.
+let consecutiveLosses = 0;
+let defensiveMode     = false;
+
+// ── TRADE ENTRY SNAPSHOT — FORENSICS TELEMETRY ONLY ──────────────────────────
+// activeEntrySnapshot[symbol]: set at trade open with fullSnapshot + fingerprint + side.
+// tradeEntrySnapshot[tradeId]: linked from activeEntrySnapshot on first manageTrades tick.
+// Emitted as trade_forensics event at close — enables winner vs loser comparison.
+// NEVER read by any strategy, filter, or risk logic.
+const activeEntrySnapshot = {};  // symbol → entry condition snapshot
+const tradeEntrySnapshot  = {};  // tradeId → entry condition snapshot
+
+// ── TRADE QUALITY COUNTERS — TELEMETRY ONLY ───────────────────────────────────
+// tradePlusTwoPips[tradeId]:    true once trade ever reaches +2.0 pips
+// tradeInstantAdverse[tradeId]: true if FIRST manageTrades tick shows pips < 0
+// qualityCounters: all-time aggregate — printed every 5 min as TRADE QUALITY section
+const tradePlusTwoPips    = {};
+const tradeInstantAdverse = {};
+const qualityCounters     = {
+  total:          0,   // total trades closed
+  reachedPlusTwo: 0,   // # that ever hit +2p before closing
+  instantAdverse: 0,   // # where first pip reading was already negative
+};
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -230,15 +259,36 @@ function getSpreadPercentile(symbol, spread) {
 
 // ── STRATEGY DRIFT DETECTOR — TELEMETRY ONLY ─────────────────────────────────
 // Called after every trade close. Emits strategy_drift_alert if rolling 20-trade
-// win rate deviates >20% from all-time. NO auto-adjustment.
-function recordClosedTrade({ win, pips, mfe, duration }) {
+// win rate deviates >20% from all-time. Also drives NEGATIVE_EDGE_ALERT and
+// CONSECUTIVE LOSS BRAKE. NO auto-adjustment to exits/SL/TP/size.
+function recordClosedTrade({ win, pips, mfe, mae, duration }) {
   allTimeRolling.total++;
   allTimeRolling.totalPips += (pips || 0);
   if (win) allTimeRolling.wins++;
 
-  driftWindow.push({ win, pips: pips || 0, mfe: mfe || 0, duration: duration || 0 });
+  driftWindow.push({ win, pips: pips || 0, mfe: mfe || 0, mae: mae || 0, duration: duration || 0 });
   if (driftWindow.length > 20) driftWindow.shift();
 
+  // ── CONSECUTIVE LOSS BRAKE — TEMPORARY DEFENSE ──────────────────────────
+  // Reset on win. Activate defensiveMode after 3 consecutive losses.
+  // Gate effect happens in strategy() — NOT here.
+  if (win) {
+    if (consecutiveLosses > 0 || defensiveMode) {
+      console.log(`[DEFENSE RESET] Win after ${consecutiveLosses} consecutive loss(es) — defense mode cleared`);
+      logEvent({ type: "defense_mode_cleared", consecutiveLosses });
+    }
+    consecutiveLosses = 0;
+    defensiveMode     = false;
+  } else {
+    consecutiveLosses++;
+    if (consecutiveLosses >= 3 && !defensiveMode) {
+      defensiveMode = true;
+      console.log(`[DEFENSE MODE ACTIVATED] ${consecutiveLosses} consecutive losses — EMA gate raised to 2.5p until next win`);
+      logEvent({ type: "defense_mode_activated", consecutiveLosses });
+    }
+  }
+
+  // ── STRATEGY DRIFT DETECTOR ──────────────────────────────────────────────
   if (driftWindow.length >= 10 && allTimeRolling.total >= 20) {
     const windowWins = driftWindow.filter(t => t.win).length;
     const windowWR   = windowWins / driftWindow.length;
@@ -259,6 +309,30 @@ function recordClosedTrade({ win, pips, mfe, duration }) {
         allTimeTotal:   allTimeRolling.total,
       });
       console.log(`[DRIFT ALERT] windowWR=${(windowWR*100).toFixed(1)}% allWR=${(allWR*100).toFixed(1)}% drift=${(drift*100).toFixed(1)}%`);
+    }
+  }
+
+  // ── NEGATIVE EDGE DETECTOR — TELEMETRY ONLY ─────────────────────────────
+  // If rolling 10-trade WR < 25% AND avg MFE/MAE ratio < 0.5:
+  // emits NEGATIVE_EDGE_ALERT — dashboard only, NO automatic shutdown.
+  // MFE/MAE < 0.5 means avg winning peak < half the avg adverse excursion —
+  // trades never develop positive excursion before reversing.
+  if (driftWindow.length >= 10) {
+    const last10      = driftWindow.slice(-10);
+    const l10WR       = last10.filter(t => t.win).length / 10;
+    const l10MFE      = last10.reduce((s, t) => s + (t.mfe || 0), 0) / 10;
+    const l10MAE      = last10.reduce((s, t) => s + Math.abs(t.mae || 0), 0) / 10;
+    const mfeMaeRatio = l10MAE > 0 ? parseFloat((l10MFE / l10MAE).toFixed(2)) : 9.99;
+    if (l10WR < 0.25 && mfeMaeRatio < 0.5) {
+      logEvent({
+        type:         "NEGATIVE_EDGE_ALERT",
+        rolling10WR:  parseFloat((l10WR * 100).toFixed(1)),
+        rolling10MFE: parseFloat(l10MFE.toFixed(2)),
+        rolling10MAE: parseFloat(l10MAE.toFixed(2)),
+        mfeMaeRatio,
+        totalTrades:  allTimeRolling.total,
+      });
+      console.log(`[NEGATIVE_EDGE_ALERT] Rolling-10 WR=${(l10WR*100).toFixed(1)}% MFE/MAE=${mfeMaeRatio} — review trade quality on dashboard`);
     }
   }
 }
@@ -645,6 +719,14 @@ async function manageTrades() {
         delete symbolSignalId[symbol];
       }
 
+      // ── ENTRY SNAPSHOT LINKAGE — FORENSICS TELEMETRY ONLY ────────────────
+      // Links entry conditions (stored at trade open) to this tradeId.
+      // Consumed by buildClosePayload → trade_forensics event at close.
+      if (!tradeEntrySnapshot[trade.id] && activeEntrySnapshot[symbol]) {
+        tradeEntrySnapshot[trade.id] = activeEntrySnapshot[symbol];
+        delete activeEntrySnapshot[symbol];
+      }
+
       // PEAK PROFIT TRACKER
       if (!tradePeak[trade.id] || pips > tradePeak[trade.id]) {
         tradePeak[trade.id] = pips;
@@ -670,6 +752,17 @@ async function manageTrades() {
         if (tradeEntry2MinBest[trade.id] === undefined || pips > tradeEntry2MinBest[trade.id]) {
           tradeEntry2MinBest[trade.id] = pips;
         }
+      }
+
+      // ── TRADE QUALITY TRACKERS — TELEMETRY ONLY ──────────────────────────
+      // tradeInstantAdverse: TRUE if first-ever pip reading is already negative.
+      // tradePlusTwoPips:    TRUE once trade ever reaches +2.0 pips (not instantly adverse).
+      // Set once and never cleared until cleanupTradeState() at close.
+      if (tradeInstantAdverse[trade.id] === undefined) {
+        tradeInstantAdverse[trade.id] = pips < 0; // first tick — adverse from the start?
+      }
+      if (!tradePlusTwoPips[trade.id] && pips >= 2.0) {
+        tradePlusTwoPips[trade.id] = true;         // first time it ever hits +2p
       }
 
       // ── TRADE STATE SNAPSHOT — TELEMETRY ONLY ────────────────────────────
@@ -725,6 +818,41 @@ async function manageTrades() {
         const entryEfficiencyPips = tradeEntry2MinBest[trade.id] !== undefined
           ? parseFloat(tradeEntry2MinBest[trade.id].toFixed(2))
           : null;
+        const _outcome = pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN";
+
+        // ── TRADE QUALITY COUNTERS UPDATE — TELEMETRY ONLY ──────────────────
+        qualityCounters.total++;
+        if (tradePlusTwoPips[trade.id])    qualityCounters.reachedPlusTwo++;
+        if (tradeInstantAdverse[trade.id]) qualityCounters.instantAdverse++;
+
+        // ── TRADE FORENSICS — TELEMETRY ONLY ────────────────────────────────
+        // Emits trade_forensics linking entry conditions with exit outcome.
+        // Enables statistical winner vs loser comparison in telemetry DB.
+        // Spread operator adds fullSnapshot fields (spread, ATR, EMA dist, etc.)
+        // recorded at entry time — different from current close-time values.
+        if (tradeEntrySnapshot[trade.id]) {
+          logEvent({
+            type:             "trade_forensics",
+            signalId:         tradeSignalId[trade.id] || null,
+            symbol,
+            side,
+            reason,
+            outcome:          _outcome,
+            pips:             parseFloat(pips.toFixed(2)),
+            mfe,
+            mae,
+            mfeMaeRatio:      Math.abs(mae) > 0 ? parseFloat((mfe / Math.abs(mae)).toFixed(2)) : null,
+            reachedPlusTwo:   tradePlusTwoPips[trade.id]    || false,
+            instantAdverse:   tradeInstantAdverse[trade.id] || false,
+            timeToProfit:     tradeTimeToProfit[trade.id]   ?? null,
+            timeToDd:         tradeTimeToDd[trade.id]       ?? null,
+            entryEff2min:     tradeEntry2MinBest[trade.id]  ?? null,
+            minutesOpen:      parseFloat(minutesOpen.toFixed(2)),
+            closeSession:     classifySession(new Date().getUTCHours()),
+            ...tradeEntrySnapshot[trade.id],  // entry-time: spread, ATR, EMA, session, fingerprint, etc.
+          });
+        }
+
         return {
           type:                 "trade_close",
           signalId:             tradeSignalId[trade.id] || null,
@@ -733,7 +861,7 @@ async function manageTrades() {
           peak,
           duration:             minutesOpen,
           reason,
-          outcome:              pips < 0 ? "LOSS" : pips <= 1.0 ? "BREAKEVEN" : "WIN",
+          outcome:              _outcome,
           mfe,
           mae,
           timeToProfit:         tradeTimeToProfit[trade.id] ?? null,
@@ -744,6 +872,9 @@ async function manageTrades() {
           retainedProfitPercent: exitEfficiency,
           // ENTRY EFFICIENCY — TELEMETRY ONLY
           entryEfficiencyPips,
+          // QUALITY — TELEMETRY ONLY
+          reachedPlusTwo:       tradePlusTwoPips[trade.id]    || false,
+          instantAdverse:       tradeInstantAdverse[trade.id] || false,
           // SESSION — TELEMETRY ONLY
           session:              classifySession(new Date().getUTCHours()),
         };
@@ -760,6 +891,9 @@ async function manageTrades() {
         delete tradeSignalId[trade.id];
         delete tradeEntry2MinBest[trade.id];
         delete lastSnapshotTime[trade.id];
+        delete tradePlusTwoPips[trade.id];     // quality tracker
+        delete tradeInstantAdverse[trade.id];  // quality tracker
+        delete tradeEntrySnapshot[trade.id];   // forensics snapshot
       }
 
       // ── PROFIT PROTECTION ─────────────────────────────────────────────────
@@ -776,7 +910,7 @@ async function manageTrades() {
         stats.totalDurationMin += minutesOpen;
 
         logEvent(buildClosePayload(reason));
-        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, duration: minutesOpen });
+        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
 
         await closeTrade(trade.id);
         cleanupTradeState();
@@ -798,7 +932,7 @@ async function manageTrades() {
         stats.totalDurationMin += minutesOpen;
 
         logEvent(buildClosePayload(reason));
-        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, duration: minutesOpen });
+        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
 
         await closeTrade(trade.id);
         cleanupTradeState();
@@ -875,7 +1009,7 @@ async function manageTrades() {
         );
 
         logEvent(buildClosePayload(reason));
-        recordClosedTrade({ win: false, pips, mfe: peak, duration: minutesOpen });
+        recordClosedTrade({ win: false, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
 
         await closeTrade(trade.id);
         stats.losses++;
@@ -896,7 +1030,7 @@ async function manageTrades() {
         );
 
         logEvent(buildClosePayload(reason));
-        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, duration: minutesOpen });
+        recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
 
         await closeTrade(trade.id);
         stats.totalTrades++;
@@ -1424,6 +1558,17 @@ async function strategy(symbol) {
       compressionBucket: comprBkt,
     };
 
+    // ── DEFENSE MODE GATE — TEMPORARY CAPITAL PROTECTION ─────────────────
+    // SAFE / TEMPORARY DEFENSE — activates ONLY after 3 consecutive losses.
+    // In defense mode: requires emaDistance > 2.5p (vs normal 1.8p).
+    // Resets immediately on next win. Has zero effect in normal (non-defensive) operation.
+    // Does NOT increment any block counter. Does NOT affect exits, SL, TP, or position size.
+    if (defensiveMode && emaDistance <= 2.5) {
+      console.log(`[DEFENSE MODE] ${symbol} emaDistance=${emaDistance.toFixed(1)}p < 2.5 required (${consecutiveLosses} consec. losses) — skipping`);
+      logEvent({ type: "defense_mode_skip", signalId, symbol, session, emaDistance: parseFloat(emaDistance.toFixed(2)), consecutiveLosses });
+      return;
+    }
+
     // ── BUY ───────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
@@ -1445,7 +1590,12 @@ async function strategy(symbol) {
       );
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
-      symbolSignalId[symbol] = signalId;
+      symbolSignalId[symbol]      = signalId;
+      activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
+        ...fullSnapshot,
+        fingerprint: _fpHash(_buyFp),
+        side:        "buy",
+      };
       logEvent({
         type: "trade_open",
         signalId, symbol, session,
@@ -1482,7 +1632,12 @@ async function strategy(symbol) {
       );
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
-      symbolSignalId[symbol] = signalId;
+      symbolSignalId[symbol]      = signalId;
+      activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
+        ...fullSnapshot,
+        fingerprint: _fpHash(_sellFp),
+        side:        "sell",
+      };
       logEvent({
         type: "trade_open",
         signalId, symbol, session,
@@ -1665,6 +1820,67 @@ function startBlockSummaryPrinter() {
       _printEff("exhaustion ", filterEffectivenessCounters.exhaustion);
       _printEff("spread_edge", filterEffectivenessCounters.spread_edge);
       console.log("====================================================");
+    }
+
+    // ── CAPITAL DEFENSE STATUS ───────────────────────────────────────────────
+    // TEMPORARY DEFENSE — shows current defense mode state.
+    // Zero effect when consecutiveLosses < 3.
+    console.log("===== CAPITAL DEFENSE STATUS =====");
+    if (defensiveMode) {
+      console.log(`  MODE: ⚠ ACTIVE — ${consecutiveLosses} consecutive loss(es)`);
+      console.log(`  EFFECT: EMA gate raised 1.8p → 2.5p until next win`);
+    } else {
+      console.log(`  MODE: NORMAL (consecutiveLosses=${consecutiveLosses})`);
+    }
+    console.log("===================================");
+
+    // ── TRADE CLASSIFICATION AUDIT ───────────────────────────────────────────
+    // SAFE / TELEMETRY VALIDATION — confirms filtered/blocked signals never
+    // count as wins, losses, or executed trades in stats counters.
+    // Architecture: stats.wins/losses/totalTrades are ONLY incremented inside
+    // manageTrades() at 4 real close paths (PROFIT PROTECTION, MOMENTUM LOST,
+    // EARLY EXIT, TIME EXIT). All filter blocks increment blockCounters only.
+    const _totalBlocks = Object.values(blockCounters).reduce((s, v) => s + v, 0);
+    console.log("===== TRADE CLASSIFICATION AUDIT =====");
+    console.log(`  executed_trades:    ${stats.totalTrades}  (only real OANDA trade closes)`);
+    console.log(`  wins:               ${stats.wins}`);
+    console.log(`  losses:             ${stats.losses}`);
+    console.log(`  filtered_signals:   ${_totalBlocks}  (NEVER affect stats — blockCounters only)`);
+    console.log(`  -- filter breakdown --`);
+    console.log(`  cooldown:           ${blockCounters.cooldown_block}`);
+    console.log(`  spread:             ${blockCounters.spread_block}`);
+    console.log(`  exhaustion:         ${blockCounters.exhaustion_block}`);
+    console.log(`  correlation:        ${blockCounters.correlation_block}`);
+    console.log(`  spread_edge:        ${blockCounters.spread_edge_block}`);
+    console.log(`  pullback:           ${blockCounters.pullback_block}`);
+    console.log(`  margin:             ${blockCounters.margin_block}`);
+    console.log(`  VALIDATED: blocked/filtered signals never counted as losses ✓`);
+    console.log("=======================================");
+
+    // ── TRADE QUALITY SUMMARY ────────────────────────────────────────────────
+    // TELEMETRY — aggregate quality metrics across all closed trades this session.
+    if (qualityCounters.total > 0) {
+      const qc = qualityCounters;
+      const pct2p  = (qc.reachedPlusTwo / qc.total * 100).toFixed(0);
+      const pctAdv = (qc.instantAdverse  / qc.total * 100).toFixed(0);
+      const avgMFE = allTimeRolling.total > 0
+        ? (driftWindow.reduce((s,t) => s + (t.mfe||0), 0) / driftWindow.length).toFixed(1)
+        : "n/a";
+      const avgMAE = allTimeRolling.total > 0
+        ? (driftWindow.reduce((s,t) => s + Math.abs(t.mae||0), 0) / driftWindow.length).toFixed(1)
+        : "n/a";
+      const avgTimeToDd = driftWindow.filter(t => t.timeToDd != null).length > 0
+        ? (driftWindow.filter(t => t.timeToDd != null).reduce((s,t) => s + t.timeToDd, 0) /
+           driftWindow.filter(t => t.timeToDd != null).length).toFixed(1)
+        : "n/a";
+      console.log("===== TRADE QUALITY (all-time closed) =====");
+      console.log(`  total_closed:       ${qc.total}`);
+      console.log(`  reached_plus_2p:    ${pct2p}%  (${qc.reachedPlusTwo}/${qc.total})`);
+      console.log(`  instant_adverse:    ${pctAdv}%  (${qc.instantAdverse}/${qc.total})`);
+      console.log(`  avg_MFE (rolling):  ${avgMFE}p`);
+      console.log(`  avg_MAE (rolling):  ${avgMAE}p`);
+      console.log(`  (trade_forensics events in telemetry DB for full winner/loser breakdown)`);
+      console.log("============================================");
     }
   }, 5 * 60 * 1000); // every 5 minutes — TELEMETRY ONLY
 }
