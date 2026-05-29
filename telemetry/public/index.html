@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS"];
+const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -897,6 +897,108 @@ function InsightsTab({ insights, blockedOutcomes, drift }){
   );
 }
 
+// ── BLOCKED WINNERS tab ─────────────────────────────────────────────────────
+function BlockedTab({ blocked }){
+  if(!blocked) return <div className="page"><div className="empty">Loading almost-trade forensics…</div></div>;
+
+  const { conditionStats=[], totalSignals=0, totalOutcomes=0, recentSignals=[] } = blocked;
+
+  const condLabel = {
+    m5trend:  "M5 Trend (EMA20>50)",
+    m5close:  "M5 Close on EMA side",
+    m5candle: "M5 Candle non-reversal",
+    ema:      "EMA Distance > 1.8p",
+    strength: "Candle Strength > 0.12",
+    m1trend:  "M1 Trend (EMA9>21)",
+    m1candle: "M1 Current Candle dir.",
+    m1prev:   "M1 Prev Candle",
+    m1close:  "M1 Close on EMA9 side",
+  };
+
+  return (
+    <div className="page">
+      <div className="cards">
+        <div className="card"><div className="lbl">Almost Trades</div><div className="val blue">{totalSignals}</div></div>
+        <div className="card"><div className="lbl">15-min Resolved</div><div className="val">{totalOutcomes}</div></div>
+        <div className="card"><div className="lbl">Conditions w/ Data</div><div className="val">{conditionStats.length}</div></div>
+        <div className="card"><div className="lbl">Pending Check</div><div className="val yellow">{totalSignals - totalOutcomes < 0 ? 0 : totalSignals - totalOutcomes}</div></div>
+      </div>
+
+      <div className="panel">
+        <div className="ph">
+          BLOCKED WINNERS — Per-Condition Analysis
+          <span style={{fontWeight:400,color:"#484f58"}}>
+            Which failing condition blocks the most future winners? Sorted by +4p% (strongest missed move signal).
+          </span>
+        </div>
+        {conditionStats.length===0
+          ? <div className="empty" style={{padding:16}}>No outcomes resolved yet — 15-min timer still running for recent signals. Check back soon.</div>
+          : (
+            <table>
+              <thead><tr>
+                <th>Condition</th>
+                <th>Blocked</th>
+                <th>Correct Dir %</th>
+                <th>+2p %</th>
+                <th>+4p %</th>
+                <th>+6p %</th>
+                <th>Avg Move</th>
+              </tr></thead>
+              <tbody>
+                {conditionStats.map((c,i)=>{
+                  const p2 = parseFloat(c.pct2p);
+                  const p4 = parseFloat(c.pct4p);
+                  const p6 = parseFloat(c.pct6p);
+                  const pcd = parseFloat(c.dirCorrectPct);
+                  return (
+                    <tr key={i}>
+                      <td style={{fontFamily:"monospace",fontWeight:600,color:"#e6edf3"}}>{condLabel[c.condition]||c.condition}</td>
+                      <td>{c.total}</td>
+                      <td style={{color:pcd>=60?"#3fb950":pcd>=40?"#d29922":"#f85149",fontWeight:600}}>{c.dirCorrectPct}%</td>
+                      <td style={{color:p2>=50?"#3fb950":"#8b949e"}}>{c.pct2p}%</td>
+                      <td style={{color:p4>=40?"#d29922":"#8b949e",fontWeight:p4>=40?700:400}}>{c.pct4p}%</td>
+                      <td style={{color:p6>=30?"#f85149":"#8b949e"}}>{c.pct6p}%</td>
+                      <td style={{color:"#79c0ff"}}>{c.avgMove}p</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )
+        }
+      </div>
+
+      <div className="panel">
+        <div className="ph">Recent Almost-Trade Signals <span style={{fontWeight:400,color:"#484f58"}}>passCount ≥ 4, trade NOT placed</span></div>
+        <div className="pb">
+          {recentSignals.length===0
+            ? <div className="empty" style={{padding:16}}>No signals logged yet.</div>
+            : (
+              <table>
+                <thead><tr>
+                  <th>Time UTC</th><th>Symbol</th><th>Dir</th><th>Pass</th><th>Failed Conditions</th><th>Session</th>
+                </tr></thead>
+                <tbody>
+                  {recentSignals.map((s,i)=>(
+                    <tr key={i}>
+                      <td style={{fontSize:11,color:"#484f58"}}>{s.ts?s.ts.slice(11,19):""}</td>
+                      <td style={{fontWeight:600}}>{s.symbol}</td>
+                      <td><span className={s.direction==="buy"?"tag buy":"tag sell"}>{(s.direction||"").toUpperCase()}</span></td>
+                      <td><span style={{color:"#3fb950",fontWeight:700}}>{s.passCount}/9</span></td>
+                      <td style={{fontSize:11,color:"#d29922"}}>{(s.failedConditions||[]).join(", ")}</td>
+                      <td><span className="tag-session">{s.session||""}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
   const [tab,    setTab]    = useState("LIVE");
@@ -911,6 +1013,7 @@ function App(){
   const [confirmLag, setConfirmLag] = useState({});
   const [insights,   setInsights]   = useState(null);
   const [blockedOut, setBlockedOut] = useState(null);
+  const [blocked,    setBlocked]    = useState(null);
   const [drift,      setDrift]      = useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
@@ -943,6 +1046,7 @@ function App(){
   async function refreshFps(){ const d=await api("/api/fingerprints"); setFps(d); }
   async function refreshExc(){ const d=await api("/api/excursion");    setExc(d); }
   async function refreshEvents(){ const d=await api("/api/events?limit=100"); setEvents(d); }
+  async function refreshBlocked(){ const d=await api("/api/almost-trades"); setBlocked(d); }
 
   useEffect(()=>{
     refresh();
@@ -956,6 +1060,7 @@ function App(){
     if(tab==="EXCURSION")refreshExc();
     if(tab==="DECYZJE")  refreshEvents();
     if(tab==="INSIGHTS") refreshInsights();
+    if(tab==="BLOCKED")  refreshBlocked();
   },[tab]);
 
   // SSE for live updates
@@ -1008,6 +1113,7 @@ function App(){
       {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
       {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift}/>}
+      {tab==="BLOCKED"   && <BlockedTab  blocked={blocked}/>}
     </>
   );
 }

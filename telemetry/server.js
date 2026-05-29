@@ -920,6 +920,50 @@ app.get("/api/insights", (req, res) => {
   });
 });
 
+// ── API: GET /api/almost-trades ───────────────────────────────────────────────
+// Returns per-condition stats aggregated from almost_trade_outcome events.
+// "Almost trades" = setups passing >= 4 of 9 gate conditions that were NOT executed.
+app.get("/api/almost-trades", (req, res) => {
+  const date     = req.query.date ? parseDate(req.query.date) : undefined;
+  const outcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+  const signals  = queryEvents({ type: "almost_trade",         date, limit: 10000 });
+
+  const condMap = {};
+  for (const o of outcomes) {
+    const d = o.data;
+    for (const fc of (d.failedConditions || [])) {
+      if (!condMap[fc]) condMap[fc] = { condition: fc, total: 0, reached2p: 0, reached4p: 0, reached6p: 0, totalMovePips: 0, correctDir: 0 };
+      condMap[fc].total++;
+      if (d.reached2p)        condMap[fc].reached2p++;
+      if (d.reached4p)        condMap[fc].reached4p++;
+      if (d.reached6p)        condMap[fc].reached6p++;
+      if (d.directionCorrect) condMap[fc].correctDir++;
+      condMap[fc].totalMovePips += Math.abs(d.maxMovePips || 0);
+    }
+  }
+
+  const conditionStats = Object.values(condMap).map(c => ({
+    condition:     c.condition,
+    total:         c.total,
+    reached2p:     c.reached2p,
+    reached4p:     c.reached4p,
+    reached6p:     c.reached6p,
+    pct2p:         c.total ? ((c.reached2p / c.total) * 100).toFixed(1) : "0.0",
+    pct4p:         c.total ? ((c.reached4p / c.total) * 100).toFixed(1) : "0.0",
+    pct6p:         c.total ? ((c.reached6p / c.total) * 100).toFixed(1) : "0.0",
+    avgMove:       c.total ? (c.totalMovePips / c.total).toFixed(1) : "0.0",
+    dirCorrectPct: c.total ? ((c.correctDir / c.total) * 100).toFixed(1) : "0.0",
+  })).sort((a, b) => parseFloat(b.pct4p) - parseFloat(a.pct4p));
+
+  res.json({
+    totalSignals:   signals.length,
+    totalOutcomes:  outcomes.length,
+    conditionStats,
+    recentSignals:  signals.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
+    recentOutcomes: outcomes.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
+  });
+});
+
 // ── root → dashboard ──────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));

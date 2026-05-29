@@ -182,6 +182,15 @@ const qualityCounters     = {
   instantAdverse: 0,   // # where first pip reading was already negative
 };
 
+// ── ALMOST TRADE FORENSICS — TELEMETRY ONLY ──────────────────────────────────
+// Stores setups that reach passCount >= 4 gate conditions but do NOT become trades.
+// 15-min delayed price check measures what the market did → evidence for which
+// failing condition is blocking future winners vs protecting capital.
+// almostTradeSignals: atId → pending almost-trade payload awaiting price check
+// almostTradeCounters: per-condition aggregate from resolved 15-min outcomes
+const almostTradeSignals  = {};
+const almostTradeCounters = {};  // populated lazily when conditions first appear
+
 // ── BLOCKED SIGNAL OUTCOME — TELEMETRY ONLY ──────────────────────────────────
 // 15-min delayed price check after a signal was filtered.
 // signalId → { signalId, symbol, blockType, blockTime, blockPrice }
@@ -450,6 +459,86 @@ async function checkBlockedOutcomes() {
       // silent — telemetry failure never affects bot
     }
     delete blockedSignals[id];
+  }
+}
+
+// ── ALMOST TRADE OUTCOME CHECKER — TELEMETRY ONLY ────────────────────────────
+// Runs each main loop cycle. For almost-trade signals older than 15 min, fetches
+// price and emits almost_trade_outcome showing what the market did after the near-miss.
+// Per-condition counters updated for periodic printer BLOCKED WINNERS section.
+// ZERO strategy impact. NO strategy logic reads these results — pure observation.
+async function checkAlmostTradeOutcomes() {
+  const now      = Date.now();
+  const DELAY_MS = 15 * 60 * 1000;
+  let   processed = 0;
+
+  for (const [id, at] of Object.entries(almostTradeSignals)) {
+    if (now - at.decisionTime < DELAY_MS) continue;
+    if (processed >= 5)                   break;
+    if (!at.decisionPrice)               { delete almostTradeSignals[id]; continue; }
+
+    try {
+      const priceData = await axios.get(
+        `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/pricing`,
+        { headers, params: { instruments: at.symbol } },
+      );
+      const ask    = parseFloat(priceData.data.prices[0].asks[0].price);
+      const bid    = parseFloat(priceData.data.prices[0].bids[0].price);
+      const midNow = (ask + bid) / 2;
+      const pm     = pipMultiplier(at.symbol);
+
+      // rawMove: positive = price went up vs decision price
+      const rawMove = (midNow - at.decisionPrice) / pm;
+      // dirMove: positive = price moved in the intended trade direction
+      const dirMove     = at.direction === "buy" ? rawMove : -rawMove;
+      const dirMovePips = parseFloat(dirMove.toFixed(2));
+
+      const directionCorrect = dirMove > 0;
+      const reached2p        = dirMove >= 2.0;
+      const reached4p        = dirMove >= 4.0;
+      const reached6p        = dirMove >= 6.0;
+      const adverseMovePips  = parseFloat(Math.max(0, -dirMove).toFixed(2));
+
+      logEvent({
+        type:             "almost_trade_outcome",
+        atId:             at.atId,
+        signalId:         at.signalId,
+        symbol:           at.symbol,
+        direction:        at.direction,
+        failedConditions: at.failedConditions,
+        passCount:        at.passCount,
+        session:          at.session,
+        rawMovePips:      parseFloat(rawMove.toFixed(2)),
+        maxMovePips:      dirMovePips,
+        adverseMovePips,
+        directionCorrect,
+        reached2p, reached4p, reached6p,
+        minutesElapsed:   parseFloat(((now - at.decisionTime) / 60000).toFixed(1)),
+        emaDistance:      at.emaDistance,
+        candleStrength:   at.candleStrength,
+        spread:           at.spread,
+        trendBucket:      at.trendBucket,
+        volatilityBucket: at.volatilityBucket,
+      });
+
+      // Update in-memory counters per failing condition — for periodic BLOCKED WINNERS printer
+      for (const fc of (at.failedConditions || [])) {
+        if (!almostTradeCounters[fc]) {
+          almostTradeCounters[fc] = { total: 0, reached2p: 0, reached4p: 0, reached6p: 0, totalMovePips: 0, correctDir: 0 };
+        }
+        almostTradeCounters[fc].total++;
+        if (reached2p)        almostTradeCounters[fc].reached2p++;
+        if (reached4p)        almostTradeCounters[fc].reached4p++;
+        if (reached6p)        almostTradeCounters[fc].reached6p++;
+        if (directionCorrect) almostTradeCounters[fc].correctDir++;
+        almostTradeCounters[fc].totalMovePips += Math.abs(dirMovePips);
+      }
+
+      processed++;
+    } catch (_) {
+      // silent — telemetry failure never affects bot
+    }
+    delete almostTradeSignals[id];
   }
 }
 
@@ -1569,6 +1658,63 @@ async function strategy(symbol) {
       return;
     }
 
+    // ── ALMOST TRADE FORENSICS — TELEMETRY ONLY ──────────────────────────
+    // Evaluate all 9 gate conditions individually for each direction.
+    // If 4-8 pass but NOT all 9 (trade not placed) → store for 15-min price check.
+    // Answers: which failing condition is blocking future winners?
+    // ZERO strategy impact. NEVER read by any entry/exit/risk logic.
+    {
+      for (const [dir, m5c, m1c, didTrade] of [
+        ["buy",  _m5b, _m1b, _buyAll],
+        ["sell", _m5s, _m1s, _sellAll],
+      ]) {
+        if (didTrade) continue; // full gate passed → trade placed below → not an "almost"
+        const allConds = {
+          m5trend:  m5c.trend,
+          m5close:  m5c.close,
+          m5candle: m5c.candle,
+          ema:      m5c.ema,
+          strength: m5c.strength,
+          m1trend:  m1c.trend,
+          m1candle: m1c.candle,
+          m1prev:   m1c.prev,
+          m1close:  m1c.close,
+        };
+        const failed    = Object.entries(allConds).filter(([, v]) => !v).map(([k]) => k);
+        const passCount = 9 - failed.length;
+        if (passCount < 4) continue; // not close enough to be interesting
+        const atId = `${signalId}_${dir}`;
+        almostTradeSignals[atId] = {
+          atId, signalId, symbol, direction: dir,
+          passCount, failedConditions: failed,
+          decisionTime:    Date.now(),
+          decisionPrice:   lastMidPrice[symbol] || null,
+          session,
+          emaDistance:     parseFloat(emaDistance.toFixed(2)),
+          candleStrength:  parseFloat(candleStrength.toFixed(3)),
+          spread,
+          trendBucket:     trendBkt,
+          volatilityBucket: volBkt,
+          entryDistance:   parseFloat(entryDistance.toFixed(2)),
+        };
+        logEvent({
+          type:             "almost_trade",
+          atId,
+          signalId, symbol, direction: dir, session,
+          passCount,
+          failedConditions: failed,
+          emaDistance:      parseFloat(emaDistance.toFixed(2)),
+          candleStrength:   parseFloat(candleStrength.toFixed(3)),
+          spread,
+          trendBucket:      trendBkt,
+          volatilityBucket: volBkt,
+          entryDistance:    parseFloat(entryDistance.toFixed(2)),
+          priceAtDecision:  lastMidPrice[symbol] || null,
+        });
+        console.log(`ALMOST_TRADE ${dir.toUpperCase()} -> ${symbol} passCount=${passCount}/9 failed=[${failed.join(",")}]`);
+      }
+    }
+
     // ── BUY ───────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
@@ -1710,7 +1856,8 @@ async function runBot() {
         console.log("MAX DAILY TRADES REACHED");
 
         await manageTrades();
-        await checkBlockedOutcomes(); // TELEMETRY ONLY
+        await checkBlockedOutcomes();        // TELEMETRY ONLY
+        await checkAlmostTradeOutcomes();    // TELEMETRY ONLY
         await sleep(60000);
         continue;
       }
@@ -1718,7 +1865,8 @@ async function runBot() {
       const openTrades = await getOpenTrades();
       if (openTrades.length >= MAX_OPEN_TRADES) {
         await manageTrades();
-        await checkBlockedOutcomes(); // TELEMETRY ONLY
+        await checkBlockedOutcomes();        // TELEMETRY ONLY
+        await checkAlmostTradeOutcomes();    // TELEMETRY ONLY
         await sleep(5000);
         continue;
       }
@@ -1735,6 +1883,7 @@ async function runBot() {
 
       // BLOCKED OUTCOME CHECK — TELEMETRY ONLY
       await checkBlockedOutcomes();
+      await checkAlmostTradeOutcomes(); // TELEMETRY ONLY
 
       // MAIN LOOP DELAY
       await sleep(5000);
@@ -1881,6 +2030,26 @@ function startBlockSummaryPrinter() {
       console.log(`  avg_MAE (rolling):  ${avgMAE}p`);
       console.log(`  (trade_forensics events in telemetry DB for full winner/loser breakdown)`);
       console.log("============================================");
+    }
+
+    // ── BLOCKED WINNERS (ALMOST TRADE 15-min OUTCOMES) ───────────────────────
+    // Shows which failing gate condition most often precedes a favorable market move.
+    // High +4p% on a condition = that condition is blocking profitable setups.
+    // TELEMETRY ONLY — zero effect on strategy or risk logic.
+    const _atEntries = Object.entries(almostTradeCounters)
+      .filter(([, v]) => v.total > 0)
+      .sort(([, a], [, b]) => (b.reached4p / Math.max(b.total, 1)) - (a.reached4p / Math.max(a.total, 1)));
+    if (_atEntries.length > 0) {
+      console.log("===== BLOCKED WINNERS (almost_trade 15-min outcomes) =====");
+      for (const [cond, v] of _atEntries) {
+        const p2  = (v.reached2p / v.total * 100).toFixed(0);
+        const p4  = (v.reached4p / v.total * 100).toFixed(0);
+        const p6  = (v.reached6p / v.total * 100).toFixed(0);
+        const avg = (v.totalMovePips / v.total).toFixed(1);
+        const cd  = (v.correctDir   / v.total * 100).toFixed(0);
+        console.log(`  ${cond.padEnd(9)}: n=${v.total} dir=${cd}% +2p=${p2}% +4p=${p4}% +6p=${p6}% avg=${avg}p`);
+      }
+      console.log("==========================================================");
     }
   }, 5 * 60 * 1000); // every 5 minutes — TELEMETRY ONLY
 }
