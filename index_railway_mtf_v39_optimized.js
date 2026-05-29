@@ -1503,8 +1503,12 @@ async function strategy(symbol) {
       close:  m1LastClose < m1LastFast,
     };
 
-    const _buyAll  = Object.values(_m5b).every(Boolean) && Object.values(_m1b).every(Boolean);
-    const _sellAll = Object.values(_m5s).every(Boolean) && Object.values(_m1s).every(Boolean);
+    // M1TREND_HARDBLOCK_REMOVED — EXPERIMENTAL (Project Snowball)
+    // m1trend is now a SOFT condition: does NOT veto a trade.
+    // The 8 remaining conditions (M5 trend/close/candle/ema/strength + M1 candle/prev/close)
+    // still enforce full structural alignment. m1trend is tracked via m1TrendAtEntry for A/B.
+    const _buyAll  = Object.values(_m5b).every(Boolean) && _m1b.candle && _m1b.prev && _m1b.close;
+    const _sellAll = Object.values(_m5s).every(Boolean) && _m1s.candle && _m1s.prev && _m1s.close;
 
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
     // Use unique keys per tier to prevent m5/m1 key collision.
@@ -1718,29 +1722,34 @@ async function strategy(symbol) {
     // ── BUY ───────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
+    // M1TREND_HARDBLOCK_REMOVED: gate now requires 8 conditions (m1trend is SOFT).
+    // m1Bullish + m1PrevCandle + m1LastClose still hard-block; only m1LastFast>m1LastSlow removed.
     if (
       lastFast > lastSlow &&
       lastClose > lastFast &&
       bullishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
       candleStrength > 0.12 &&
-      m1LastFast > m1LastSlow &&
       m1Bullish &&
       bullishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose > m1LastFast
     ) {
-      const _m5CandleType = bullishCandle(lastCandle) ? "bullish" : "neutral-doji";
-      const _m1PrevType   = bullishCandle(m1PrevCandle) ? "bullish" : "neutral-doji";
+      const _m1TrendStatus = m1LastFast > m1LastSlow; // EXPERIMENT: track but don't block
+      const _m5CandleType  = bullishCandle(lastCandle) ? "bullish" : "neutral-doji";
+      const _m1PrevType    = bullishCandle(m1PrevCandle) ? "bullish" : "neutral-doji";
+      if (!_m1TrendStatus) {
+        console.log(`[M1TREND_EXP] BUY ${symbol} with m1trend=FALSE (EMA9=${m1LastFast.toFixed(5)} < EMA21=${m1LastSlow.toFixed(5)}) — experiment entry`);
+      }
       console.log(
-        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + bullish candle + ${_m1PrevType} prev + close above EMA9\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY BUY ${symbol}:\nM5 trend: bullish (fast > slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: bullish candle + ${_m1PrevType} prev + close above EMA9 [m1trend=${_m1TrendStatus}]\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
       symbolSignalId[symbol]      = signalId;
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
         ...fullSnapshot,
-        fingerprint: _fpHash(_buyFp),
-        side:        "buy",
+        fingerprint:    _fpHash(_buyFp),
+        side:           "buy",
       };
       logEvent({
         type: "trade_open",
@@ -1749,8 +1758,9 @@ async function strategy(symbol) {
         ...fullSnapshot,
         stopLossPips, takeProfitPips,
         risk: RISK_PERCENT, units,
-        fingerprint: _fpHash(_buyFp),
-        fp: _buyFp,
+        fingerprint:    _fpHash(_buyFp),
+        fp:             _buyFp,
+        m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
       });
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
@@ -1760,29 +1770,34 @@ async function strategy(symbol) {
     // ── SELL ──────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bearishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
+    // M1TREND_HARDBLOCK_REMOVED: gate now requires 8 conditions (m1trend is SOFT).
+    // m1Bearish + m1PrevCandle + m1LastClose still hard-block; only m1LastFast<m1LastSlow removed.
     if (
       lastFast < lastSlow &&
       lastClose < lastFast &&
       bearishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
       candleStrength > 0.12 &&
-      m1LastFast < m1LastSlow &&
       m1Bearish &&
       bearishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose < m1LastFast
     ) {
-      const _m5CandleType = bearishCandle(lastCandle) ? "bearish" : "neutral-doji";
-      const _m1PrevType   = bearishCandle(m1PrevCandle) ? "bearish" : "neutral-doji";
+      const _m1TrendStatus = m1LastFast < m1LastSlow; // EXPERIMENT: track but don't block
+      const _m5CandleType  = bearishCandle(lastCandle) ? "bearish" : "neutral-doji";
+      const _m1PrevType    = bearishCandle(m1PrevCandle) ? "bearish" : "neutral-doji";
+      if (!_m1TrendStatus) {
+        console.log(`[M1TREND_EXP] SELL ${symbol} with m1trend=FALSE (EMA9=${m1LastFast.toFixed(5)} > EMA21=${m1LastSlow.toFixed(5)}) — experiment entry`);
+      }
       console.log(
-        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: trend + bearish candle + ${_m1PrevType} prev + close below EMA9\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
+        `=== TRADE OPEN ===\nWHY SELL ${symbol}:\nM5 trend: bearish (fast < slow)\nM5 candle: ${_m5CandleType}\nEMA distance: ${emaDistance.toFixed(1)} pips\nATR: ${atrPips.toFixed(1)} pips\nCandle strength: ${candleStrength.toFixed(2)}\nM1 confirmation: bearish candle + ${_m1PrevType} prev + close below EMA9 [m1trend=${_m1TrendStatus}]\nEntry dist: ${entryDistance.toFixed(2)}p\nSpread: ${spread.toFixed(2)} pips\nRisk: ${(RISK_PERCENT * 100).toFixed(1)}%\nUnits: ${units}\nSL: ${stopLossPips}p  TP: ${takeProfitPips}p  RR: 1:${(takeProfitPips / stopLossPips).toFixed(1)}`,
       );
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
       symbolSignalId[symbol]      = signalId;
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
         ...fullSnapshot,
-        fingerprint: _fpHash(_sellFp),
-        side:        "sell",
+        fingerprint:    _fpHash(_sellFp),
+        side:           "sell",
       };
       logEvent({
         type: "trade_open",
@@ -1791,8 +1806,9 @@ async function strategy(symbol) {
         ...fullSnapshot,
         stopLossPips, takeProfitPips,
         risk: RISK_PERCENT, units,
-        fingerprint: _fpHash(_sellFp),
-        fp: _sellFp,
+        fingerprint:    _fpHash(_sellFp),
+        fp:             _sellFp,
+        m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
       });
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);

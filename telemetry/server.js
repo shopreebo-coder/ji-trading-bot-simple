@@ -920,6 +920,68 @@ app.get("/api/insights", (req, res) => {
   });
 });
 
+// ── API: GET /api/m1trend-experiment ──────────────────────────────────────────
+// Project Snowball — M1Trend hard-block removal experiment.
+// Segments all closed trades by m1TrendAtEntry boolean from trade_open events.
+// Group A: m1trend=true (baseline)   Group B: m1trend=false (experiment)
+// Compare win rate, avg pips, avg MFE, avg MAE, exit efficiency for both groups.
+app.get("/api/m1trend-experiment", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+
+  // Index opens by signalId for fast lookup
+  const openMap = {};
+  for (const o of opens) {
+    if (o.data.signalId) openMap[o.data.signalId] = o.data;
+  }
+
+  const makeGroup = () => ({ wins: 0, losses: 0, be: 0, totalPips: 0, totalMFE: 0, totalMAE: 0, exitEffArr: [], n: 0 });
+  const groups = { m1true: makeGroup(), m1false: makeGroup(), unknown: makeGroup() };
+
+  for (const c of closes) {
+    const od = openMap[c.data.signalId];
+    let grp;
+    if (!od || od.m1TrendAtEntry === undefined) grp = groups.unknown;
+    else grp = od.m1TrendAtEntry ? groups.m1true : groups.m1false;
+
+    const oc = classifyOutcome(c.data);
+    if (oc === "WIN")       grp.wins++;
+    else if (oc === "LOSS") grp.losses++;
+    else                    grp.be++;
+    grp.n++;
+    grp.totalPips += c.data.profitPips || 0;
+    grp.totalMFE  += c.data.mfe        || 0;
+    grp.totalMAE  += c.data.mae        || 0;
+    if (c.data.exitEfficiency != null) grp.exitEffArr.push(c.data.exitEfficiency);
+  }
+
+  function summarize(g, label) {
+    const decisive = g.wins + g.losses;
+    return {
+      label,
+      trades:    g.n,
+      wins:      g.wins,
+      losses:    g.losses,
+      breakevens: g.be,
+      winRate:   decisive ? ((g.wins / decisive) * 100).toFixed(1) : "0.0",
+      avgPips:   g.n ? (g.totalPips / g.n).toFixed(2) : "0.00",
+      avgMFE:    g.n ? (g.totalMFE  / g.n).toFixed(2) : "0.00",
+      avgMAE:    g.n ? (g.totalMAE  / g.n).toFixed(2) : "0.00",
+      avgExitEff: g.exitEffArr.length
+        ? (g.exitEffArr.reduce((a, b) => a + b, 0) / g.exitEffArr.length).toFixed(1)
+        : null,
+    };
+  }
+
+  res.json({
+    groupA:    summarize(groups.m1true,  "m1trend=TRUE  (baseline)"),
+    groupB:    summarize(groups.m1false, "m1trend=FALSE (experiment)"),
+    preExperiment: summarize(groups.unknown, "pre-experiment (no m1TrendAtEntry tag)"),
+    experimentNote: "M1Trend_HardBlock_Removed — Project Snowball decision quality experiment. Rollback: git revert to b250cf5.",
+  });
+});
+
 // ── API: GET /api/almost-trades ───────────────────────────────────────────────
 // Returns per-condition stats aggregated from almost_trade_outcome events.
 // "Almost trades" = setups passing >= 4 of 9 gate conditions that were NOT executed.

@@ -716,7 +716,7 @@ function ExcursionTab({ exc }){
 }
 
 // ── INSIGHTS tab ───────────────────────────────────────────────────────────
-function InsightsTab({ insights, blockedOutcomes, drift }){
+function InsightsTab({ insights, blockedOutcomes, drift, m1exp }){
   if(!insights) return <div className="page"><div className="loading">Loading insights…</div></div>;
 
   const { summary={}, bestSession, worstSession, bestSymbol, worstSymbol,
@@ -893,6 +893,50 @@ function InsightsTab({ insights, blockedOutcomes, drift }){
           </div>
         )}
       </div>
+
+      {/* ── M1 Trend Experiment (Project Snowball) ── */}
+      {m1exp && (
+        <div className="panel">
+          <div className="ph">
+            M1Trend Experiment — A/B Comparison
+            <span style={{fontWeight:400,color:"#484f58"}}>
+              m1trend=TRUE (baseline) vs m1trend=FALSE (experiment entries). Min 20 trades per group for significance.
+            </span>
+          </div>
+          <table>
+            <thead><tr>
+              <th>Group</th><th>Trades</th><th>W/L</th><th>Win Rate</th>
+              <th>Avg Pips</th><th>Avg MFE</th><th>Avg MAE</th><th>Exit Eff %</th>
+            </tr></thead>
+            <tbody>
+              {[m1exp.groupA, m1exp.groupB].map((g,i)=>{
+                if (!g) return null;
+                const isExp   = i === 1;
+                const wr      = parseFloat(g.winRate);
+                const wrBase  = parseFloat(m1exp.groupA?.winRate||"0");
+                const wrColor = isExp ? (wr >= wrBase ? "#3fb950" : wr >= wrBase - 5 ? "#d29922" : "#f85149") : "#e6edf3";
+                return (
+                  <tr key={i}>
+                    <td style={{fontFamily:"monospace",fontWeight:600,color:isExp?"#d29922":"#8b949e"}}>{g.label}</td>
+                    <td>{g.trades}</td>
+                    <td style={{fontSize:11,color:"#484f58"}}>{g.wins}W / {g.losses}L</td>
+                    <td style={{color:wrColor,fontWeight:700}}>{g.winRate}%</td>
+                    <td style={{color:parseFloat(g.avgPips)>0?"#3fb950":"#f85149"}}>{g.avgPips}p</td>
+                    <td style={{color:"#79c0ff"}}>{g.avgMFE}p</td>
+                    <td style={{color:"#f85149"}}>{g.avgMAE}p</td>
+                    <td>{g.avgExitEff != null ? g.avgExitEff+"%" : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {(m1exp.groupB?.trades||0) < 20 && (
+            <div style={{padding:"8px 16px",fontSize:11,color:"#484f58",borderTop:"1px solid #30363d"}}>
+              ⏳ Experiment group has {m1exp.groupB?.trades||0} trades — need ≥20 for statistical significance. Keep collecting.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1014,6 +1058,7 @@ function App(){
   const [insights,   setInsights]   = useState(null);
   const [blockedOut, setBlockedOut] = useState(null);
   const [blocked,    setBlocked]    = useState(null);
+  const [m1exp,      setM1exp]      = useState(null);
   const [drift,      setDrift]      = useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
@@ -1035,12 +1080,14 @@ function App(){
   }
 
   async function refreshInsights(){
-    const [ins, bo, dr] = await Promise.all([
+    const [ins, bo, dr, m1e] = await Promise.all([
       api("/api/insights"), api("/api/blocked-outcomes"), api("/api/drift"),
+      api("/api/m1trend-experiment"),
     ]);
     setInsights(ins);
     setBlockedOut(bo);
     setDrift(dr);
+    setM1exp(m1e);
   }
 
   async function refreshFps(){ const d=await api("/api/fingerprints"); setFps(d); }
@@ -1112,7 +1159,7 @@ function App(){
       {tab==="DECYZJE"   && <DecyzjeTab  events={events}/>}
       {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
-      {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift}/>}
+      {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp}/>}
       {tab==="BLOCKED"   && <BlockedTab  blocked={blocked}/>}
     </>
   );
