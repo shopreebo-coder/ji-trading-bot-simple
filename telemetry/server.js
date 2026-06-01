@@ -1017,13 +1017,182 @@ app.get("/api/almost-trades", (req, res) => {
     dirCorrectPct: c.total ? ((c.correctDir / c.total) * 100).toFixed(1) : "0.0",
   })).sort((a, b) => parseFloat(b.pct4p) - parseFloat(a.pct4p));
 
+  // Module 3: Missed Opportunities by pass score (passCount breakdown)
+  const passcoreMap = {};
+  for (const o of outcomes) {
+    const pc = o.data.passCount;
+    if (!pc) continue;
+    const key = `${pc}/9`;
+    if (!passcoreMap[key]) passcoreMap[key] = { score: key, passCount: pc, blocked: 0, reached2p: 0, reached4p: 0, reached6p: 0, totalMove: 0 };
+    passcoreMap[key].blocked++;
+    if (o.data.reached2p) passcoreMap[key].reached2p++;
+    if (o.data.reached4p) passcoreMap[key].reached4p++;
+    if (o.data.reached6p) passcoreMap[key].reached6p++;
+    passcoreMap[key].totalMove += Math.abs(o.data.maxMovePips || 0);
+  }
+  const passcoreStats = Object.values(passcoreMap).sort((a, b) => b.passCount - a.passCount).map(p => ({
+    score:   p.score,
+    blocked: p.blocked,
+    pct2p:   p.blocked ? ((p.reached2p / p.blocked) * 100).toFixed(1) : "0.0",
+    pct4p:   p.blocked ? ((p.reached4p / p.blocked) * 100).toFixed(1) : "0.0",
+    pct6p:   p.blocked ? ((p.reached6p / p.blocked) * 100).toFixed(1) : "0.0",
+    avgMove: p.blocked ? (p.totalMove / p.blocked).toFixed(1) : "0.0",
+  }));
+
   res.json({
     totalSignals:   signals.length,
     totalOutcomes:  outcomes.length,
     conditionStats,
+    passcoreStats,
     recentSignals:  signals.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
     recentOutcomes: outcomes.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
   });
+});
+
+// ── API: GET /api/post-entry-failures ─────────────────────────────────────────
+// Module 1: Per-condition failure analysis — which conditions were FALSE on losing post-entry trades.
+// Module 4: Failure pattern clustering   — unique condition patterns on LOSS trades, sorted by count.
+// Module 5: Session failure analysis     — post-entry failures grouped by trading session.
+app.get("/api/post-entry-failures", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const pefs   = queryEvents({ type: "post_entry_failure", date, limit: 5000 });
+  const opens  = queryEvents({ type: "trade_open",         date, limit: 10000 });
+  const closes = queryEvents({ type: "trade_close",        date, limit: 10000 });
+
+  const openMap  = {};
+  const closeMap = {};
+  for (const o of opens)  if (o.data.signalId) openMap[o.data.signalId]  = o.data;
+  for (const c of closes) if (c.data.signalId) closeMap[c.data.signalId] = c.data;
+
+  // Module 1 — per-condition stats (only for post-entry failures with conditionMap)
+  const COND_KEYS = ["trend","m5close","candle","ema","strength","m1trend","m1candle","m1prev","m1close"];
+  const condStats = {};
+  let totalMFE = 0, totalMAE = 0, totalPips = 0, enrichedCount = 0;
+
+  for (const pef of pefs) {
+    const od = openMap[pef.data.signalId];
+    const cl = od ? closeMap[pef.data.signalId] : null;
+    if (od?.conditionMap) {
+      enrichedCount++;
+      totalMAE  += pef.data.mae || 0;
+      totalMFE  += cl?.mfe        || 0;
+      totalPips += cl?.profitPips || 0;
+      for (const k of COND_KEYS) {
+        if (!od.conditionMap[k]) {   // condition was FALSE at entry
+          if (!condStats[k]) condStats[k] = { condition: k, fails: 0, totalMAE: 0, totalMFE: 0, totalPips: 0 };
+          condStats[k].fails++;
+          condStats[k].totalMAE  += pef.data.mae || 0;
+          condStats[k].totalMFE  += cl?.mfe        || 0;
+          condStats[k].totalPips += cl?.profitPips || 0;
+        }
+      }
+    }
+  }
+
+  // Module 4 — failure pattern clustering on all LOSS trade_closes that have conditionMap
+  const patternMap = {};
+  for (const c of closes) {
+    if (classifyOutcome(c.data) !== "LOSS") continue;
+    const od = openMap[c.data.signalId];
+    if (!od?.conditionMap) continue;
+    const pat = COND_KEYS.map(k => od.conditionMap[k] ? "T" : "F").join("");
+    if (!patternMap[pat]) patternMap[pat] = { pattern: pat, count: 0, totalPips: 0, totalMFE: 0, totalMAE: 0 };
+    patternMap[pat].count++;
+    patternMap[pat].totalPips += c.data.profitPips || 0;
+    patternMap[pat].totalMFE  += c.data.mfe        || 0;
+    patternMap[pat].totalMAE  += c.data.mae        || 0;
+  }
+
+  // Module 5 — session failure stats
+  const sessionStats = {};
+  for (const pef of pefs) {
+    const sess = pef.data.session || "UNKNOWN";
+    const cl   = closeMap[pef.data.signalId];
+    if (!sessionStats[sess]) sessionStats[sess] = { session: sess, fails: 0, totalMAE: 0, totalMFE: 0, totalPips: 0 };
+    sessionStats[sess].fails++;
+    sessionStats[sess].totalMAE  += pef.data.mae || 0;
+    sessionStats[sess].totalMFE  += cl?.mfe        || 0;
+    sessionStats[sess].totalPips += cl?.profitPips || 0;
+  }
+
+  res.json({
+    total:        pefs.length,
+    enriched:     enrichedCount,
+    avgMAE:       enrichedCount ? (totalMAE  / enrichedCount).toFixed(2) : "0.00",
+    avgMFE:       enrichedCount ? (totalMFE  / enrichedCount).toFixed(2) : "0.00",
+    avgPips:      enrichedCount ? (totalPips / enrichedCount).toFixed(2) : "0.00",
+    conditions: Object.values(condStats).map(c => ({
+      condition: c.condition,
+      fails:     c.fails,
+      avgMAE:    c.fails ? (c.totalMAE  / c.fails).toFixed(2) : "0.00",
+      avgMFE:    c.fails ? (c.totalMFE  / c.fails).toFixed(2) : "0.00",
+      avgPips:   c.fails ? (c.totalPips / c.fails).toFixed(2) : "0.00",
+    })).sort((a, b) => b.fails - a.fails),
+    patterns: Object.values(patternMap)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15)
+      .map(p => ({
+        pattern: p.pattern,
+        count:   p.count,
+        avgPips: (p.totalPips / p.count).toFixed(2),
+        avgMFE:  (p.totalMFE  / p.count).toFixed(2),
+        avgMAE:  (p.totalMAE  / p.count).toFixed(2),
+      })),
+    sessions: Object.values(sessionStats).map(s => ({
+      session: s.session,
+      fails:   s.fails,
+      avgMAE:  s.fails ? (s.totalMAE  / s.fails).toFixed(2) : "0.00",
+      avgMFE:  s.fails ? (s.totalMFE  / s.fails).toFixed(2) : "0.00",
+      avgPips: s.fails ? (s.totalPips / s.fails).toFixed(2) : "0.00",
+    })).sort((a, b) => b.fails - a.fails),
+  });
+});
+
+// ── API: GET /api/trade-quality ────────────────────────────────────────────────
+// Module 2: Trade Quality Score — segments closed trades by passCount (# of 9 conditions met at entry).
+// Compares win rate, avg pips, avg MFE, avg MAE across 9/9 vs 8/9 vs 7/9 etc.
+app.get("/api/trade-quality", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+
+  const openMap = {};
+  for (const o of opens) {
+    if (o.data.signalId && o.data.passCount !== undefined) openMap[o.data.signalId] = o.data;
+  }
+
+  const scores = {};
+  for (const c of closes) {
+    const od = openMap[c.data.signalId];
+    if (!od) continue;
+    const pc  = od.passCount;
+    const key = `${pc}/9`;
+    if (!scores[key]) scores[key] = { score: key, passCount: pc, wins: 0, losses: 0, be: 0, totalPips: 0, totalMFE: 0, totalMAE: 0, n: 0 };
+    const s  = scores[key];
+    const oc = classifyOutcome(c.data);
+    if (oc === "WIN")       s.wins++;
+    else if (oc === "LOSS") s.losses++;
+    else                    s.be++;
+    s.n++;
+    s.totalPips += c.data.profitPips || 0;
+    s.totalMFE  += c.data.mfe        || 0;
+    s.totalMAE  += c.data.mae        || 0;
+  }
+
+  res.json(Object.values(scores).sort((a, b) => b.passCount - a.passCount).map(s => {
+    const decisive = s.wins + s.losses;
+    return {
+      score:      s.score,
+      trades:     s.n,
+      wins:       s.wins,
+      losses:     s.losses,
+      breakevens: s.be,
+      winRate:    decisive ? ((s.wins / decisive) * 100).toFixed(1) : "0.0",
+      avgPips:    s.n ? (s.totalPips / s.n).toFixed(2) : "0.00",
+      avgMFE:     s.n ? (s.totalMFE  / s.n).toFixed(2) : "0.00",
+      avgMAE:     s.n ? (s.totalMAE  / s.n).toFixed(2) : "0.00",
+    };
+  }));
 });
 
 // ── root → dashboard ──────────────────────────────────────────────────────────

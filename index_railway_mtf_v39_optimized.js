@@ -1735,6 +1735,19 @@ async function strategy(symbol) {
       m1LastClose > m1LastFast
     ) {
       const _m1TrendStatus = m1LastFast > m1LastSlow; // EXPERIMENT: track but don't block
+      // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
+      const _buyCondMap  = {
+        trend:    _m5b.trend,
+        m5close:  _m5b.close,
+        candle:   _m5b.candle,
+        ema:      _m5b.ema,
+        strength: _m5b.strength,
+        m1trend:  _m1b.trend,
+        m1candle: _m1b.candle,
+        m1prev:   _m1b.prev,
+        m1close:  _m1b.close,
+      };
+      const _buyPassCount = Object.values(_buyCondMap).filter(Boolean).length;
       const _m5CandleType  = bullishCandle(lastCandle) ? "bullish" : "neutral-doji";
       const _m1PrevType    = bullishCandle(m1PrevCandle) ? "bullish" : "neutral-doji";
       if (!_m1TrendStatus) {
@@ -1761,6 +1774,8 @@ async function strategy(symbol) {
         fingerprint:    _fpHash(_buyFp),
         fp:             _buyFp,
         m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
+        passCount:      _buyPassCount,    // QUALITY TELEMETRY — # of 9 conditions true at entry
+        conditionMap:   _buyCondMap,      // QUALITY TELEMETRY — full per-condition state for analysis
       });
 
       await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
@@ -1783,6 +1798,19 @@ async function strategy(symbol) {
       m1LastClose < m1LastFast
     ) {
       const _m1TrendStatus = m1LastFast < m1LastSlow; // EXPERIMENT: track but don't block
+      // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
+      const _sellCondMap  = {
+        trend:    _m5s.trend,
+        m5close:  _m5s.close,
+        candle:   _m5s.candle,
+        ema:      _m5s.ema,
+        strength: _m5s.strength,
+        m1trend:  _m1s.trend,
+        m1candle: _m1s.candle,
+        m1prev:   _m1s.prev,
+        m1close:  _m1s.close,
+      };
+      const _sellPassCount = Object.values(_sellCondMap).filter(Boolean).length;
       const _m5CandleType  = bearishCandle(lastCandle) ? "bearish" : "neutral-doji";
       const _m1PrevType    = bearishCandle(m1PrevCandle) ? "bearish" : "neutral-doji";
       if (!_m1TrendStatus) {
@@ -1809,6 +1837,8 @@ async function strategy(symbol) {
         fingerprint:    _fpHash(_sellFp),
         fp:             _sellFp,
         m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
+        passCount:      _sellPassCount,   // QUALITY TELEMETRY — # of 9 conditions true at entry
+        conditionMap:   _sellCondMap,     // QUALITY TELEMETRY — full per-condition state for analysis
       });
 
       await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
