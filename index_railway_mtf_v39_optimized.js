@@ -1503,12 +1503,11 @@ async function strategy(symbol) {
       close:  m1LastClose < m1LastFast,
     };
 
-    // M1TREND_HARDBLOCK_REMOVED — EXPERIMENTAL (Project Snowball)
-    // m1trend is now a SOFT condition: does NOT veto a trade.
-    // The 8 remaining conditions (M5 trend/close/candle/ema/strength + M1 candle/prev/close)
-    // still enforce full structural alignment. m1trend is tracked via m1TrendAtEntry for A/B.
-    const _buyAll  = Object.values(_m5b).every(Boolean) && _m1b.candle && _m1b.prev && _m1b.close;
-    const _sellAll = Object.values(_m5s).every(Boolean) && _m1s.candle && _m1s.prev && _m1s.close;
+    // M5TREND + M1TREND both SOFT — Project Snowball experiments running simultaneously.
+    // Hard gate now: 7 conditions — m5close, m5candle, ema, strength (M5) + m1candle, m1prev, m1close (M1).
+    // Both trend filters tracked via m5TrendAtEntry / m1TrendAtEntry on trade_open for A/B analysis.
+    const _buyAll  = _m5b.close && _m5b.candle && _m5b.ema && _m5b.strength && _m1b.candle && _m1b.prev && _m1b.close;
+    const _sellAll = _m5s.close && _m5s.candle && _m5s.ema && _m5s.strength && _m1s.candle && _m1s.prev && _m1s.close;
 
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
     // Use unique keys per tier to prevent m5/m1 key collision.
@@ -1722,10 +1721,10 @@ async function strategy(symbol) {
     // ── BUY ───────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
-    // M1TREND_HARDBLOCK_REMOVED: gate now requires 8 conditions (m1trend is SOFT).
-    // m1Bullish + m1PrevCandle + m1LastClose still hard-block; only m1LastFast>m1LastSlow removed.
+    // M5TREND + M1TREND both SOFT — Project Snowball experiments.
+    // Hard gate: 7 conditions — m5close, m5candle, ema, strength + m1Bullish, m1PrevCandle, m1LastClose.
+    // M5TREND_HARDBLOCK_REMOVED: m5trend does NOT veto a trade — tracked via m5TrendAtEntry.
     if (
-      lastFast > lastSlow &&
       lastClose > lastFast &&
       bullishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
@@ -1734,7 +1733,11 @@ async function strategy(symbol) {
       bullishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose > m1LastFast
     ) {
-      const _m1TrendStatus = m1LastFast > m1LastSlow; // EXPERIMENT: track but don't block
+      const _m1TrendStatus = m1LastFast > m1LastSlow; // M1TREND_EXP: track but don't block
+      const _m5TrendStatus = lastFast > lastSlow;      // M5TREND_EXP: track but don't block
+      if (!_m5TrendStatus) {
+        console.log(`[M5TREND_EXP] BUY ${symbol} with m5trend=FALSE (EMA20=${lastFast.toFixed(5)} < EMA50=${lastSlow.toFixed(5)}) — experiment entry`);
+      }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
       const _buyCondMap  = {
         trend:    _m5b.trend,
@@ -1773,7 +1776,8 @@ async function strategy(symbol) {
         risk: RISK_PERCENT, units,
         fingerprint:    _fpHash(_buyFp),
         fp:             _buyFp,
-        m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
+        m1TrendAtEntry: _m1TrendStatus,   // M1TREND_EXP — A/B segmentation field
+        m5TrendAtEntry: _m5TrendStatus,   // M5TREND_EXP — A/B segmentation field
         passCount:      _buyPassCount,    // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _buyCondMap,      // QUALITY TELEMETRY — full per-condition state for analysis
       });
@@ -1785,10 +1789,10 @@ async function strategy(symbol) {
     // ── SELL ──────────────────────────────────────────────────────────────
     // CALIBRATION v2: M5 last candle and M1 prev candle use bearishOrNeutralCandle
     // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
-    // M1TREND_HARDBLOCK_REMOVED: gate now requires 8 conditions (m1trend is SOFT).
-    // m1Bearish + m1PrevCandle + m1LastClose still hard-block; only m1LastFast<m1LastSlow removed.
+    // M5TREND + M1TREND both SOFT — Project Snowball experiments.
+    // Hard gate: 7 conditions — m5close, m5candle, ema, strength + m1Bearish, m1PrevCandle, m1LastClose.
+    // M5TREND_HARDBLOCK_REMOVED: m5trend does NOT veto a trade — tracked via m5TrendAtEntry.
     if (
-      lastFast < lastSlow &&
       lastClose < lastFast &&
       bearishOrNeutralCandle(lastCandle) &&
       emaDistance > 1.8 &&
@@ -1797,7 +1801,11 @@ async function strategy(symbol) {
       bearishOrNeutralCandle(m1PrevCandle) &&
       m1LastClose < m1LastFast
     ) {
-      const _m1TrendStatus = m1LastFast < m1LastSlow; // EXPERIMENT: track but don't block
+      const _m1TrendStatus = m1LastFast < m1LastSlow; // M1TREND_EXP: track but don't block
+      const _m5TrendStatus = lastFast < lastSlow;      // M5TREND_EXP: track but don't block
+      if (!_m5TrendStatus) {
+        console.log(`[M5TREND_EXP] SELL ${symbol} with m5trend=FALSE (EMA20=${lastFast.toFixed(5)} > EMA50=${lastSlow.toFixed(5)}) — experiment entry`);
+      }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
       const _sellCondMap  = {
         trend:    _m5s.trend,
@@ -1836,7 +1844,8 @@ async function strategy(symbol) {
         risk: RISK_PERCENT, units,
         fingerprint:    _fpHash(_sellFp),
         fp:             _sellFp,
-        m1TrendAtEntry: _m1TrendStatus,   // EXPERIMENT — A/B segmentation field
+        m1TrendAtEntry: _m1TrendStatus,   // M1TREND_EXP — A/B segmentation field
+        m5TrendAtEntry: _m5TrendStatus,   // M5TREND_EXP — A/B segmentation field
         passCount:      _sellPassCount,   // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _sellCondMap,     // QUALITY TELEMETRY — full per-condition state for analysis
       });
