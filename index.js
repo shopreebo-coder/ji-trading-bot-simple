@@ -62,6 +62,8 @@ const tradeTimeToProfit    = {};  // minutes from open until pips first went > 0
 const tradeTimeToDd        = {};  // minutes from open until pips first went < 0
 const tradeBeTime          = {};  // minutes from open until break-even SL was moved
 const tradePostEntryLogged = {};  // flag: post_entry_failure fired for this trade
+const tradeEntryMeta       = {};  // tradeId → entry meta (passCount, condition states) for post_entry forensics
+const symbolEntryMeta      = {};  // symbol  → entry meta, bridged to tradeId in manageTrades on first tick
 
 // ── SIGNAL LIFECYCLE — TELEMETRY ONLY ───────────────────────────────────────
 // signalId generated per strategy() call, propagated through full event chain.
@@ -806,6 +808,10 @@ async function manageTrades() {
       if (!tradeSignalId[trade.id] && symbolSignalId[symbol]) {
         tradeSignalId[trade.id] = symbolSignalId[symbol];
         delete symbolSignalId[symbol];
+        if (symbolEntryMeta[symbol]) {
+          tradeEntryMeta[trade.id] = symbolEntryMeta[symbol];
+          delete symbolEntryMeta[symbol];
+        }
       }
 
       // ── ENTRY SNAPSHOT LINKAGE — FORENSICS TELEMETRY ONLY ────────────────
@@ -882,14 +888,23 @@ async function manageTrades() {
       // Fires once if trade drops >1.5 pips adverse within first 3 minutes.
       if (minutesOpen < 3 && pips < -1.5 && !tradePostEntryLogged[trade.id]) {
         tradePostEntryLogged[trade.id] = true;
+        const _pefMeta = tradeEntryMeta[trade.id] || {};
         logEvent({
-          type:        "post_entry_failure",
-          signalId:    tradeSignalId[trade.id] || null,
+          type:           "post_entry_failure",
+          signalId:       tradeSignalId[trade.id] || null,
+          tradeId:        trade.id,
           symbol,
-          pips:        parseFloat(pips.toFixed(2)),
-          minutesOpen: parseFloat(minutesOpen.toFixed(2)),
-          mae:         parseFloat((tradeMAE[trade.id] ?? pips).toFixed(2)),
-          session:     classifySession(new Date().getUTCHours()),
+          entryTime:      trade.openTime || null,
+          pips:           parseFloat(pips.toFixed(2)),
+          mfe:            parseFloat(peak.toFixed(2)),
+          mae:            parseFloat((tradeMAE[trade.id] ?? pips).toFixed(2)),
+          minutesOpen:    parseFloat(minutesOpen.toFixed(2)),
+          session:        classifySession(new Date().getUTCHours()),
+          passScore:      _pefMeta.passCount      ?? null,
+          m1TrendAtEntry: _pefMeta.m1TrendAtEntry ?? null,
+          m5TrendAtEntry: _pefMeta.m5TrendAtEntry ?? null,
+          m1CloseAtEntry: _pefMeta.m1CloseAtEntry ?? null,
+          entryGate:      _pefMeta.entryGate      ?? null,
         });
         console.log(`POST-ENTRY FAILURE -> ${symbol} pips=${pips.toFixed(2)} at ${minutesOpen.toFixed(1)}m`);
       }
@@ -1503,11 +1518,19 @@ async function strategy(symbol) {
       close:  m1LastClose < m1LastFast,
     };
 
-    // M5TREND + M1TREND both SOFT — Project Snowball experiments running simultaneously.
-    // Hard gate now: 7 conditions — m5close, m5candle, ema, strength (M5) + m1candle, m1prev, m1close (M1).
-    // Both trend filters tracked via m5TrendAtEntry / m1TrendAtEntry on trade_open for A/B analysis.
-    const _buyAll  = _m5b.close && _m5b.candle && _m5b.ema && _m5b.strength && _m1b.candle && _m1b.prev && _m1b.close;
-    const _sellAll = _m5s.close && _m5s.candle && _m5s.ema && _m5s.strength && _m1s.candle && _m1s.prev && _m1s.close;
+    // ── GATE v3 — Project Snowball ────────────────────────────────────────────
+    // SOFT (scored + logged, cannot veto): m5trend, m1trend, m1close.
+    // HARD gate (6 conditions): m5close, m5candle, ema, strength + m1candle, m1prev.
+    // RELAXED gate: passScore >= 6 AND anchor trio (ema + strength + candle) all TRUE.
+    // A trade fires when HARD passes OR RELAXED passes. No other logic changes.
+    const _buyPassScore  = [_m5b.trend,_m5b.close,_m5b.candle,_m5b.ema,_m5b.strength,_m1b.trend,_m1b.candle,_m1b.prev,_m1b.close].filter(Boolean).length;
+    const _sellPassScore = [_m5s.trend,_m5s.close,_m5s.candle,_m5s.ema,_m5s.strength,_m1s.trend,_m1s.candle,_m1s.prev,_m1s.close].filter(Boolean).length;
+    const _buyHard   = _m5b.close && _m5b.candle && _m5b.ema && _m5b.strength && _m1b.candle && _m1b.prev;
+    const _sellHard  = _m5s.close && _m5s.candle && _m5s.ema && _m5s.strength && _m1s.candle && _m1s.prev;
+    const _buyRelaxed  = _buyPassScore  >= 6 && _m5b.ema && _m5b.strength && _m5b.candle;
+    const _sellRelaxed = _sellPassScore >= 6 && _m5s.ema && _m5s.strength && _m5s.candle;
+    const _buyAll  = _buyHard  || _buyRelaxed;
+    const _sellAll = _sellHard || _sellRelaxed;
 
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
     // Use unique keys per tier to prevent m5/m1 key collision.
@@ -1719,24 +1742,22 @@ async function strategy(symbol) {
     }
 
     // ── BUY ───────────────────────────────────────────────────────────────
-    // CALIBRATION v2: M5 last candle and M1 prev candle use bullishOrNeutralCandle
-    // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
-    // M5TREND + M1TREND both SOFT — Project Snowball experiments.
-    // Hard gate: 7 conditions — m5close, m5candle, ema, strength + m1Bullish, m1PrevCandle, m1LastClose.
-    // M5TREND_HARDBLOCK_REMOVED: m5trend does NOT veto a trade — tracked via m5TrendAtEntry.
-    if (
-      lastClose > lastFast &&
-      bullishOrNeutralCandle(lastCandle) &&
-      emaDistance > 1.8 &&
-      candleStrength > 0.12 &&
-      m1Bullish &&
-      bullishOrNeutralCandle(m1PrevCandle) &&
-      m1LastClose > m1LastFast
-    ) {
-      const _m1TrendStatus = m1LastFast > m1LastSlow; // M1TREND_EXP: track but don't block
-      const _m5TrendStatus = lastFast > lastSlow;      // M5TREND_EXP: track but don't block
+    // GATE v3 — see _buyAll / _buyHard / _buyRelaxed above for exact logic.
+    // Soft: m5trend, m1trend, m1close. Hard: m5close, m5candle, ema, strength, m1candle, m1prev.
+    // Relaxed path: passScore >= 6 AND anchor(ema + strength + candle) all TRUE.
+    if (_buyAll) {
+      const _m1TrendStatus = m1LastFast > m1LastSlow; // M1TREND_EXP: tracked, not blocking
+      const _m5TrendStatus = lastFast > lastSlow;      // M5TREND_EXP: tracked, not blocking
+      const _m1CloseStatus = m1LastClose > m1LastFast; // M1CLOSE_EXP: tracked, not blocking
+      const _entryGate     = _buyHard ? "HARD" : "RELAXED";
       if (!_m5TrendStatus) {
         console.log(`[M5TREND_EXP] BUY ${symbol} with m5trend=FALSE (EMA20=${lastFast.toFixed(5)} < EMA50=${lastSlow.toFixed(5)}) — experiment entry`);
+      }
+      if (!_m1CloseStatus) {
+        console.log(`[M1CLOSE_EXP] BUY ${symbol} with m1close=FALSE (m1Close=${m1LastClose.toFixed(5)} < EMA9=${m1LastFast.toFixed(5)}) — experiment entry`);
+      }
+      if (_entryGate === "RELAXED") {
+        console.log(`[RELAXED_GATE] BUY ${symbol} passScore=${_buyPassScore}/9 — anchor(ema+str+candle)=TRUE — relaxed gate fired`);
       }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
       const _buyCondMap  = {
@@ -1762,6 +1783,7 @@ async function strategy(symbol) {
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
       symbolSignalId[symbol]      = signalId;
+      symbolEntryMeta[symbol]     = { passCount: _buyPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
         ...fullSnapshot,
         fingerprint:    _fpHash(_buyFp),
@@ -1778,6 +1800,8 @@ async function strategy(symbol) {
         fp:             _buyFp,
         m1TrendAtEntry: _m1TrendStatus,   // M1TREND_EXP — A/B segmentation field
         m5TrendAtEntry: _m5TrendStatus,   // M5TREND_EXP — A/B segmentation field
+        m1CloseAtEntry: _m1CloseStatus,   // M1CLOSE_EXP — A/B segmentation field
+        entryGate:      _entryGate,       // GATE_V3: "HARD" | "RELAXED"
         passCount:      _buyPassCount,    // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _buyCondMap,      // QUALITY TELEMETRY — full per-condition state for analysis
       });
@@ -1787,24 +1811,22 @@ async function strategy(symbol) {
     }
 
     // ── SELL ──────────────────────────────────────────────────────────────
-    // CALIBRATION v2: M5 last candle and M1 prev candle use bearishOrNeutralCandle
-    // (doji/indecision bars allowed). M1 current candle and all trend conditions strict.
-    // M5TREND + M1TREND both SOFT — Project Snowball experiments.
-    // Hard gate: 7 conditions — m5close, m5candle, ema, strength + m1Bearish, m1PrevCandle, m1LastClose.
-    // M5TREND_HARDBLOCK_REMOVED: m5trend does NOT veto a trade — tracked via m5TrendAtEntry.
-    if (
-      lastClose < lastFast &&
-      bearishOrNeutralCandle(lastCandle) &&
-      emaDistance > 1.8 &&
-      candleStrength > 0.12 &&
-      m1Bearish &&
-      bearishOrNeutralCandle(m1PrevCandle) &&
-      m1LastClose < m1LastFast
-    ) {
-      const _m1TrendStatus = m1LastFast < m1LastSlow; // M1TREND_EXP: track but don't block
-      const _m5TrendStatus = lastFast < lastSlow;      // M5TREND_EXP: track but don't block
+    // GATE v3 — see _sellAll / _sellHard / _sellRelaxed above for exact logic.
+    // Soft: m5trend, m1trend, m1close. Hard: m5close, m5candle, ema, strength, m1candle, m1prev.
+    // Relaxed path: passScore >= 6 AND anchor(ema + strength + candle) all TRUE.
+    if (_sellAll) {
+      const _m1TrendStatus = m1LastFast < m1LastSlow; // M1TREND_EXP: tracked, not blocking
+      const _m5TrendStatus = lastFast < lastSlow;      // M5TREND_EXP: tracked, not blocking
+      const _m1CloseStatus = m1LastClose < m1LastFast; // M1CLOSE_EXP: tracked, not blocking
+      const _entryGate     = _sellHard ? "HARD" : "RELAXED";
       if (!_m5TrendStatus) {
         console.log(`[M5TREND_EXP] SELL ${symbol} with m5trend=FALSE (EMA20=${lastFast.toFixed(5)} > EMA50=${lastSlow.toFixed(5)}) — experiment entry`);
+      }
+      if (!_m1CloseStatus) {
+        console.log(`[M1CLOSE_EXP] SELL ${symbol} with m1close=FALSE (m1Close=${m1LastClose.toFixed(5)} > EMA9=${m1LastFast.toFixed(5)}) — experiment entry`);
+      }
+      if (_entryGate === "RELAXED") {
+        console.log(`[RELAXED_GATE] SELL ${symbol} passScore=${_sellPassScore}/9 — anchor(ema+str+candle)=TRUE — relaxed gate fired`);
       }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
       const _sellCondMap  = {
@@ -1830,6 +1852,7 @@ async function strategy(symbol) {
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
       symbolSignalId[symbol]      = signalId;
+      symbolEntryMeta[symbol]     = { passCount: _sellPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
         ...fullSnapshot,
         fingerprint:    _fpHash(_sellFp),
@@ -1846,6 +1869,8 @@ async function strategy(symbol) {
         fp:             _sellFp,
         m1TrendAtEntry: _m1TrendStatus,   // M1TREND_EXP — A/B segmentation field
         m5TrendAtEntry: _m5TrendStatus,   // M5TREND_EXP — A/B segmentation field
+        m1CloseAtEntry: _m1CloseStatus,   // M1CLOSE_EXP — A/B segmentation field
+        entryGate:      _entryGate,       // GATE_V3: "HARD" | "RELAXED"
         passCount:      _sellPassCount,   // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _sellCondMap,     // QUALITY TELEMETRY — full per-condition state for analysis
       });
