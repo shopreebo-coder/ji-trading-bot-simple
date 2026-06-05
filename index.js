@@ -1190,6 +1190,9 @@ async function strategy(symbol) {
     // ── OPEN TRADE CHECK ─────────────────────────────────────────────────
     const existingTrade = await hasOpenTrade(symbol);
     if (existingTrade) {
+      blockCounters.open_trade_block = (blockCounters.open_trade_block || 0) + 1;
+      logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "open_trade_block" });
+      logEvent({ type: "open_trade_block", signalId, symbol, session });
       return;
     }
 
@@ -1255,6 +1258,7 @@ async function strategy(symbol) {
     // ── M5 ANALYSIS ───────────────────────────────────────────────────────
     const candles = await getCandles(symbol, 100, MAIN_TIMEFRAME);
     if (candles.length < 60) {
+      logEvent({ type: "candle_block", signalId, symbol, session, reason: "m5_insufficient", count: candles.length });
       return;
     }
 
@@ -1416,6 +1420,7 @@ async function strategy(symbol) {
     // ── M1 CONFIRMATION ───────────────────────────────────────────────────
     const m1Candles = await getCandles(symbol, 50, ENTRY_TIMEFRAME);
     if (m1Candles.length < 30) {
+      logEvent({ type: "candle_block", signalId, symbol, session, reason: "m1_insufficient", count: m1Candles.length });
       return;
     }
 

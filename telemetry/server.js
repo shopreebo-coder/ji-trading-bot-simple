@@ -1374,6 +1374,205 @@ app.get("/api/trade-quality", (req, res) => {
   }));
 });
 
+// ── API: GET /api/pipeline-audit ─────────────────────────────────────────────
+// Full decision pipeline waterfall: counts at every stage + recent rejections.
+// Answers: WHY Checks=0, WHERE signals disappear, WHAT the terminal blocker is.
+app.get("/api/pipeline-audit", (req, res) => {
+  const date  = req.query.date ? parseDate(req.query.date) : undefined;
+  const lim   = 50000;
+
+  // ── Stage counts ────────────────────────────────────────────────────────
+  const detected    = queryEvents({ type: "signal_detected",          date, limit: lim }).length;
+  const cooldown    = queryEvents({ type: "cooldown_block",            date, limit: lim }).length;
+  const openTrade   = queryEvents({ type: "open_trade_block",          date, limit: lim }).length;
+  const correlation = queryEvents({ type: "correlation_block",         date, limit: lim }).length;
+  const disabled    = queryEvents({ type: "symbol_disabled_block",     date, limit: lim }).length;
+  const spread      = queryEvents({ type: "spread_block",              date, limit: lim }).length;
+  const candleRows  = queryEvents({ type: "candle_block",              date, limit: lim });
+  const candleM5    = candleRows.filter(e => e.data.reason === "m5_insufficient").length;
+  const candleM1    = candleRows.filter(e => e.data.reason === "m1_insufficient").length;
+  const exhaustion  = queryEvents({ type: "exhaustion_block",          date, limit: lim }).length;
+  const spreadEdge  = queryEvents({ type: "spread_edge_block",         date, limit: lim }).length;
+  const pullback    = queryEvents({ type: "pullback_block",            date, limit: lim }).length;
+  const margin      = queryEvents({ type: "margin_block",              date, limit: lim }).length;
+  const defense     = queryEvents({ type: "defense_mode_skip",         date, limit: lim }).length;
+
+  const buyChecks   = queryEvents({ type: "buy_check",                 date, limit: lim }).length;
+  const sellChecks  = queryEvents({ type: "sell_check",                date, limit: lim }).length;
+  const checksTotal = buyChecks;  // one per eval (same as sellChecks)
+
+  const gateBlocks  = queryEvents({ type: "entry_blocked_at_gate",     date, limit: lim }).length;
+  const almostN     = queryEvents({ type: "almost_trade",              date, limit: lim }).length;
+  const tradeOpens  = queryEvents({ type: "trade_open",                date, limit: lim }).length;
+  const closes      = queryEvents({ type: "trade_close",               date, limit: lim });
+  const tradeCloses = closes.length;
+
+  // Outcome taxonomy
+  let wins = 0, losses = 0, breakevens = 0;
+  for (const c of closes) {
+    const oc = classifyOutcome(c.data);
+    if (oc === "WIN")       wins++;
+    else if (oc === "LOSS") losses++;
+    else                    breakevens++;
+  }
+
+  // ── Waterfall — pipeline stage survival ─────────────────────────────────
+  // Blocks are sequential + mutually exclusive: each signal exits on first block.
+  // Survivors = detected − cumulative blocks up to that stage.
+  let rem = detected;
+  const waterfall = [];
+  const stage = (name, blocks, note) => {
+    rem -= (blocks || 0);
+    waterfall.push({ stage: name, blocks: blocks || 0, survivors: rem, note: note || "" });
+  };
+  waterfall.push({ stage: "Signals Detected",       blocks: null, survivors: detected, note: "signal_detected events" });
+  stage("After Cooldown Block",          cooldown,    "cooldown_block events");
+  stage("After Open-Trade Block",        openTrade,   "open_trade_block events [NEW]");
+  stage("After Correlation Block",       correlation, "correlation_block events");
+  stage("After Disabled-Symbol Block",   disabled,    "symbol_disabled_block events");
+  stage("After Spread Block (>2.0p)",    spread,      "spread_block events");
+  stage("After M5 Candle Block",         candleM5,    "candle_block[m5_insufficient] events [NEW]");
+  stage("After Exhaustion Block",        exhaustion,  "exhaustion_block events");
+  stage("After SpreadEdge Block",        spreadEdge,  "spread_edge_block events");
+  stage("After M1 Candle Block",         candleM1,    "candle_block[m1_insufficient] events [NEW]");
+  stage("After Pullback Block (>1.5p)",  pullback,    "pullback_block events");
+  stage("After Margin Block (>50%)",     margin,      "margin_block events");
+  stage("After Defense-Mode Skip",       defense,     "defense_mode_skip events");
+
+  // Expected vs actual at gate
+  const expectedAtGate = rem;   // based on block arithmetic
+  const actualAtGate   = checksTotal;
+  const silentLeakage  = expectedAtGate - actualAtGate;
+
+  waterfall.push({
+    stage:     "Reached Gate (Checks)",
+    blocks:    null,
+    survivors: actualAtGate,
+    note:      `buy_check events — expected ${expectedAtGate} from arithmetic; leakage=${silentLeakage}`,
+  });
+  waterfall.push({ stage: "Gate Pass → Trade Open",  blocks: gateBlocks, survivors: tradeOpens, note: "trade_open events" });
+  waterfall.push({ stage: "Trade Closed (bot)",       blocks: null,       survivors: tradeCloses, note: "trade_close events (OANDA SL/TP not captured)" });
+
+  // ── Dominant blocker identification ─────────────────────────────────────
+  const blockMap = { cooldown, openTrade, correlation, disabled, spread, candleM5, exhaustion, spreadEdge, candleM1, pullback, margin, defense };
+  const totalBlocks = Object.values(blockMap).reduce((a, b) => a + b, 0);
+  const dominantBlocker = Object.entries(blockMap).sort((a, b) => b[1] - a[1])[0] || null;
+  const terminalBlocker = pullback > 0 && checksTotal === 0 ? "pullback_block"
+    : margin  > 0 && checksTotal === 0 ? "margin_block"
+    : defense > 0 && checksTotal === 0 ? "defense_mode_skip"
+    : checksTotal === 0 && silentLeakage > 0 ? "SILENT_STAGE (candle_block or open_trade_block — check leakage)"
+    : checksTotal === 0 ? "UNKNOWN — all signals blocked before gate"
+    : null;
+
+  // ── Recent 20 rejected opportunities ─────────────────────────────────────
+  // Union: signals that passed spread_edge but didn't trade.
+  // Sources: pullback_block, margin_block, defense_mode_skip, entry_blocked_at_gate, almost_trade
+  const pullbackRows  = queryEvents({ type: "pullback_block",           date, limit: 500 });
+  const marginRows    = queryEvents({ type: "margin_block",             date, limit: 500 });
+  const defenseRows   = queryEvents({ type: "defense_mode_skip",        date, limit: 500 });
+  const gateBlockRows = queryEvents({ type: "entry_blocked_at_gate",    date, limit: 500 });
+  const almostRows    = queryEvents({ type: "almost_trade",             date, limit: 500 });
+
+  const rejected = [
+    ...pullbackRows.map(e => ({
+      ts: e.ts, symbol: e.symbol, reason: "pullback_block",
+      passScore: null, spread: e.data.spread || null,
+      entryDistance: e.data.entryDistance || null,
+      emaDistance: e.data.emaDistance || null,
+      candleStrength: e.data.candleStrength || null,
+      session: e.data.session || null,
+      failedConditions: null, gateStatus: "PRE-GATE",
+    })),
+    ...marginRows.map(e => ({
+      ts: e.ts, symbol: e.symbol, reason: "margin_block",
+      passScore: null, spread: null,
+      entryDistance: null, emaDistance: null, candleStrength: null,
+      session: e.data.session || null,
+      failedConditions: null, gateStatus: "PRE-GATE",
+    })),
+    ...defenseRows.map(e => ({
+      ts: e.ts, symbol: e.symbol, reason: "defense_mode_skip",
+      passScore: null, spread: null,
+      entryDistance: null, emaDistance: e.data.emaDistance || null, candleStrength: null,
+      session: e.data.session || null,
+      failedConditions: null, gateStatus: "PRE-GATE",
+    })),
+    ...gateBlockRows.map(e => {
+      const d = e.data;
+      const m5b = d.m5Buy || {}; const m1b = d.m1Buy || {};
+      const m5s = d.m5Sell || {}; const m1s = d.m1Sell || {};
+      const buyScore  = [m5b.trend,m5b.close,m5b.candle,m5b.ema,m5b.strength,m1b.trend,m1b.candle,m1b.prev,m1b.close].filter(Boolean).length;
+      const sellScore = [m5s.trend,m5s.close,m5s.candle,m5s.ema,m5s.strength,m1s.trend,m1s.candle,m1s.prev,m1s.close].filter(Boolean).length;
+      return {
+        ts: e.ts, symbol: e.symbol, reason: "gate_block",
+        passScore: Math.max(buyScore, sellScore),
+        spread: d.spread || null, entryDistance: d.entryDistance || null,
+        emaDistance: d.emaDistance || null, candleStrength: d.candleStrength || null,
+        session: d.session || null,
+        failedConditions: [d.buyFirstFail, d.sellFirstFail].filter(Boolean).join(" / ") || null,
+        gateStatus: "GATE_FAIL",
+      };
+    }),
+    ...almostRows.map(e => ({
+      ts: e.ts, symbol: e.symbol, reason: "almost_trade",
+      passScore: e.data.passCount || null, spread: e.data.spread || null,
+      entryDistance: e.data.entryDistance || null,
+      emaDistance: e.data.emaDistance || null, candleStrength: e.data.candleStrength || null,
+      session: e.data.session || null,
+      failedConditions: (e.data.failedConditions || []).join(",") || null,
+      gateStatus: "ALMOST",
+    })),
+  ]
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+    .slice(0, 20);
+
+  // ── Telemetry taxonomy ───────────────────────────────────────────────────
+  const taxonomy = {
+    SIGNAL_DETECTED:   { event: "signal_detected",   count: detected,    note: "every strategy() call" },
+    SIGNAL_FILTERED:   { event: "signal_filtered",   count: queryEvents({ type: "signal_filtered", date, limit: lim }).length, note: "sub-event on every block" },
+    ORDER_CREATED:     { event: "N/A",               count: 0,           note: "market orders — no pending-order creation phase" },
+    ORDER_CANCELLED:   { event: "N/A",               count: 0,           note: "no pending orders used" },
+    ORDER_EXPIRED:     { event: "N/A",               count: 0,           note: "no pending orders used" },
+    TRADE_EXECUTED:    { event: "trade_open",         count: tradeOpens,  note: "emitted on OANDA order fill" },
+    TRADE_CLOSED_WIN:  { event: "trade_close[WIN]",  count: wins,        note: "classifyOutcome at query time" },
+    TRADE_CLOSED_LOSS: { event: "trade_close[LOSS]", count: losses,      note: "classifyOutcome at query time" },
+    TRADE_BREAKEVEN:   { event: "trade_close[BE]",   count: breakevens,  note: "classifyOutcome at query time" },
+  };
+
+  // ── Gaps / findings ──────────────────────────────────────────────────────
+  const findings = [];
+  if (checksTotal === 0 && detected > 0)
+    findings.push({ severity: "CRITICAL", classification: "STRATEGY ISSUE", finding: `Checks=0 with ${detected} signals detected. Terminal blocker: ${terminalBlocker || "unknown"}. No signal survives all pre-filters.` });
+  if (tradeOpens === 0 && checksTotal === 0)
+    findings.push({ severity: "CRITICAL", classification: "STRATEGY ISSUE", finding: "Trades=0 is a direct consequence of Checks=0. If no signal reaches the gate, nothing can trade." });
+  if (silentLeakage > 0)
+    findings.push({ severity: "HIGH", classification: "TELEMETRY BUG", finding: `Silent stage leakage = ${silentLeakage} signals. Expected ${expectedAtGate} to reach gate based on block arithmetic but ${actualAtGate} buy_check events found. Candle-block or open_trade_block events may have been recently added — leakage will be 0 once Railway deploys this build.` });
+  if (pullback > 0 && checksTotal === 0)
+    findings.push({ severity: "HIGH", classification: "STRATEGY ISSUE", finding: `pullback_block is the terminal pre-gate filter with ${pullback} blocks and 0 checks. Structural contradiction: M5 momentum conditions require price movement that inherently places M1 price >1.5p from EMA9.` });
+  if (totalBlocks > 0)
+    findings.push({ severity: "INFO", classification: "SAFE", finding: `${totalBlocks} total pre-filter blocks confirms bot IS running and evaluating signals. Dominant blocker: ${dominantBlocker ? dominantBlocker[0] + " (" + dominantBlocker[1] + ")" : "none"}.` });
+  findings.push({ severity: "INFO", classification: "TELEMETRY BUG", finding: "OANDA SL/TP exits are NOT captured in telemetry. Trades closed by OANDA SL/TP orders do not emit trade_close events — this is the largest telemetry blind spot." });
+  findings.push({ severity: "INFO", classification: "SAFE", finding: "open_trade_block, candle_block events are newly added in this build. They were previously silent — will appear in future runs after Railway redeploys." });
+
+  res.json({
+    generated:      new Date().toISOString(),
+    waterfall,
+    blockBreakdown: { ...blockMap, total: totalBlocks },
+    terminalBlocker,
+    dominantBlocker: dominantBlocker ? { name: dominantBlocker[0], count: dominantBlocker[1] } : null,
+    silentLeakage,
+    checksTotal:    actualAtGate,
+    gateBlocks,
+    almostTrades:   almostN,
+    tradeOpens,
+    tradeCloses,
+    wins, losses, breakevens,
+    recentRejections: rejected,
+    taxonomy,
+    findings,
+  });
+});
+
 // ── root → dashboard ──────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
