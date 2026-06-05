@@ -387,6 +387,45 @@ app.get("/api/export", (req, res) => {
   res.json({ date, exported: rows.length, events: rows });
 });
 
+// ── API: GET /api/exit-manager ────────────────────────────────────────────────
+// Aggregate exit quality metrics across all closed trades.
+// Fields: avg_mfe_capture_pct, avg_profit_given_back, exit_efficiency,
+//         avg_mfe30, avg_mfe60, avg_mfe120 (time-based MFE snapshots).
+app.get("/api/exit-manager", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+
+  let totalMfeCap = 0,  nMfeCap = 0;
+  let totalGiven  = 0,  nGiven  = 0;
+  let totalEff    = 0,  nEff    = 0;
+  let totalMfe30  = 0,  nMfe30  = 0;
+  let totalMfe60  = 0,  nMfe60  = 0;
+  let totalMfe120 = 0,  nMfe120 = 0;
+
+  for (const c of closes) {
+    const d = c.data;
+    if (d.mfeCapturedPct      != null && Number.isFinite(d.mfeCapturedPct))      { totalMfeCap += d.mfeCapturedPct;      nMfeCap++;  }
+    if (d.profitGivenBackPips != null && Number.isFinite(d.profitGivenBackPips)) { totalGiven  += d.profitGivenBackPips; nGiven++;   }
+    if (d.exitEfficiency      != null && Number.isFinite(d.exitEfficiency))      { totalEff    += d.exitEfficiency;      nEff++;     }
+    if (d.mfe30  != null && Number.isFinite(d.mfe30))  { totalMfe30  += d.mfe30;  nMfe30++;  }
+    if (d.mfe60  != null && Number.isFinite(d.mfe60))  { totalMfe60  += d.mfe60;  nMfe60++;  }
+    if (d.mfe120 != null && Number.isFinite(d.mfe120)) { totalMfe120 += d.mfe120; nMfe120++; }
+  }
+
+  res.json({
+    totalTrades:            closes.length,
+    avg_mfe_capture_pct:    nMfeCap  ? parseFloat((totalMfeCap / nMfeCap).toFixed(1))   : null,
+    avg_profit_given_back:  nGiven   ? parseFloat((totalGiven  / nGiven).toFixed(2))    : null,
+    exit_efficiency:        nEff     ? parseFloat((totalEff    / nEff).toFixed(1))      : null,
+    avg_mfe30:              nMfe30   ? parseFloat((totalMfe30  / nMfe30).toFixed(2))    : null,
+    avg_mfe60:              nMfe60   ? parseFloat((totalMfe60  / nMfe60).toFixed(2))    : null,
+    avg_mfe120:             nMfe120  ? parseFloat((totalMfe120 / nMfe120).toFixed(2))   : null,
+    sampleMfe30:            nMfe30,
+    sampleMfe60:            nMfe60,
+    sampleMfe120:           nMfe120,
+  });
+});
+
 // ── SSE: GET /api/events/stream ───────────────────────────────────────────────
 app.get("/api/events/stream", (req, res) => {
   res.writeHead(200, {
@@ -1047,6 +1086,121 @@ app.get("/api/almost-trades", (req, res) => {
     recentSignals:  signals.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
     recentOutcomes: outcomes.slice(0, 20).map(r => ({ ts: r.ts, symbol: r.symbol, ...r.data })),
   });
+});
+
+// ── API: GET /api/blocked-winners-v2 ─────────────────────────────────────────
+// Blocked Winners Analysis V2 — per-condition BUY / SELL split.
+// For each failing gate condition: shows whether it blocks BUY setups,
+// SELL setups, or both, and how far price moved afterward.
+app.get("/api/blocked-winners-v2", (req, res) => {
+  const date     = req.query.date ? parseDate(req.query.date) : undefined;
+  const outcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+
+  const condAll  = {};
+  const condBuy  = {};
+  const condSell = {};
+
+  function addTo(map, fc, d) {
+    if (!map[fc]) map[fc] = { condition: fc, total: 0, reached2p: 0, reached4p: 0, reached6p: 0, totalMove: 0, correctDir: 0 };
+    map[fc].total++;
+    if (d.reached2p)        map[fc].reached2p++;
+    if (d.reached4p)        map[fc].reached4p++;
+    if (d.reached6p)        map[fc].reached6p++;
+    if (d.directionCorrect) map[fc].correctDir++;
+    map[fc].totalMove += Math.abs(d.maxMovePips || 0);
+  }
+
+  function toStats(map) {
+    return Object.values(map).map(c => ({
+      condition:     c.condition,
+      total:         c.total,
+      pct2p:         c.total ? parseFloat(((c.reached2p / c.total) * 100).toFixed(1)) : 0,
+      pct4p:         c.total ? parseFloat(((c.reached4p / c.total) * 100).toFixed(1)) : 0,
+      pct6p:         c.total ? parseFloat(((c.reached6p / c.total) * 100).toFixed(1)) : 0,
+      avgMove:       c.total ? parseFloat((c.totalMove   / c.total).toFixed(2)) : 0,
+      dirCorrectPct: c.total ? parseFloat(((c.correctDir / c.total) * 100).toFixed(1)) : 0,
+    })).sort((a, b) => b.pct4p - a.pct4p);
+  }
+
+  for (const o of outcomes) {
+    const d   = o.data;
+    const dir = (d.direction || "").toLowerCase();
+    for (const fc of (d.failedConditions || [])) {
+      addTo(condAll, fc, d);
+      if (dir === "buy")  addTo(condBuy,  fc, d);
+      if (dir === "sell") addTo(condSell, fc, d);
+    }
+  }
+
+  res.json({
+    total:         toStats(condAll),
+    buy:           toStats(condBuy),
+    sell:          toStats(condSell),
+    totalOutcomes: outcomes.length,
+  });
+});
+
+// ── API: GET /api/condition-performance ───────────────────────────────────────
+// Per-condition pass / fail stats linked to trade outcomes via signalId.
+// For each of the 9 gate conditions: pass count, fail count, win rate,
+// avg pips, avg MFE, avg MAE — computed only for evaluations that led to a trade.
+app.get("/api/condition-performance", (req, res) => {
+  const date   = req.query.date ? parseDate(req.query.date) : undefined;
+  const checks = [
+    ...queryEvents({ type: "buy_check",  date, limit: 10000 }),
+    ...queryEvents({ type: "sell_check", date, limit: 10000 }),
+  ];
+  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+
+  const closeBySignal = {};
+  for (const c of closes) {
+    if (c.data.signalId) closeBySignal[c.data.signalId] = c.data;
+  }
+
+  const CONDS = ["trend", "candle", "ema", "strength", "m1trend", "m1candle", "m1prev", "m1close"];
+  const stats = {};
+  for (const k of CONDS) {
+    stats[k] = { condition: k, passCount: 0, failCount: 0, traded: 0, wins: 0, losses: 0, totalPips: 0, totalMfe: 0, totalMae: 0 };
+  }
+
+  for (const c of checks) {
+    const d     = c.data;
+    const close = d.signalId ? closeBySignal[d.signalId] : null;
+    for (const k of CONDS) {
+      const s = stats[k];
+      if (d[k] === true) {
+        s.passCount++;
+        if (close) {
+          s.traded++;
+          const oc = classifyOutcome(close);
+          if (oc === "WIN")       s.wins++;
+          else if (oc === "LOSS") s.losses++;
+          s.totalPips += close.profitPips || 0;
+          s.totalMfe  += close.mfe        || 0;
+          s.totalMae  += Math.abs(close.mae || 0);
+        }
+      } else if (d[k] === false) {
+        s.failCount++;
+      }
+    }
+  }
+
+  const conditions = Object.values(stats).map(s => {
+    const decisive = s.wins + s.losses;
+    return {
+      condition: s.condition,
+      passCount: s.passCount,
+      failCount: s.failCount,
+      traded:    s.traded,
+      winRate:   decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : null,
+      avgPips:   s.traded ? parseFloat((s.totalPips / s.traded).toFixed(2)) : null,
+      avgMfe:    s.traded ? parseFloat((s.totalMfe  / s.traded).toFixed(2)) : null,
+      avgMae:    s.traded ? parseFloat((s.totalMae  / s.traded).toFixed(2)) : null,
+    };
+  });
+
+  res.json({ conditions, totalChecks: checks.length, totalTrades: opens.length });
 });
 
 // ── API: GET /api/m5trend-experiment ──────────────────────────────────────────

@@ -30,6 +30,7 @@ const ENTRY_TIMEFRAME  = "M1";
 const RISK_PERCENT     = parseFloat(process.env.RISK_PERCENT || "0.01");
 const MAX_OPEN_TRADES  = parseInt(process.env.MAX_OPEN_TRADES || "2");
 const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
+const MIN_STRENGTH     = parseFloat(process.env.MIN_STRENGTH    || "0.08");   // Task 2: relaxed from 0.12
 
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
@@ -55,6 +56,13 @@ const stats = {
 
 const tradePeak      = {};
 const tradeBreakEven = {};
+
+// ── MFE TIME SNAPSHOTS — TELEMETRY ONLY ──────────────────────────────────────
+// Peak pip value captured at 30 s, 60 s, 120 s after entry.
+// Set once per threshold; never overwritten. Null if trade closed before mark.
+const tradeMfe30  = {};  // peak pips at 30 s post-entry
+const tradeMfe60  = {};  // peak pips at 60 s post-entry
+const tradeMfe120 = {};  // peak pips at 120 s post-entry
 
 // ── MAE / MFE telemetry — TELEMETRY ONLY ────────────────────────────────────
 const tradeMAE             = {};  // max adverse excursion (most negative pips seen)
@@ -116,7 +124,7 @@ const gatePassCounters = {
   m5_candle:   0,  // bullishOrNeutralCandle OR bearishOrNeutralCandle on M5 last
   m5_close:    0,  // lastClose > lastFast (buy) or < (sell)
   m5_ema:      0,  // emaDistance > 1.8 (same for both)
-  m5_strength: 0,  // candleStrength > 0.12 (same for both)
+  m5_strength: 0,  // candleStrength > MIN_STRENGTH (default 0.08, was 0.12)
   m1_trend:    0,  // m1LastFast > m1LastSlow (buy) or < (sell)
   m1_candle:   0,  // m1Bullish or m1Bearish (current M1 candle)
   m1_prev:     0,  // bullishOrNeutralCandle(m1PrevCandle) or bearish equiv
@@ -830,6 +838,13 @@ async function manageTrades() {
 
       const peak = tradePeak[trade.id];
 
+      // ── MFE TIME SNAPSHOTS — TELEMETRY ONLY ──────────────────────────────
+      // Record peak at exactly 30 s / 60 s / 120 s after open. Set once.
+      const elapsedMs = now - openTime;
+      if (elapsedMs >= 30000  && tradeMfe30[trade.id]  === undefined) tradeMfe30[trade.id]  = parseFloat(peak.toFixed(2));
+      if (elapsedMs >= 60000  && tradeMfe60[trade.id]  === undefined) tradeMfe60[trade.id]  = parseFloat(peak.toFixed(2));
+      if (elapsedMs >= 120000 && tradeMfe120[trade.id] === undefined) tradeMfe120[trade.id] = parseFloat(peak.toFixed(2));
+
       // ── MAE / MFE TRACKERS — TELEMETRY ONLY ──────────────────────────────
       if (tradeMAE[trade.id] === undefined || pips < tradeMAE[trade.id]) {
         tradeMAE[trade.id] = pips;
@@ -979,6 +994,13 @@ async function manageTrades() {
           // QUALITY — TELEMETRY ONLY
           reachedPlusTwo:       tradePlusTwoPips[trade.id]    || false,
           instantAdverse:       tradeInstantAdverse[trade.id] || false,
+          // MFE TIME SNAPSHOTS — TELEMETRY ONLY
+          mfe30:               tradeMfe30[trade.id]  ?? null,
+          mfe60:               tradeMfe60[trade.id]  ?? null,
+          mfe120:              tradeMfe120[trade.id] ?? null,
+          // MFE CAPTURE METRICS — TELEMETRY ONLY
+          mfeCapturedPct:      mfe > 0 ? parseFloat(((pips / mfe) * 100).toFixed(1)) : null,
+          profitGivenBackPips: mfe > 0 ? parseFloat((mfe - pips).toFixed(2))         : null,
           // SESSION — TELEMETRY ONLY
           session:              classifySession(new Date().getUTCHours()),
         };
@@ -998,6 +1020,9 @@ async function manageTrades() {
         delete tradePlusTwoPips[trade.id];     // quality tracker
         delete tradeInstantAdverse[trade.id];  // quality tracker
         delete tradeEntrySnapshot[trade.id];   // forensics snapshot
+        delete tradeMfe30[trade.id];           // MFE time snapshots
+        delete tradeMfe60[trade.id];
+        delete tradeMfe120[trade.id];
       }
 
       // ── PROFIT PROTECTION ─────────────────────────────────────────────────
@@ -1501,7 +1526,7 @@ async function strategy(symbol) {
       close:    lastClose > lastFast,
       candle:   bullishOrNeutralCandle(lastCandle),     // v2: doji M5 bar ok in confirmed trend
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
     };
     const _m1b = {
       trend:  m1LastFast > m1LastSlow,
@@ -1514,7 +1539,7 @@ async function strategy(symbol) {
       close:    lastClose < lastFast,
       candle:   bearishOrNeutralCandle(lastCandle),     // v2: doji M5 bar ok in confirmed trend
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
     };
     const _m1s = {
       trend:  m1LastFast < m1LastSlow,
@@ -1613,7 +1638,7 @@ async function strategy(symbol) {
       trend:    lastFast > lastSlow,
       candle:   bullishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
       m1trend:  m1LastFast > m1LastSlow,
       m1candle: m1Bullish,
       m1prev:   bullishOrNeutralCandle(m1PrevCandle), // v2
@@ -1630,7 +1655,7 @@ async function strategy(symbol) {
       trend:    lastFast < lastSlow,
       candle:   bearishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
       m1trend:  m1LastFast < m1LastSlow,
       m1candle: m1Bearish,
       m1prev:   bearishOrNeutralCandle(m1PrevCandle), // v2
@@ -1646,7 +1671,7 @@ async function strategy(symbol) {
       trend:    lastFast > lastSlow,
       candle:   bullishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
       m1trend:  m1LastFast > m1LastSlow,
       m1prev:   bullishOrNeutralCandle(m1PrevCandle), // v2
     };
@@ -1654,7 +1679,7 @@ async function strategy(symbol) {
       trend:    lastFast < lastSlow,
       candle:   bearishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
-      strength: candleStrength > 0.12,
+      strength: candleStrength > MIN_STRENGTH,
       m1trend:  m1LastFast < m1LastSlow,
       m1prev:   bearishOrNeutralCandle(m1PrevCandle), // v2
     };

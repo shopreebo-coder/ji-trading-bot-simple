@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -253,7 +253,7 @@ function LiveTab({ live, today, logLines }){
 }
 
 // ── ANALIZA tab ────────────────────────────────────────────────────────────
-function AnalyzaTab({ stats, today, symbols, confirmLag }){
+function AnalyzaTab({ stats, today, symbols, confirmLag, exitMgr }){
   const totalBlocks = Object.values(today.blockCounts||{}).reduce((a,b)=>a+b,0);
   const blockTypes = [
     {key:"spread_block",         label:"Spread"},
@@ -363,6 +363,261 @@ function AnalyzaTab({ stats, today, symbols, confirmLag }){
             </table>
           )
         }
+      </div>
+      <ExitManagerSection data={exitMgr}/>
+    </div>
+  );
+}
+
+// ── EXIT MANAGER section ────────────────────────────────────────────────────
+function ExitManagerSection({ data }){
+  if(!data) return <div className="panel"><div className="ph">Exit Manager Telemetry</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
+  const { avg_mfe_capture_pct, avg_profit_given_back, exit_efficiency, avg_mfe30, avg_mfe60, avg_mfe120, sampleMfe30=0, totalTrades=0 } = data;
+  const effCol = v => v==null?"#484f58":v>=60?"#3fb950":v>=30?"#d29922":"#f85149";
+  return (
+    <div className="panel">
+      <div className="ph">Exit Manager Telemetry
+        <span style={{fontWeight:400,color:"#484f58"}}>MFE capture metrics — {totalTrades} trade{totalTrades!==1?"s":""}</span>
+      </div>
+      <div className="cards" style={{margin:"12px 0"}}>
+        <div className="card"><div className="lbl">Avg MFE Capture %</div><div className="val" style={{color:effCol(avg_mfe_capture_pct)}}>{avg_mfe_capture_pct!=null?avg_mfe_capture_pct+"%":"—"}</div></div>
+        <div className="card"><div className="lbl">Exit Efficiency</div><div className="val" style={{color:effCol(exit_efficiency)}}>{exit_efficiency!=null?exit_efficiency+"%":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg Given Back</div><div className="val red">{avg_profit_given_back!=null?avg_profit_given_back+"p":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg MFE @ 30s</div><div className="val blue">{avg_mfe30!=null?avg_mfe30+"p":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg MFE @ 60s</div><div className="val blue">{avg_mfe60!=null?avg_mfe60+"p":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg MFE @ 120s</div><div className="val blue">{avg_mfe120!=null?avg_mfe120+"p":"—"}</div></div>
+      </div>
+      {totalTrades>0 && sampleMfe30===0 && (
+        <div style={{padding:"0 16px 12px",fontSize:11,color:"#484f58"}}>
+          ℹ MFE time snapshots (30s/60s/120s) accumulate from new trades only — existing trade_close events predate this field.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── CONDITION PERFORMANCE panel ─────────────────────────────────────────────
+function ConditionPerfPanel({ data }){
+  if(!data) return null;
+  const { conditions=[], totalChecks=0, totalTrades=0 } = data;
+  if(!conditions.length) return (
+    <div className="panel">
+      <div className="ph">Condition Performance — ROI per Gate Condition</div>
+      <div className="empty" style={{padding:16}}>No data yet — requires trades linked via signalId.</div>
+    </div>
+  );
+  return (
+    <div className="panel">
+      <div className="ph">Condition Performance — ROI per Gate Condition
+        <span style={{fontWeight:400,color:"#484f58"}}>{totalChecks} eval{totalChecks!==1?"s":""} · {totalTrades} trade{totalTrades!==1?"s":""} linked</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Condition</th><th style={{textAlign:"right"}}>Pass</th><th style={{textAlign:"right"}}>Fail</th>
+          <th style={{textAlign:"right"}}>Traded</th><th style={{textAlign:"right"}}>Win Rate</th>
+          <th style={{textAlign:"right"}}>Avg Pips</th><th style={{textAlign:"right"}}>Avg MFE</th><th style={{textAlign:"right"}}>Avg MAE</th>
+        </tr></thead>
+        <tbody>
+          {conditions.map((c,i)=>{
+            const wr  = c.winRate;
+            const col = wr==null?"#484f58":wr>=60?"#3fb950":wr>=40?"#d29922":"#f85149";
+            return (
+              <tr key={i}>
+                <td style={{fontFamily:"monospace",fontWeight:600,color:"#e6edf3"}}>{c.condition}</td>
+                <td style={{textAlign:"right",color:"#3fb950"}}>{c.passCount}</td>
+                <td style={{textAlign:"right",color:"#f85149"}}>{c.failCount}</td>
+                <td style={{textAlign:"right"}}>{c.traded}</td>
+                <td style={{textAlign:"right",color:col,fontWeight:700}}>{wr!=null?wr+"%":"—"}</td>
+                <td style={{textAlign:"right"}}>{c.avgPips!=null?<span className={c.avgPips>=0?"pp":"pn"}>{c.avgPips>=0?"+":""}{c.avgPips}</span>:"—"}</td>
+                <td style={{textAlign:"right",color:"#3fb950"}}>{c.avgMfe!=null?c.avgMfe+"p":"—"}</td>
+                <td style={{textAlign:"right",color:"#f85149"}}>{c.avgMae!=null?c.avgMae+"p":"—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── BLOCKED WINNERS V2 panel ─────────────────────────────────────────────────
+function BlockedWinnersV2Panel({ data }){
+  if(!data) return null;
+  const { total=[], buy=[], sell=[], totalOutcomes=0 } = data;
+  if(!totalOutcomes) return (
+    <div className="panel">
+      <div className="ph">Blocked Winners V2 — BUY / SELL Split</div>
+      <div className="empty" style={{padding:16}}>No outcomes resolved yet.</div>
+    </div>
+  );
+  function CondTable({ rows, dir }){
+    if(!rows.length) return <div className="empty" style={{padding:8}}>No {dir} setups blocked.</div>;
+    return (
+      <table>
+        <thead><tr>
+          <th>Condition</th><th>Blocked</th><th>Dir%</th><th>+2p%</th><th>+4p%</th><th>+6p%</th><th>Avg Move</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((c,i)=>(
+            <tr key={i}>
+              <td style={{fontFamily:"monospace",fontWeight:600,color:"#e6edf3"}}>{c.condition}</td>
+              <td>{c.total}</td>
+              <td style={{color:parseFloat(c.dirCorrectPct)>=60?"#3fb950":"#d29922"}}>{c.dirCorrectPct}%</td>
+              <td style={{color:parseFloat(c.pct2p)>=50?"#3fb950":"#8b949e"}}>{c.pct2p}%</td>
+              <td style={{color:parseFloat(c.pct4p)>=40?"#d29922":"#8b949e",fontWeight:parseFloat(c.pct4p)>=40?700:400}}>{c.pct4p}%</td>
+              <td style={{color:parseFloat(c.pct6p)>=30?"#f85149":"#8b949e"}}>{c.pct6p}%</td>
+              <td style={{color:"#79c0ff"}}>{c.avgMove}p</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <div className="panel">
+      <div className="ph">Blocked Winners V2 — BUY / SELL Split
+        <span style={{fontWeight:400,color:"#484f58"}}>{totalOutcomes} outcomes · directional breakdown per condition</span>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"0 0 16px"}}>
+        <div>
+          <div style={{fontWeight:700,color:"#58a6ff",fontSize:12,padding:"12px 0 8px",textTransform:"uppercase",letterSpacing:".8px"}}>BUY Setups Blocked</div>
+          <CondTable rows={buy} dir="buy"/>
+        </div>
+        <div>
+          <div style={{fontWeight:700,color:"#f0883e",fontSize:12,padding:"12px 0 8px",textTransform:"uppercase",letterSpacing:".8px"}}>SELL Setups Blocked</div>
+          <CondTable rows={sell} dir="sell"/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── EXPORT tab ───────────────────────────────────────────────────────────────
+function ExportTab(){
+  const [loading, setLoading] = useState(false);
+  const [status,  setStatus]  = useState("");
+
+  function downloadFile(content, filename, mime){
+    const blob = new Blob([content], { type: mime });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href=url; a.download=filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function dlRaw(format){ window.open(`/api/export?format=${format}&date=today`,"_blank"); }
+
+  async function generateReport(){
+    setLoading(true); setStatus("Fetching data…");
+    try {
+      const [stats,today,syms,ins,blocked,quality] = await Promise.all([
+        api("/api/stats"),api("/api/today"),api("/api/symbols"),
+        api("/api/insights"),api("/api/blocked-outcomes"),api("/api/trade-quality"),
+      ]);
+      const ts = new Date().toISOString();
+      const lines = [
+        "FOREX ENGINE PRO v39.2 — Analysis Report",
+        `Generated: ${ts}`,
+        "=".repeat(60),"",
+        "PERFORMANCE SUMMARY",
+        `  Trades: ${stats.trades||0}  Wins: ${stats.wins||0}  Losses: ${stats.losses||0}  BE: ${stats.breakevens||0}`,
+        `  Win Rate: ${stats.winRate||"0.0"}%`,
+        `  Avg Peak: ${stats.avgPeak||"0.00"}p`,
+        `  Avg Exit Eff: ${ins.avgExitEfficiency!=null?ins.avgExitEfficiency+"%":"N/A"}`,
+        "","TODAY BLOCKS",
+        ...Object.entries(today.blockCounts||{}).map(([k,v])=>`  ${k}: ${v}`),
+        "","SYMBOL PERFORMANCE",
+        ...syms.map(s=>`  ${s.symbol}: ${s.trades} trades, ${s.winRate}% WR, avg ${s.avgProfit}p`),
+        "","FILTER COST (BLOCKED OUTCOMES)",
+        ...(blocked.summary||[]).map(b=>`  ${b.blockType}: ${b.total} blocked, ${b.movedPct}% moved, avg ${b.avgMovePips}p`),
+        "","TRADE QUALITY",
+        `  Reached +2p: ${quality.pctReachedPlusTwo||"0.0"}%`,
+        `  Instant Adverse: ${quality.pctInstantAdverse||"0.0"}%`,
+        "",
+      ];
+      const fn = `analysis_report_${ts.slice(0,19).replace(/:/g,"-")}.txt`;
+      downloadFile(lines.join("\n"), fn, "text/plain");
+      setStatus("Report downloaded.");
+    } catch(e){ setStatus("Error: "+e.message); }
+    setLoading(false);
+  }
+
+  async function generateSnapshot(){
+    setLoading(true);
+    try {
+      setStatus("Fetching… (1/4)");
+      const [stats,today,syms,trades,fps] = await Promise.all([
+        api("/api/stats"),api("/api/today"),api("/api/symbols"),api("/api/trades"),api("/api/fingerprints"),
+      ]);
+      setStatus("Fetching… (2/4)");
+      const [exc,blocked,ins,drift,quality,pef] = await Promise.all([
+        api("/api/excursion"),api("/api/blocked-outcomes"),api("/api/insights"),
+        api("/api/drift"),api("/api/trade-quality"),api("/api/post-entry-failures"),
+      ]);
+      setStatus("Fetching… (3/4)");
+      const [almost,v2,condPerf,exitMgr] = await Promise.all([
+        api("/api/almost-trades"),api("/api/blocked-winners-v2"),
+        api("/api/condition-performance"),api("/api/exit-manager"),
+      ]);
+      setStatus("Fetching… (4/4)");
+      const [m5exp,m1exp,m1close,gate,pipeline] = await Promise.all([
+        api("/api/m5trend-experiment"),api("/api/m1trend-experiment"),
+        api("/api/m1close-experiment"),api("/api/gate-experiment"),api("/api/pipeline-audit"),
+      ]);
+      setStatus("Assembling snapshot…");
+      const snapshot = {
+        meta:{ generated:new Date().toISOString(), version:"v39.2", source:"analysis_snapshot" },
+        performance:{ stats, today },
+        symbols: syms, trades, patterns: fps, excursion: exc,
+        blocked_outcomes: blocked, insights: ins, drift,
+        trade_quality: quality, post_entry_failures: pef,
+        almost_trades: almost, blocked_winners_v2: v2,
+        condition_performance: condPerf, exit_manager: exitMgr,
+        experiments:{ m5trend:m5exp, m1trend:m1exp, m1close, gate },
+        pipeline,
+      };
+      const fn = `analysis_snapshot_${new Date().toISOString().slice(0,19).replace(/:/g,"-")}.json`;
+      downloadFile(JSON.stringify(snapshot,null,2), fn, "application/json");
+      setStatus("Snapshot downloaded.");
+    } catch(e){ setStatus("Error: "+e.message); }
+    setLoading(false);
+  }
+
+  return (
+    <div className="page">
+      <div className="panel">
+        <div className="ph">EXPORT — Download Telemetry Data</div>
+        <div style={{padding:16}}>
+          <div className="sec-label">Raw Event Data (today)</div>
+          <div style={{display:"flex",gap:10,marginBottom:16}}>
+            <button className="btn" onClick={()=>dlRaw("json")}>⬇ Download JSON</button>
+            <button className="btn" onClick={()=>dlRaw("csv")}>⬇ Download CSV</button>
+          </div>
+
+          <div className="sec-divider"/>
+          <div className="sec-label">Analysis Report</div>
+          <div style={{color:"#8b949e",fontSize:11,marginBottom:10}}>
+            Summary text: performance, block breakdown, symbol stats, filter cost, trade quality.
+          </div>
+          <div style={{display:"flex",gap:10,marginBottom:16}}>
+            <button className="btn primary" onClick={generateReport} disabled={loading}>
+              {loading?"Working…":"⬇ Download Analysis Report"}
+            </button>
+          </div>
+
+          <div className="sec-divider"/>
+          <div className="sec-label">Full Analysis Snapshot (for AI)</div>
+          <div style={{color:"#8b949e",fontSize:11,marginBottom:10}}>
+            Fetches all 16 API endpoints and packages them as <code style={{color:"#79c0ff"}}>analysis_snapshot_TIMESTAMP.json</code> — trades, patterns, fingerprints, excursion, blocked outcomes, post-entry failures, condition performance, exit manager, blocked winners v2, session stats, experiment data, pipeline audit.
+          </div>
+          <div style={{display:"flex",gap:10,marginBottom:16}}>
+            <button className="btn primary" onClick={generateSnapshot} disabled={loading}>
+              {loading?"Working…":"⬇ Generate Snapshot"}
+            </button>
+          </div>
+
+          {status && <div style={{fontSize:12,color:status.startsWith("Error")?"#f85149":"#3fb950",marginTop:4}}>{status}</div>}
+        </div>
       </div>
     </div>
   );
@@ -1201,7 +1456,7 @@ function InsightsTab({ insights, blockedOutcomes, drift, m1exp, m5exp, m1closeEx
 }
 
 // ── BLOCKED WINNERS tab ─────────────────────────────────────────────────────
-function BlockedTab({ blocked }){
+function BlockedTab({ blocked, blockedV2, condPerf }){
   if(!blocked) return <div className="page"><div className="empty">Loading almost-trade forensics…</div></div>;
 
   const { conditionStats=[], passcoreStats=[], totalSignals=0, totalOutcomes=0, recentSignals=[] } = blocked;
@@ -1211,7 +1466,7 @@ function BlockedTab({ blocked }){
     m5close:  "M5 Close on EMA side",
     m5candle: "M5 Candle non-reversal",
     ema:      "EMA Distance > 1.8p",
-    strength: "Candle Strength > 0.12",
+    strength: "Candle Strength > MIN_STRENGTH (0.08)",
     m1trend:  "M1 Trend (EMA9>21)",
     m1candle: "M1 Current Candle dir.",
     m1prev:   "M1 Prev Candle",
@@ -1324,6 +1579,8 @@ function BlockedTab({ blocked }){
           }
         </div>
       </div>
+      <BlockedWinnersV2Panel data={blockedV2}/>
+      <ConditionPerfPanel    data={condPerf}/>
     </div>
   );
 }
@@ -1442,6 +1699,9 @@ function App(){
   const [insights,   setInsights]   = useState(null);
   const [blockedOut, setBlockedOut] = useState(null);
   const [blocked,    setBlocked]    = useState(null);
+  const [blockedV2,  setBlockedV2]  = useState(null);
+  const [condPerf,   setCondPerf]   = useState(null);
+  const [exitMgr,    setExitMgr]    = useState(null);
   const [pipeline,   setPipeline]   = useState(null);
   const [m1exp,      setM1exp]      = useState(null);
   const [m5exp,      setM5exp]      = useState(null);
@@ -1491,7 +1751,15 @@ function App(){
   async function refreshFps(){ const d=await api("/api/fingerprints"); setFps(d); }
   async function refreshExc(){ const d=await api("/api/excursion");    setExc(d); }
   async function refreshEvents(){ const d=await api("/api/events?limit=100"); setEvents(d); }
-  async function refreshBlocked(){ const d=await api("/api/almost-trades"); setBlocked(d); }
+  async function refreshExitMgr(){ const d=await api("/api/exit-manager"); setExitMgr(d); }
+  async function refreshBlocked(){
+    const [d, v2, cp] = await Promise.all([
+      api("/api/almost-trades"),
+      api("/api/blocked-winners-v2"),
+      api("/api/condition-performance"),
+    ]);
+    setBlocked(d); setBlockedV2(v2); setCondPerf(cp);
+  }
   async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
 
   useEffect(()=>{
@@ -1506,6 +1774,7 @@ function App(){
     if(tab==="EXCURSION")refreshExc();
     if(tab==="DECYZJE")  refreshEvents();
     if(tab==="INSIGHTS") refreshInsights();
+    if(tab==="ANALIZA")  refreshExitMgr();
     if(tab==="BLOCKED")  refreshBlocked();
     if(tab==="PIPELINE") refreshPipeline();
   },[tab]);
@@ -1554,14 +1823,15 @@ function App(){
       <Header botStatus={liveWithArray.botStatus} ts={ts}/>
       <Tabs active={tab} set={setTab}/>
       {tab==="LIVE"      && <LiveTab     live={liveWithArray} today={today} logLines={logLines}/>}
-      {tab==="ANALIZA"   && <AnalyzaTab  stats={stats} today={today} symbols={symbols} confirmLag={confirmLag}/>}
+      {tab==="ANALIZA"   && <AnalyzaTab  stats={stats} today={today} symbols={symbols} confirmLag={confirmLag} exitMgr={exitMgr}/>}
       {tab==="WYKRESY"   && <WykreśyTab  symbols={symbols} trades={trades} winrate={winrate}/>}
       {tab==="DECYZJE"   && <DecyzjeTab  events={events}/>}
       {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
       {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp} m5exp={m5exp} m1closeExp={m1closeExp} gateExp={gateExp} analytics={analytics}/>}
       {tab==="PIPELINE"  && <PipelineAuditTab pipeline={pipeline}/>}
-      {tab==="BLOCKED"   && <BlockedTab  blocked={blocked}/>}
+      {tab==="BLOCKED"   && <BlockedTab  blocked={blocked} blockedV2={blockedV2} condPerf={condPerf}/>}
+      {tab==="EXPORT"    && <ExportTab/>}
     </>
   );
 }
