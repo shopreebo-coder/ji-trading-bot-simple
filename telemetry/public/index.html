@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -1328,6 +1328,105 @@ function BlockedTab({ blocked }){
   );
 }
 
+// ── PIPELINE AUDIT tab ──────────────────────────────────────────────────────
+function PipelineAuditTab({ pipeline }) {
+  if (!pipeline) return <div className="page"><div className="empty" style={{marginTop:40}}>Loading pipeline audit…</div></div>;
+  const { waterfall=[], findings=[], recentRejections=[], taxonomy={}, terminalBlocker, silentLeakage, checksTotal, tradeOpens, tradeCloses } = pipeline;
+  const sevColor   = s => s==="CRITICAL"?"#f85149":s==="HIGH"?"#d29922":"#58a6ff";
+  const classColor = c => c==="STRATEGY ISSUE"||c==="LOGIC BUG"?"#f85149":c==="TELEMETRY BUG"||c==="DEPLOYMENT BUG"?"#d29922":c==="SAFE"?"#3fb950":"#58a6ff";
+  const maxSurv    = waterfall[0]?.survivors || 1;
+  return (
+    <div className="page">
+      <div className="cards">
+        <div className="card"><div className="lbl">Signals Detected</div><div className="val blue">{waterfall[0]?.survivors||0}</div></div>
+        <div className="card"><div className="lbl">Reached Gate</div><div className="val yellow">{checksTotal||0}</div></div>
+        <div className="card"><div className="lbl">Gate Pass → Trades</div><div className="val green">{tradeOpens||0}</div></div>
+        <div className="card"><div className="lbl">Bot-Closed</div><div className="val">{tradeCloses||0}</div></div>
+        <div className="card"><div className="lbl">Silent Leakage</div><div className={`val ${(silentLeakage||0)>0?"red":"green"}`}>{silentLeakage||0}</div></div>
+        <div className="card" style={{gridColumn:"span 2"}}><div className="lbl">Terminal Blocker</div><div style={{fontSize:13,fontWeight:700,color:"#f85149",marginTop:4,wordBreak:"break-all"}}>{terminalBlocker||"none detected"}</div></div>
+      </div>
+
+      <div className="panel" style={{marginBottom:16}}>
+        <div className="ph">Audit Findings</div>
+        <div style={{padding:"10px 15px",display:"flex",flexDirection:"column",gap:8}}>
+          {findings.map((f,i)=>(
+            <div key={i} style={{background:"#0d1117",border:"1px solid #30363d",borderRadius:6,padding:"8px 12px"}}>
+              <div style={{display:"flex",gap:6,marginBottom:4,alignItems:"center",flexWrap:"wrap"}}>
+                <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:4,background:"#161b22",color:sevColor(f.severity)}}>{f.severity}</span>
+                <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:4,background:"#161b22",color:classColor(f.classification)}}>{f.classification}</span>
+              </div>
+              <div style={{fontSize:12,color:"#c9d1d9",lineHeight:"1.5"}}>{f.finding}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel" style={{marginBottom:16}}>
+        <div className="ph">Rejection Waterfall <span style={{fontWeight:400,color:"#484f58"}}>signals detected → trades closed</span></div>
+        <div className="pb" style={{maxHeight:440}}>
+          <table><thead><tr><th>#</th><th>Stage</th><th>Blocks</th><th>Survivors</th><th>Remain %</th><th>Source</th></tr></thead>
+          <tbody>{waterfall.map((w,i)=>{
+            const pct = maxSurv>0 ? Math.round(w.survivors/maxSurv*100) : 0;
+            const barColor = pct>50?"#3fb950":pct>20?"#d29922":"#f85149";
+            return (
+              <tr key={i}>
+                <td style={{color:"#484f58"}}>{i+1}</td>
+                <td style={{fontWeight:500}}>{w.stage}</td>
+                <td style={{color:w.blocks>0?"#f85149":"#484f58"}}>{w.blocks!=null?w.blocks:"—"}</td>
+                <td style={{color:w.survivors===0?"#f85149":w.survivors<5?"#d29922":"#3fb950",fontWeight:700}}>{w.survivors}</td>
+                <td><div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <div style={{width:60,height:6,background:"#21262d",borderRadius:3,overflow:"hidden"}}>
+                    <div style={{width:`${pct}%`,height:"100%",background:barColor,borderRadius:3}}/>
+                  </div>
+                  <span style={{color:"#8b949e",fontSize:11}}>{pct}%</span>
+                </div></td>
+                <td style={{color:"#484f58",fontSize:11}}>{w.note}</td>
+              </tr>
+            );
+          })}</tbody></table>
+        </div>
+      </div>
+
+      <div className="panel" style={{marginBottom:16}}>
+        <div className="ph">Recent 20 Rejected Opportunities <span style={{fontWeight:400,color:"#484f58"}}>signals that survived spread+exhaustion+spreadEdge but didn't trade</span></div>
+        <div className="pb" style={{maxHeight:380}}>
+          {recentRejections.length===0
+            ? <div className="empty" style={{margin:"20px auto"}}>No rejections yet — accumulates as bot runs</div>
+            : <table><thead><tr><th>UTC</th><th>Symbol</th><th>Reason</th><th>Score</th><th>Spread</th><th>EntryDist</th><th>Session</th><th>Failed Conditions</th></tr></thead>
+              <tbody>{recentRejections.map((r,i)=>(
+                <tr key={i}>
+                  <td className="pz">{r.ts?r.ts.slice(11,19):"—"}</td>
+                  <td style={{fontWeight:600}}>{r.symbol||"—"}</td>
+                  <td><span className="tag fail">{r.reason||"—"}</span></td>
+                  <td style={{color:r.passScore>=7?"#3fb950":r.passScore>=5?"#d29922":"#f85149"}}>{r.passScore!=null?r.passScore+"/9":"—"}</td>
+                  <td>{r.spread!=null?r.spread.toFixed(2)+"p":"—"}</td>
+                  <td style={{color:(r.entryDistance||0)>1.5?"#f85149":"#3fb950"}}>{r.entryDistance!=null?r.entryDistance.toFixed(2)+"p":"—"}</td>
+                  <td><span className="tag-session">{r.session||"—"}</span></td>
+                  <td style={{color:"#8b949e",fontSize:11}}>{r.failedConditions||"—"}</td>
+                </tr>
+              ))}</tbody></table>}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph">Event Taxonomy Verification <span style={{fontWeight:400,color:"#484f58"}}>required event types → actual DB events</span></div>
+        <div className="pb" style={{maxHeight:320}}>
+          <table><thead><tr><th>Required Type</th><th>Actual DB Event</th><th>Count</th><th>Status</th><th>Notes</th></tr></thead>
+          <tbody>{Object.entries(taxonomy).map(([req,info],i)=>(
+            <tr key={i}>
+              <td style={{fontWeight:600,fontFamily:"monospace",fontSize:11}}>{req}</td>
+              <td style={{fontFamily:"monospace",color:"#58a6ff",fontSize:11}}>{info.event}</td>
+              <td style={{fontWeight:700,color:info.count>0?"#3fb950":"#484f58"}}>{info.count}</td>
+              <td><span className={`tag ${info.event==="N/A"?"be":info.count>0?"ok":"fail"}`}>{info.event==="N/A"?"N/A":info.count>0?"OK":"EMPTY"}</span></td>
+              <td style={{color:"#484f58",fontSize:11}}>{info.note}</td>
+            </tr>
+          ))}</tbody></table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
   const [tab,    setTab]    = useState("LIVE");
@@ -1343,6 +1442,7 @@ function App(){
   const [insights,   setInsights]   = useState(null);
   const [blockedOut, setBlockedOut] = useState(null);
   const [blocked,    setBlocked]    = useState(null);
+  const [pipeline,   setPipeline]   = useState(null);
   const [m1exp,      setM1exp]      = useState(null);
   const [m5exp,      setM5exp]      = useState(null);
   const [m1closeExp, setM1closeExp] = useState(null);
@@ -1392,6 +1492,7 @@ function App(){
   async function refreshExc(){ const d=await api("/api/excursion");    setExc(d); }
   async function refreshEvents(){ const d=await api("/api/events?limit=100"); setEvents(d); }
   async function refreshBlocked(){ const d=await api("/api/almost-trades"); setBlocked(d); }
+  async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
 
   useEffect(()=>{
     refresh();
@@ -1406,6 +1507,7 @@ function App(){
     if(tab==="DECYZJE")  refreshEvents();
     if(tab==="INSIGHTS") refreshInsights();
     if(tab==="BLOCKED")  refreshBlocked();
+    if(tab==="PIPELINE") refreshPipeline();
   },[tab]);
 
   // SSE for live updates
@@ -1458,6 +1560,7 @@ function App(){
       {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
       {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp} m5exp={m5exp} m1closeExp={m1closeExp} gateExp={gateExp} analytics={analytics}/>}
+      {tab==="PIPELINE"  && <PipelineAuditTab pipeline={pipeline}/>}
       {tab==="BLOCKED"   && <BlockedTab  blocked={blocked}/>}
     </>
   );
