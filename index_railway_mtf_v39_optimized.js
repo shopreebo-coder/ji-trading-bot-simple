@@ -63,6 +63,7 @@ const tradeBreakEven = {};
 const tradeMfe30  = {};  // peak pips at 30 s post-entry
 const tradeMfe60  = {};  // peak pips at 60 s post-entry
 const tradeMfe120 = {};  // peak pips at 120 s post-entry
+const lastTradeDirection = {};  // TELEMETRY ONLY — last trade side per symbol (cooldown analysis)
 
 // ── MAE / MFE telemetry — TELEMETRY ONLY ────────────────────────────────────
 const tradeMAE             = {};  // max adverse excursion (most negative pips seen)
@@ -1202,11 +1203,12 @@ async function strategy(symbol) {
       console.log(`Cooldown -> ${symbol}`);
       blockCounters.cooldown_block++;                                         // TELEMETRY ONLY
       logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooldown_block" });
-      logEvent({ type: "cooldown_block", signalId, symbol, session });
+      logEvent({ type: "cooldown_block", signalId, symbol, session, lastDirection: lastTradeDirection[symbol] || null }); // TELEMETRY ONLY
       if (lastMidPrice[symbol]) {
         blockedSignals[signalId] = {
           signalId, symbol, blockType: "cooldown_block",
           blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+          direction: lastTradeDirection[symbol] || null,             // TELEMETRY ONLY — directionCorrect in blocked_outcome
         };
       }
       return;
@@ -1639,6 +1641,7 @@ async function strategy(symbol) {
       candle:   bullishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > MIN_STRENGTH,
+      m5close:  lastClose > lastFast,               // TELEMETRY ONLY — m5 close above fast EMA
       m1trend:  m1LastFast > m1LastSlow,
       m1candle: m1Bullish,
       m1prev:   bullishOrNeutralCandle(m1PrevCandle), // v2
@@ -1656,6 +1659,7 @@ async function strategy(symbol) {
       candle:   bearishOrNeutralCandle(lastCandle),   // v2
       ema:      emaDistance > 1.8,
       strength: candleStrength > MIN_STRENGTH,
+      m5close:  lastClose < lastFast,               // TELEMETRY ONLY — m5 close below fast EMA
       m1trend:  m1LastFast < m1LastSlow,
       m1candle: m1Bearish,
       m1prev:   bearishOrNeutralCandle(m1PrevCandle), // v2
@@ -1819,6 +1823,7 @@ async function strategy(symbol) {
         fingerprint:    _fpHash(_buyFp),
         side:           "buy",
       };
+      lastTradeDirection[symbol] = "buy";                          // TELEMETRY ONLY — for cooldown analysis
       logEvent({
         type: "trade_open",
         signalId, symbol, session,
@@ -1888,6 +1893,7 @@ async function strategy(symbol) {
         fingerprint:    _fpHash(_sellFp),
         side:           "sell",
       };
+      lastTradeDirection[symbol] = "sell";                         // TELEMETRY ONLY — for cooldown analysis
       logEvent({
         type: "trade_open",
         signalId, symbol, session,

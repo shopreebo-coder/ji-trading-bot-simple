@@ -395,34 +395,183 @@ app.get("/api/exit-manager", (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
   const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
 
-  let totalMfeCap = 0,  nMfeCap = 0;
-  let totalGiven  = 0,  nGiven  = 0;
-  let totalEff    = 0,  nEff    = 0;
-  let totalMfe30  = 0,  nMfe30  = 0;
-  let totalMfe60  = 0,  nMfe60  = 0;
-  let totalMfe120 = 0,  nMfe120 = 0;
+  let totalMfeCap  = 0, nMfeCap  = 0;
+  let totalGiven   = 0, nGiven   = 0;
+  let totalEff     = 0, nEff     = 0;
+  let totalMfe30   = 0, nMfe30   = 0;
+  let totalMfe60   = 0, nMfe60   = 0;
+  let totalMfe120  = 0, nMfe120  = 0;
+  let totalRetained = 0, nRetained = 0;
+  const reasonCounts = {};
 
   for (const c of closes) {
     const d = c.data;
-    if (d.mfeCapturedPct      != null && Number.isFinite(d.mfeCapturedPct))      { totalMfeCap += d.mfeCapturedPct;      nMfeCap++;  }
-    if (d.profitGivenBackPips != null && Number.isFinite(d.profitGivenBackPips)) { totalGiven  += d.profitGivenBackPips; nGiven++;   }
-    if (d.exitEfficiency      != null && Number.isFinite(d.exitEfficiency))      { totalEff    += d.exitEfficiency;      nEff++;     }
+    if (d.mfeCapturedPct      != null && Number.isFinite(d.mfeCapturedPct))      { totalMfeCap  += d.mfeCapturedPct;      nMfeCap++;  }
+    if (d.profitGivenBackPips != null && Number.isFinite(d.profitGivenBackPips)) { totalGiven   += d.profitGivenBackPips; nGiven++;   }
+    if (d.exitEfficiency      != null && Number.isFinite(d.exitEfficiency))      { totalEff     += d.exitEfficiency;      nEff++;     }
     if (d.mfe30  != null && Number.isFinite(d.mfe30))  { totalMfe30  += d.mfe30;  nMfe30++;  }
     if (d.mfe60  != null && Number.isFinite(d.mfe60))  { totalMfe60  += d.mfe60;  nMfe60++;  }
     if (d.mfe120 != null && Number.isFinite(d.mfe120)) { totalMfe120 += d.mfe120; nMfe120++; }
+    // EXIT REASON DISTRIBUTION
+    const reason = d.reason || "UNKNOWN";
+    reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    // RETAINED PROFIT % — pips actually kept as % of peak move
+    if (d.peak != null && d.peak > 0 && d.profitPips != null) {
+      totalRetained += (Math.max(0, d.profitPips) / d.peak) * 100;
+      nRetained++;
+    }
   }
+
+  const reasonDistribution = Object.entries(reasonCounts)
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      pct: closes.length > 0 ? parseFloat(((count / closes.length) * 100).toFixed(1)) : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
 
   res.json({
     totalTrades:            closes.length,
-    avg_mfe_capture_pct:    nMfeCap  ? parseFloat((totalMfeCap / nMfeCap).toFixed(1))   : null,
-    avg_profit_given_back:  nGiven   ? parseFloat((totalGiven  / nGiven).toFixed(2))    : null,
-    exit_efficiency:        nEff     ? parseFloat((totalEff    / nEff).toFixed(1))      : null,
-    avg_mfe30:              nMfe30   ? parseFloat((totalMfe30  / nMfe30).toFixed(2))    : null,
-    avg_mfe60:              nMfe60   ? parseFloat((totalMfe60  / nMfe60).toFixed(2))    : null,
-    avg_mfe120:             nMfe120  ? parseFloat((totalMfe120 / nMfe120).toFixed(2))   : null,
+    avg_mfe_capture_pct:    nMfeCap   ? parseFloat((totalMfeCap   / nMfeCap).toFixed(1))   : null,
+    avg_profit_given_back:  nGiven    ? parseFloat((totalGiven    / nGiven).toFixed(2))    : null,
+    exit_efficiency:        nEff      ? parseFloat((totalEff      / nEff).toFixed(1))      : null,
+    avg_retained_profit:    nRetained ? parseFloat((totalRetained / nRetained).toFixed(1)) : null,
+    avg_mfe30:              nMfe30    ? parseFloat((totalMfe30    / nMfe30).toFixed(2))    : null,
+    avg_mfe60:              nMfe60    ? parseFloat((totalMfe60    / nMfe60).toFixed(2))    : null,
+    avg_mfe120:             nMfe120   ? parseFloat((totalMfe120   / nMfe120).toFixed(2))   : null,
     sampleMfe30:            nMfe30,
     sampleMfe60:            nMfe60,
     sampleMfe120:           nMfe120,
+    reasonDistribution,
+  });
+});
+
+// ── API: GET /api/spread-edge-analysis ───────────────────────────────────────
+// Classifies spread_edge_block events into LOW / MEDIUM / HIGH tiers by edgeRatio.
+// Joins with blocked_outcome events (15-min window) for move stats per tier.
+// HIGH  0.90–1.15 — near-miss, almost profitable edge
+// MEDIUM 0.60–0.90 — moderate shortfall
+// LOW   < 0.60    — very poor edge, wide spread relative to expected move
+app.get("/api/spread-edge-analysis", (req, res) => {
+  const date     = req.query.date ? parseDate(req.query.date) : undefined;
+  const blocks   = queryEvents({ type: "spread_edge_block", date, limit: 20000 });
+  const outcomes = queryEvents({ type: "blocked_outcome",   date, limit: 20000 })
+    .filter(o => o.data.blockType === "spread_edge_block");
+
+  const outcomeBySignal = {};
+  for (const o of outcomes) {
+    const sid = o.data.signalId;
+    if (sid) outcomeBySignal[sid] = o.data;
+  }
+
+  function classify(er) {
+    if (er >= 0.90) return "HIGH";
+    if (er >= 0.60) return "MEDIUM";
+    return "LOW";
+  }
+
+  const tiers = {
+    HIGH:   { total: 0, withOutcome: 0, movedCount: 0, totalMove: 0, dirCorrect: 0, description: "edgeRatio 0.90–1.15 — near-miss" },
+    MEDIUM: { total: 0, withOutcome: 0, movedCount: 0, totalMove: 0, dirCorrect: 0, description: "edgeRatio 0.60–0.90 — moderate gap" },
+    LOW:    { total: 0, withOutcome: 0, movedCount: 0, totalMove: 0, dirCorrect: 0, description: "edgeRatio < 0.60 — wide spread" },
+  };
+
+  for (const b of blocks) {
+    const cls = classify(b.data.edgeRatio || 0);
+    const t   = tiers[cls];
+    t.total++;
+    const oc = b.data.signalId ? outcomeBySignal[b.data.signalId] : null;
+    if (oc) {
+      t.withOutcome++;
+      t.totalMove += oc.absoluteMovePips || 0;
+      if (oc.wouldHaveOutcome === "MOVED") t.movedCount++;
+      if (oc.directionCorrect === true)    t.dirCorrect++;
+    }
+  }
+
+  const classes = Object.entries(tiers).map(([cls, t]) => ({
+    class:         cls,
+    description:   t.description,
+    total:         t.total,
+    withOutcome:   t.withOutcome,
+    movedPct:      t.withOutcome > 0 ? parseFloat(((t.movedCount / t.withOutcome) * 100).toFixed(1)) : null,
+    dirCorrectPct: t.withOutcome > 0 ? parseFloat(((t.dirCorrect / t.withOutcome) * 100).toFixed(1)) : null,
+    avgMove:       t.withOutcome > 0 ? parseFloat((t.totalMove   / t.withOutcome).toFixed(2))        : null,
+  }));
+
+  res.json({ classes, totalBlocked: blocks.length, totalWithOutcomes: outcomes.length });
+});
+
+// ── API: GET /api/cooldown-analysis ───────────────────────────────────────────
+// Analyzes cooldown_block events: blocked count, direction breakdown, move stats.
+// Direction from lastDirection field (set v39.3+, proxied from lastTradeDirection[symbol]).
+// Subsequent price movement from blocked_outcome events (15-min window).
+app.get("/api/cooldown-analysis", (req, res) => {
+  const date     = req.query.date ? parseDate(req.query.date) : undefined;
+  const blocks   = queryEvents({ type: "cooldown_block",  date, limit: 20000 });
+  const outcomes = queryEvents({ type: "blocked_outcome", date, limit: 20000 })
+    .filter(o => o.data.blockType === "cooldown_block");
+
+  const outcomeBySignal = {};
+  for (const o of outcomes) {
+    const sid = o.data.signalId;
+    if (sid) outcomeBySignal[sid] = o.data;
+  }
+
+  const symbolMap  = {};
+  const sessionMap = {};
+  let buyBlocked = 0, sellBlocked = 0, noDir = 0;
+  let buyCorrect = 0, sellCorrect = 0;
+  let totalMove = 0, nMove = 0, movedCount = 0;
+
+  for (const b of blocks) {
+    const dir = b.data.lastDirection || null;
+    const sym = b.symbol || b.data.symbol;
+    const ses = b.data.session || "UNKNOWN";
+
+    if (dir === "buy")       buyBlocked++;
+    else if (dir === "sell") sellBlocked++;
+    else                     noDir++;
+
+    if (!symbolMap[sym])  symbolMap[sym]  = { symbol: sym,  total: 0, withOutcome: 0, _move: 0 };
+    if (!sessionMap[ses]) sessionMap[ses] = { session: ses, total: 0, withOutcome: 0 };
+    symbolMap[sym].total++;
+    sessionMap[ses].total++;
+
+    const oc = b.data.signalId ? outcomeBySignal[b.data.signalId] : null;
+    if (oc) {
+      totalMove += oc.absoluteMovePips || 0;
+      nMove++;
+      symbolMap[sym].withOutcome++;
+      symbolMap[sym]._move += oc.absoluteMovePips || 0;
+      sessionMap[ses].withOutcome++;
+      if (oc.wouldHaveOutcome === "MOVED") movedCount++;
+      if (oc.directionCorrect === true) {
+        if (dir === "buy")       buyCorrect++;
+        else if (dir === "sell") sellCorrect++;
+      }
+    }
+  }
+
+  const bySymbol = Object.values(symbolMap).map(s => ({
+    symbol:      s.symbol,
+    total:       s.total,
+    withOutcome: s.withOutcome,
+    avgMove:     s.withOutcome > 0 ? parseFloat((s._move / s.withOutcome).toFixed(2)) : null,
+  })).sort((a, b) => b.total - a.total);
+
+  const bySession = Object.values(sessionMap).sort((a, b) => b.total - a.total);
+
+  res.json({
+    totalBlocked:      blocks.length,
+    totalWithOutcomes: outcomes.length,
+    movedPct:          nMove > 0 ? parseFloat(((movedCount  / nMove) * 100).toFixed(1)) : null,
+    avgMove:           nMove > 0 ? parseFloat((totalMove    / nMove).toFixed(2))        : null,
+    buy:  { blocked: buyBlocked,  dirCorrectPct: buyBlocked  > 0 ? parseFloat(((buyCorrect  / buyBlocked)  * 100).toFixed(1)) : null },
+    sell: { blocked: sellBlocked, dirCorrectPct: sellBlocked > 0 ? parseFloat(((sellCorrect / sellBlocked) * 100).toFixed(1)) : null },
+    noDirectionCount: noDir,
+    bySymbol,
+    bySession,
   });
 });
 
@@ -567,15 +716,19 @@ app.get("/api/fingerprints", (req, res) => {
       side:        o.data.side,
       won:         classifyOutcome(close.data) === "WIN",
       profitPips:  close.data.profitPips || 0,
+      mfe:         close.data.mfe              || 0,
+      mae:         Math.abs(close.data.mae     || 0),
     });
   }
 
   const groups = {};
   for (const t of matched) {
     const k = t.fingerprint;
-    if (!groups[k]) groups[k] = { fingerprint: k, fpDetail: t.fpDetail, wins: 0, total: 0, totalPips: 0 };
+    if (!groups[k]) groups[k] = { fingerprint: k, fpDetail: t.fpDetail, wins: 0, total: 0, totalPips: 0, totalMfe: 0, totalMae: 0 };
     groups[k].total++;
     groups[k].totalPips += t.profitPips;
+    groups[k].totalMfe  += t.mfe;
+    groups[k].totalMae  += t.mae;
     if (t.won) groups[k].wins++;
   }
 
@@ -589,6 +742,8 @@ app.get("/api/fingerprints", (req, res) => {
       total:       g.total,
       winRate:     parseFloat(((g.wins / g.total) * 100).toFixed(1)),
       avgPips:     parseFloat((g.totalPips / g.total).toFixed(2)),
+      avgMfe:      parseFloat((g.totalMfe  / g.total).toFixed(2)),
+      avgMae:      parseFloat((g.totalMae  / g.total).toFixed(2)),
     }));
 
   const byWinRate  = (a, b) => b.winRate - a.winRate || b.total - a.total;
@@ -1158,15 +1313,27 @@ app.get("/api/condition-performance", (req, res) => {
     if (c.data.signalId) closeBySignal[c.data.signalId] = c.data;
   }
 
-  const CONDS = ["trend", "candle", "ema", "strength", "m1trend", "m1candle", "m1prev", "m1close"];
+  const CONDS = ["trend", "m5close", "candle", "ema", "strength", "m1trend", "m1candle", "m1prev", "m1close"];
+
+  // BLOCKED WINNERS % — join buy/sell_check.signalId → almost_trade_outcome.signalId
+  // When condition k=false AND signal produced an almost_trade_outcome with reached4p → blocked winner
+  const atOutcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+  const atBySignal = {};
+  for (const o of atOutcomes) {
+    const sid = o.data.signalId;
+    if (sid) atBySignal[sid] = o.data;
+  }
+
   const stats = {};
   for (const k of CONDS) {
-    stats[k] = { condition: k, passCount: 0, failCount: 0, traded: 0, wins: 0, losses: 0, totalPips: 0, totalMfe: 0, totalMae: 0 };
+    stats[k] = { condition: k, passCount: 0, failCount: 0, traded: 0, wins: 0, losses: 0,
+                 totalPips: 0, totalMfe: 0, totalMae: 0, failWithOutcome: 0, failReached4p: 0 };
   }
 
   for (const c of checks) {
     const d     = c.data;
     const close = d.signalId ? closeBySignal[d.signalId] : null;
+    const ato   = d.signalId ? atBySignal[d.signalId]    : null;
     for (const k of CONDS) {
       const s = stats[k];
       if (d[k] === true) {
@@ -1182,6 +1349,10 @@ app.get("/api/condition-performance", (req, res) => {
         }
       } else if (d[k] === false) {
         s.failCount++;
+        if (ato) {
+          s.failWithOutcome++;
+          if (ato.reached4p) s.failReached4p++;
+        }
       }
     }
   }
@@ -1189,14 +1360,16 @@ app.get("/api/condition-performance", (req, res) => {
   const conditions = Object.values(stats).map(s => {
     const decisive = s.wins + s.losses;
     return {
-      condition: s.condition,
-      passCount: s.passCount,
-      failCount: s.failCount,
-      traded:    s.traded,
-      winRate:   decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : null,
-      avgPips:   s.traded ? parseFloat((s.totalPips / s.traded).toFixed(2)) : null,
-      avgMfe:    s.traded ? parseFloat((s.totalMfe  / s.traded).toFixed(2)) : null,
-      avgMae:    s.traded ? parseFloat((s.totalMae  / s.traded).toFixed(2)) : null,
+      condition:         s.condition,
+      passCount:         s.passCount,
+      failCount:         s.failCount,
+      traded:            s.traded,
+      winRate:           decisive ? parseFloat(((s.wins / decisive) * 100).toFixed(1)) : null,
+      avgPips:           s.traded ? parseFloat((s.totalPips / s.traded).toFixed(2)) : null,
+      avgMfe:            s.traded ? parseFloat((s.totalMfe  / s.traded).toFixed(2)) : null,
+      avgMae:            s.traded ? parseFloat((s.totalMae  / s.traded).toFixed(2)) : null,
+      blockedWinnersPct: s.failWithOutcome > 0
+        ? parseFloat(((s.failReached4p / s.failWithOutcome) * 100).toFixed(1)) : null,
     };
   });
 

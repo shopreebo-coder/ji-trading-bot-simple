@@ -154,7 +154,7 @@ function Header({ botStatus, ts }){
   return (
     <div className="hdr">
       <span className={`dot ${botStatus==="running"?"":"stopped"}`}/>
-      <h1>FOREX ENGINE PRO v39.1 — Telemetry</h1>
+      <h1>FOREX ENGINE PRO v39.3 — Telemetry</h1>
       <div className="right">
         <span className="ts">{ts ? `updated ${hms(ts)} UTC` : "connecting…"}</span>
       </div>
@@ -371,15 +371,18 @@ function AnalyzaTab({ stats, today, symbols, confirmLag, exitMgr }){
 
 // ── EXIT MANAGER section ────────────────────────────────────────────────────
 function ExitManagerSection({ data }){
-  if(!data) return <div className="panel"><div className="ph">Exit Manager Telemetry</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
-  const { avg_mfe_capture_pct, avg_profit_given_back, exit_efficiency, avg_mfe30, avg_mfe60, avg_mfe120, sampleMfe30=0, totalTrades=0 } = data;
+  if(!data) return <div className="panel"><div className="ph">EXIT ANALYSIS</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
+  const { avg_mfe_capture_pct, avg_profit_given_back, avg_retained_profit, exit_efficiency,
+          avg_mfe30, avg_mfe60, avg_mfe120, sampleMfe30=0, totalTrades=0,
+          reasonDistribution=[] } = data;
   const effCol = v => v==null?"#484f58":v>=60?"#3fb950":v>=30?"#d29922":"#f85149";
   return (
     <div className="panel">
-      <div className="ph">Exit Manager Telemetry
-        <span style={{fontWeight:400,color:"#484f58"}}>MFE capture metrics — {totalTrades} trade{totalTrades!==1?"s":""}</span>
+      <div className="ph">EXIT ANALYSIS
+        <span style={{fontWeight:400,color:"#484f58"}}>MFE capture + exit reason distribution — {totalTrades} trade{totalTrades!==1?"s":""}</span>
       </div>
       <div className="cards" style={{margin:"12px 0"}}>
+        <div className="card"><div className="lbl">Avg Retained Profit</div><div className="val" style={{color:effCol(avg_retained_profit)}}>{avg_retained_profit!=null?avg_retained_profit+"%":"—"}</div></div>
         <div className="card"><div className="lbl">Avg MFE Capture %</div><div className="val" style={{color:effCol(avg_mfe_capture_pct)}}>{avg_mfe_capture_pct!=null?avg_mfe_capture_pct+"%":"—"}</div></div>
         <div className="card"><div className="lbl">Exit Efficiency</div><div className="val" style={{color:effCol(exit_efficiency)}}>{exit_efficiency!=null?exit_efficiency+"%":"—"}</div></div>
         <div className="card"><div className="lbl">Avg Given Back</div><div className="val red">{avg_profit_given_back!=null?avg_profit_given_back+"p":"—"}</div></div>
@@ -388,8 +391,31 @@ function ExitManagerSection({ data }){
         <div className="card"><div className="lbl">Avg MFE @ 120s</div><div className="val blue">{avg_mfe120!=null?avg_mfe120+"p":"—"}</div></div>
       </div>
       {totalTrades>0 && sampleMfe30===0 && (
-        <div style={{padding:"0 16px 12px",fontSize:11,color:"#484f58"}}>
-          ℹ MFE time snapshots (30s/60s/120s) accumulate from new trades only — existing trade_close events predate this field.
+        <div style={{padding:"0 16px 4px",fontSize:11,color:"#484f58"}}>
+          ℹ MFE time snapshots (30s/60s/120s) accumulate from new trades only.
+        </div>
+      )}
+      {reasonDistribution.length>0 && (
+        <div style={{padding:"0 0 16px"}}>
+          <div style={{fontWeight:600,fontSize:12,color:"#79c0ff",padding:"10px 16px 6px",textTransform:"uppercase",letterSpacing:".8px"}}>
+            Exit Reason Distribution
+          </div>
+          <table>
+            <thead><tr>
+              <th>Exit Reason</th>
+              <th style={{textAlign:"right"}}>Count</th>
+              <th style={{textAlign:"right"}}>%</th>
+            </tr></thead>
+            <tbody>
+              {reasonDistribution.map((r,i)=>(
+                <tr key={i}>
+                  <td style={{fontFamily:"monospace",fontWeight:600,color:"#e6edf3"}}>{r.reason}</td>
+                  <td style={{textAlign:"right"}}>{r.count}</td>
+                  <td style={{textAlign:"right",color:"#79c0ff"}}>{r.pct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -416,11 +442,14 @@ function ConditionPerfPanel({ data }){
           <th>Condition</th><th style={{textAlign:"right"}}>Pass</th><th style={{textAlign:"right"}}>Fail</th>
           <th style={{textAlign:"right"}}>Traded</th><th style={{textAlign:"right"}}>Win Rate</th>
           <th style={{textAlign:"right"}}>Avg Pips</th><th style={{textAlign:"right"}}>Avg MFE</th><th style={{textAlign:"right"}}>Avg MAE</th>
+          <th style={{textAlign:"right"}}>Blocked W%</th>
         </tr></thead>
         <tbody>
           {conditions.map((c,i)=>{
             const wr  = c.winRate;
             const col = wr==null?"#484f58":wr>=60?"#3fb950":wr>=40?"#d29922":"#f85149";
+            const bw  = c.blockedWinnersPct;
+            const bwCol = bw==null?"#484f58":bw>=50?"#f85149":bw>=30?"#d29922":"#3fb950";
             return (
               <tr key={i}>
                 <td style={{fontFamily:"monospace",fontWeight:600,color:"#e6edf3"}}>{c.condition}</td>
@@ -431,6 +460,7 @@ function ConditionPerfPanel({ data }){
                 <td style={{textAlign:"right"}}>{c.avgPips!=null?<span className={c.avgPips>=0?"pp":"pn"}>{c.avgPips>=0?"+":""}{c.avgPips}</span>:"—"}</td>
                 <td style={{textAlign:"right",color:"#3fb950"}}>{c.avgMfe!=null?c.avgMfe+"p":"—"}</td>
                 <td style={{textAlign:"right",color:"#f85149"}}>{c.avgMae!=null?c.avgMae+"p":"—"}</td>
+                <td style={{textAlign:"right",color:bwCol,fontWeight:bw!=null&&bw>=30?700:400}}>{bw!=null?bw+"%":"—"}</td>
               </tr>
             );
           })}
@@ -492,6 +522,108 @@ function BlockedWinnersV2Panel({ data }){
   );
 }
 
+// ── SPREAD EDGE CLASSIFICATION panel ─────────────────────────────────────────
+function SpreadEdgeClassificationPanel({ data }){
+  if(!data) return <div className="panel"><div className="ph">SPREAD EDGE ANALYSIS</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
+  const { classes=[], totalBlocked=0, totalWithOutcomes=0 } = data;
+  const tierColor = cls => cls==="HIGH"?"#3fb950":cls==="MEDIUM"?"#d29922":"#f85149";
+  return (
+    <div className="panel">
+      <div className="ph">SPREAD EDGE ANALYSIS
+        <span style={{fontWeight:400,color:"#484f58"}}>{totalBlocked} blocked · {totalWithOutcomes} with outcomes</span>
+      </div>
+      <div style={{padding:"4px 0 4px",fontSize:11,color:"#8b949e",padding:"0 16px 8px"}}>
+        edgeRatio = expected_move / spread — HIGH ≥0.90, MEDIUM 0.60–0.90, LOW &lt;0.60
+      </div>
+      <table>
+        <thead><tr>
+          <th>Tier</th>
+          <th style={{textAlign:"right"}}>Blocked</th>
+          <th style={{textAlign:"right"}}>W/Outcome</th>
+          <th style={{textAlign:"right"}}>Moved%</th>
+          <th style={{textAlign:"right"}}>Dir Correct%</th>
+          <th style={{textAlign:"right"}}>Avg Move</th>
+        </tr></thead>
+        <tbody>
+          {classes.map((c,i)=>(
+            <tr key={i}>
+              <td>
+                <span style={{fontWeight:700,color:tierColor(c.class)}}>{c.class}</span>
+                <span style={{marginLeft:8,fontSize:10,color:"#484f58"}}>{c.description}</span>
+              </td>
+              <td style={{textAlign:"right"}}>{c.total}</td>
+              <td style={{textAlign:"right"}}>{c.withOutcome}</td>
+              <td style={{textAlign:"right",color:c.movedPct!=null&&c.movedPct>=60?"#3fb950":"#8b949e"}}>{c.movedPct!=null?c.movedPct+"%":"—"}</td>
+              <td style={{textAlign:"right",color:c.dirCorrectPct!=null&&c.dirCorrectPct>=60?"#3fb950":c.dirCorrectPct!=null&&c.dirCorrectPct>=50?"#d29922":"#f85149"}}>{c.dirCorrectPct!=null?c.dirCorrectPct+"%":"—"}</td>
+              <td style={{textAlign:"right",color:"#79c0ff"}}>{c.avgMove!=null?c.avgMove+"p":"—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── COOLDOWN ANALYSIS panel ────────────────────────────────────────────────
+function CooldownAnalysisPanel({ data }){
+  if(!data) return <div className="panel"><div className="ph">COOLDOWN ANALYSIS</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
+  const { totalBlocked=0, totalWithOutcomes=0, movedPct, avgMove, buy={}, sell={}, noDirectionCount=0, bySymbol=[], bySession=[] } = data;
+  return (
+    <div className="panel">
+      <div className="ph">COOLDOWN ANALYSIS
+        <span style={{fontWeight:400,color:"#484f58"}}>{totalBlocked} blocked by 5-min cooldown · {totalWithOutcomes} with outcomes</span>
+      </div>
+      <div className="cards" style={{margin:"12px 0"}}>
+        <div className="card"><div className="lbl">Moved After Block</div><div className="val" style={{color:movedPct!=null&&movedPct>=60?"#f85149":"#3fb950"}}>{movedPct!=null?movedPct+"%":"—"}</div></div>
+        <div className="card"><div className="lbl">Avg Move (pips)</div><div className="val blue">{avgMove!=null?avgMove+"p":"—"}</div></div>
+        <div className="card"><div className="lbl">BUY Blocked</div><div className="val">{buy.blocked||0}</div></div>
+        <div className="card"><div className="lbl">BUY Dir Correct%</div><div className="val" style={{color:buy.dirCorrectPct!=null&&buy.dirCorrectPct>=55?"#3fb950":"#d29922"}}>{buy.dirCorrectPct!=null?buy.dirCorrectPct+"%":"—"}</div></div>
+        <div className="card"><div className="lbl">SELL Blocked</div><div className="val">{sell.blocked||0}</div></div>
+        <div className="card"><div className="lbl">SELL Dir Correct%</div><div className="val" style={{color:sell.dirCorrectPct!=null&&sell.dirCorrectPct>=55?"#3fb950":"#d29922"}}>{sell.dirCorrectPct!=null?sell.dirCorrectPct+"%":"—"}</div></div>
+      </div>
+      {noDirectionCount>0 && (
+        <div style={{padding:"0 16px 8px",fontSize:11,color:"#484f58"}}>
+          ℹ {noDirectionCount} block{noDirectionCount!==1?"s":""} predating v39.3 have no direction data.
+        </div>
+      )}
+      {bySymbol.length>0 && (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"0 0 16px"}}>
+          <div>
+            <div style={{fontWeight:600,fontSize:11,color:"#79c0ff",padding:"8px 16px 4px",textTransform:"uppercase",letterSpacing:".8px"}}>By Symbol</div>
+            <table>
+              <thead><tr><th>Symbol</th><th style={{textAlign:"right"}}>Blocked</th><th style={{textAlign:"right"}}>Avg Move</th></tr></thead>
+              <tbody>
+                {bySymbol.map((s,i)=>(
+                  <tr key={i}>
+                    <td style={{fontFamily:"monospace"}}>{s.symbol}</td>
+                    <td style={{textAlign:"right"}}>{s.total}</td>
+                    <td style={{textAlign:"right",color:"#79c0ff"}}>{s.avgMove!=null?s.avgMove+"p":"—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div style={{fontWeight:600,fontSize:11,color:"#79c0ff",padding:"8px 16px 4px",textTransform:"uppercase",letterSpacing:".8px"}}>By Session</div>
+            <table>
+              <thead><tr><th>Session</th><th style={{textAlign:"right"}}>Blocked</th><th style={{textAlign:"right"}}>W/Outcome</th></tr></thead>
+              <tbody>
+                {bySession.map((s,i)=>(
+                  <tr key={i}>
+                    <td style={{fontFamily:"monospace"}}>{s.session}</td>
+                    <td style={{textAlign:"right"}}>{s.total}</td>
+                    <td style={{textAlign:"right"}}>{s.withOutcome}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── EXPORT tab ───────────────────────────────────────────────────────────────
 function ExportTab(){
   const [loading, setLoading] = useState(false);
@@ -516,7 +648,7 @@ function ExportTab(){
       ]);
       const ts = new Date().toISOString();
       const lines = [
-        "FOREX ENGINE PRO v39.2 — Analysis Report",
+        "FOREX ENGINE PRO v39.3 — Analysis Report",
         `Generated: ${ts}`,
         "=".repeat(60),"",
         "PERFORMANCE SUMMARY",
@@ -564,15 +696,21 @@ function ExportTab(){
         api("/api/m5trend-experiment"),api("/api/m1trend-experiment"),
         api("/api/m1close-experiment"),api("/api/gate-experiment"),api("/api/pipeline-audit"),
       ]);
+      setStatus("Fetching… (5/5)");
+      const [spreadEdgeSnap, cooldownAnaSnap] = await Promise.all([
+        api("/api/spread-edge-analysis"),
+        api("/api/cooldown-analysis"),
+      ]);
       setStatus("Assembling snapshot…");
       const snapshot = {
-        meta:{ generated:new Date().toISOString(), version:"v39.2", source:"analysis_snapshot" },
+        meta:{ generated:new Date().toISOString(), version:"v39.3", source:"analysis_snapshot" },
         performance:{ stats, today },
         symbols: syms, trades, patterns: fps, excursion: exc,
         blocked_outcomes: blocked, insights: ins, drift,
         trade_quality: quality, post_entry_failures: pef,
         almost_trades: almost, blocked_winners_v2: v2,
         condition_performance: condPerf, exit_manager: exitMgr,
+        spread_edge_analysis: spreadEdgeSnap, cooldown_analysis: cooldownAnaSnap,
         experiments:{ m5trend:m5exp, m1trend:m1exp, m1close, gate },
         pipeline,
       };
@@ -608,7 +746,7 @@ function ExportTab(){
           <div className="sec-divider"/>
           <div className="sec-label">Full Analysis Snapshot (for AI)</div>
           <div style={{color:"#8b949e",fontSize:11,marginBottom:10}}>
-            Fetches all 16 API endpoints and packages them as <code style={{color:"#79c0ff"}}>analysis_snapshot_TIMESTAMP.json</code> — trades, patterns, fingerprints, excursion, blocked outcomes, post-entry failures, condition performance, exit manager, blocked winners v2, session stats, experiment data, pipeline audit.
+            Fetches all 18 API endpoints and packages them as <code style={{color:"#79c0ff"}}>analysis_snapshot_TIMESTAMP.json</code> — trades, patterns, fingerprints, excursion, blocked outcomes, post-entry failures, condition performance, exit manager, blocked winners v2, spread edge analysis, cooldown analysis, session stats, experiment data, pipeline audit.
           </div>
           <div style={{display:"flex",gap:10,marginBottom:16}}>
             <button className="btn primary" onClick={generateSnapshot} disabled={loading}>
@@ -852,7 +990,7 @@ function WzorceTab({ fps }){
         <div className="pb">
           {!rows.length ? <div className="empty">No data</div> : (
             <table><thead><tr>
-              <th>Pattern</th><th>Win%</th><th>W</th><th>L</th><th>Avg P</th>
+              <th>Pattern</th><th>Win%</th><th>W</th><th>L</th><th>Avg P</th><th>Avg MFE</th><th>Avg MAE</th>
             </tr></thead><tbody>
               {rows.map((r,i)=>(
                 <tr key={i}>
@@ -861,6 +999,8 @@ function WzorceTab({ fps }){
                   <td style={{color:"#3fb950"}}>{r.wins}</td>
                   <td style={{color:"#f85149"}}>{r.losses}</td>
                   <td>{fmtPips(r.avgPips)}</td>
+                  <td style={{color:"#79c0ff"}}>{r.avgMfe!=null?r.avgMfe+"p":"—"}</td>
+                  <td style={{color:"#f85149"}}>{r.avgMae!=null?r.avgMae+"p":"—"}</td>
                 </tr>
               ))}
             </tbody></table>
@@ -971,7 +1111,7 @@ function ExcursionTab({ exc }){
 }
 
 // ── INSIGHTS tab ───────────────────────────────────────────────────────────
-function InsightsTab({ insights, blockedOutcomes, drift, m1exp, m5exp, m1closeExp, gateExp, analytics }){
+function InsightsTab({ insights, blockedOutcomes, drift, m1exp, m5exp, m1closeExp, gateExp, analytics, spreadEdge, cooldownAna }){
   if(!insights) return <div className="page"><div className="loading">Loading insights…</div></div>;
 
   const { summary={}, bestSession, worstSession, bestSymbol, worstSymbol,
@@ -1451,6 +1591,9 @@ function InsightsTab({ insights, blockedOutcomes, drift, m1exp, m5exp, m1closeEx
           )}
         </div>
       )}
+
+      <SpreadEdgeClassificationPanel data={spreadEdge}/>
+      <CooldownAnalysisPanel data={cooldownAna}/>
     </div>
   );
 }
@@ -1709,6 +1852,8 @@ function App(){
   const [gateExp,    setGateExp]    = useState(null);
   const [analytics,  setAnalytics]  = useState(null);
   const [drift,      setDrift]      = useState(null);
+  const [spreadEdge, setSpreadEdge] = useState(null);
+  const [cooldownAna,setCooldownAna]= useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
   const [ts,     setTs]     = useState(null);
@@ -1729,7 +1874,7 @@ function App(){
   }
 
   async function refreshInsights(){
-    const [ins, bo, dr, m1e, m5e, m1ce, ge, pef, qual] = await Promise.all([
+    const [ins, bo, dr, m1e, m5e, m1ce, ge, pef, qual, se, ca] = await Promise.all([
       api("/api/insights"), api("/api/blocked-outcomes"), api("/api/drift"),
       api("/api/m1trend-experiment"),
       api("/api/m5trend-experiment"),
@@ -1737,6 +1882,8 @@ function App(){
       api("/api/gate-experiment"),
       api("/api/post-entry-failures"),
       api("/api/trade-quality"),
+      api("/api/spread-edge-analysis"),
+      api("/api/cooldown-analysis"),
     ]);
     setInsights(ins);
     setBlockedOut(bo);
@@ -1746,6 +1893,8 @@ function App(){
     setM1closeExp(m1ce);
     setGateExp(ge);
     setAnalytics({ postEntry: pef, quality: qual });
+    setSpreadEdge(se);
+    setCooldownAna(ca);
   }
 
   async function refreshFps(){ const d=await api("/api/fingerprints"); setFps(d); }
@@ -1828,7 +1977,7 @@ function App(){
       {tab==="DECYZJE"   && <DecyzjeTab  events={events}/>}
       {tab==="WZORCE"    && <WzorceTab   fps={fps}/>}
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
-      {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp} m5exp={m5exp} m1closeExp={m1closeExp} gateExp={gateExp} analytics={analytics}/>}
+      {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp} m5exp={m5exp} m1closeExp={m1closeExp} gateExp={gateExp} analytics={analytics} spreadEdge={spreadEdge} cooldownAna={cooldownAna}/>}
       {tab==="PIPELINE"  && <PipelineAuditTab pipeline={pipeline}/>}
       {tab==="BLOCKED"   && <BlockedTab  blocked={blocked} blockedV2={blockedV2} condPerf={condPerf}/>}
       {tab==="EXPORT"    && <ExportTab/>}
