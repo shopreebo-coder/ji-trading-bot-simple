@@ -70,6 +70,8 @@ const tradeMAE             = {};  // max adverse excursion (most negative pips s
 const tradeTimeToProfit    = {};  // minutes from open until pips first went > 0
 const tradeTimeToDd        = {};  // minutes from open until pips first went < 0
 const tradeBeTime          = {};  // minutes from open until break-even SL was moved
+const tradeFloorLevel     = {};  // tradeId → dynamic profit floor (pips) — set once MFE >= 2p (v39.4)
+const tradeFloorTriggered = {};  // tradeId → boolean — was floor the exit mechanism (v39.4 telemetry)
 const tradePostEntryLogged = {};  // flag: post_entry_failure fired for this trade
 const tradeEntryMeta       = {};  // tradeId → entry meta (passCount, condition states) for post_entry forensics
 const symbolEntryMeta      = {};  // symbol  → entry meta, bridged to tradeId in manageTrades on first tick
@@ -1004,6 +1006,17 @@ async function manageTrades() {
           profitGivenBackPips: mfe > 0 ? parseFloat((mfe - pips).toFixed(2))         : null,
           // SESSION — TELEMETRY ONLY
           session:              classifySession(new Date().getUTCHours()),
+          // EXIT FLOOR PROTECTION — TELEMETRY ONLY (v39.4)
+          // exit_floor_triggered: true when floor was the exit mechanism (software or OANDA floor SL)
+          // protected_profit:     floor pip level locked in (MAX(0, MFE×0.35))
+          // saved_loss:           floor_profit − MIN(0, MAE) — pips secured vs worst excursion
+          exit_floor_triggered:  !!tradeFloorTriggered[trade.id] ||
+            (tradeFloorLevel[trade.id] != null && pips <= (tradeFloorLevel[trade.id] ?? 0) + 0.3),
+          protected_profit:      tradeFloorLevel[trade.id] ?? null,
+          saved_loss:            tradeFloorLevel[trade.id] != null &&
+            (!!tradeFloorTriggered[trade.id] || pips <= (tradeFloorLevel[trade.id] ?? 0) + 0.3)
+              ? parseFloat(((tradeFloorLevel[trade.id] ?? 0) - Math.min(0, tradeMAE[trade.id] ?? 0)).toFixed(2))
+              : null,
         };
       }
 
@@ -1024,6 +1037,8 @@ async function manageTrades() {
         delete tradeMfe30[trade.id];           // MFE time snapshots
         delete tradeMfe60[trade.id];
         delete tradeMfe120[trade.id];
+        delete tradeFloorLevel[trade.id];      // v39.4 floor protection
+        delete tradeFloorTriggered[trade.id];  // v39.4 floor protection
       }
 
       // ── PROFIT PROTECTION ─────────────────────────────────────────────────
@@ -1128,6 +1143,73 @@ async function manageTrades() {
             { headers },
           );
           console.log(`Trailing SL -> ${symbol}`);
+        }
+      }
+
+      // ── MFE FLOOR PROTECTION (v39.4) ─────────────────────────────────────
+      // PURPOSE: once MFE >= 2.0p, trade MUST NOT finish as full loss.
+      // FLOOR:   protected_profit = MAX(0, MFE × 0.35)
+      //   MFE 2.0 → 0.7p floor (≈ break-even)
+      //   MFE 4.0 → 1.4p floor
+      //   MFE 6.0 → 2.1p floor
+      // MECHANISM: move OANDA SL to floor price on every tick (ratchets up as MFE grows).
+      //   OANDA closes at floor SL when price reverses to it.
+      //   Software safety-net exit if price gaps below floor between ticks.
+      // DOES NOT MODIFY: initial SL, initial TP, entry logic, EMA, filters, risk, sizing.
+      if (peak >= 2.0) {
+        const floorProfit = parseFloat((Math.max(0, peak * 0.35)).toFixed(4));
+        const floorPrice  = side === "buy"
+          ? parseFloat((openPrice + floorProfit * pipMult).toFixed(5))
+          : parseFloat((openPrice - floorProfit * pipMult).toFixed(5));
+
+        const currentSL     = parseFloat(trade.stopLossOrder?.price || 0);
+        const floorIsBetter = currentSL > 0 && (
+          side === "buy" ? floorPrice > currentSL : floorPrice < currentSL
+        );
+
+        if (floorIsBetter) {
+          try {
+            await axios.put(
+              `${BASE_URL}/v3/accounts/${ACCOUNT_ID}/trades/${trade.id}/orders`,
+              { stopLoss: { price: floorPrice.toFixed(5) } },
+              { headers },
+            );
+            tradeFloorLevel[trade.id] = floorProfit;
+            console.log(`${symbol} MFE FLOOR SET peak=${peak.toFixed(2)}p floor=${floorProfit.toFixed(2)}p`);
+            logEvent({
+              type:        "mfe_floor_set",
+              symbol,
+              signalId:    tradeSignalId[trade.id] || null,
+              side,
+              mfe:         parseFloat(peak.toFixed(2)),
+              floorProfit: floorProfit,
+              session:     classifySession(new Date().getUTCHours()),
+            });
+          } catch (_floorErr) {
+            console.log(`${symbol} MFE floor SL update skipped: ${_floorErr.message}`);
+          }
+        }
+
+        // Safety-net SOFTWARE EXIT — handles gap scenario where price jumps below
+        // floor between ticks before OANDA's floor SL can fire.
+        // Only fires when pips has already dropped 0.2p below the floor level.
+        if (pips < floorProfit - 0.2) {
+          tradeFloorTriggered[trade.id] = true;
+          const reason = "EXIT_FLOOR_TRIGGERED";
+          console.log(
+            `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nfloor=${floorProfit.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
+          );
+          if (pips > 0) stats.wins++;
+          else          stats.losses++;
+          stats.totalTrades++;
+          stats.totalPeakPips    += peak;
+          stats.totalDurationMin += minutesOpen;
+          logEvent(buildClosePayload(reason));
+          recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+          await closeTrade(trade.id);
+          cleanupTradeState();
+          cooldownMap[symbol] = Date.now();
+          continue;
         }
       }
 

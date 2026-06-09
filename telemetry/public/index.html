@@ -374,7 +374,8 @@ function ExitManagerSection({ data }){
   if(!data) return <div className="panel"><div className="ph">EXIT ANALYSIS</div><div className="empty" style={{padding:16}}>Loading…</div></div>;
   const { avg_mfe_capture_pct, avg_profit_given_back, avg_retained_profit, exit_efficiency,
           avg_mfe30, avg_mfe60, avg_mfe120, sampleMfe30=0, totalTrades=0,
-          reasonDistribution=[] } = data;
+          reasonDistribution=[],
+          floor_triggered_count=0, avg_saved_pips=null, avg_protected_profit=null } = data;
   const effCol = v => v==null?"#484f58":v>=60?"#3fb950":v>=30?"#d29922":"#f85149";
   return (
     <div className="panel">
@@ -390,6 +391,27 @@ function ExitManagerSection({ data }){
         <div className="card"><div className="lbl">Avg MFE @ 60s</div><div className="val blue">{avg_mfe60!=null?avg_mfe60+"p":"—"}</div></div>
         <div className="card"><div className="lbl">Avg MFE @ 120s</div><div className="val blue">{avg_mfe120!=null?avg_mfe120+"p":"—"}</div></div>
       </div>
+      {(floor_triggered_count>0||avg_saved_pips!=null||avg_protected_profit!=null) && (
+        <div style={{padding:"0 16px 4px"}}>
+          <div style={{fontWeight:600,fontSize:11,color:"#3fb950",textTransform:"uppercase",letterSpacing:".8px",marginBottom:8}}>
+            ▼ EXIT FLOOR PROTECTION (v39.4) — MFE ≥ 2p → floor = MAX(0, MFE × 0.35)
+          </div>
+          <div className="cards">
+            <div className="card">
+              <div className="lbl">Protected Exits</div>
+              <div className="val" style={{color:floor_triggered_count>0?"#3fb950":"#484f58"}}>{floor_triggered_count}</div>
+            </div>
+            <div className="card">
+              <div className="lbl">Avg Saved Pips</div>
+              <div className="val" style={{color:avg_saved_pips!=null?"#3fb950":"#484f58"}}>{avg_saved_pips!=null?avg_saved_pips+"p":"—"}</div>
+            </div>
+            <div className="card">
+              <div className="lbl">Avg Protected Profit</div>
+              <div className="val blue">{avg_protected_profit!=null?avg_protected_profit+"p":"—"}</div>
+            </div>
+          </div>
+        </div>
+      )}
       {totalTrades>0 && sampleMfe30===0 && (
         <div style={{padding:"0 16px 4px",fontSize:11,color:"#484f58"}}>
           ℹ MFE time snapshots (30s/60s/120s) accumulate from new trades only.
