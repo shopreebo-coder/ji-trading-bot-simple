@@ -1914,6 +1914,93 @@ app.get("/api/pipeline-audit", (req, res) => {
   });
 });
 
+// ── API: GET /api/weak-relaxed ────────────────────────────────────────────────
+// Telemetry for the v39.4b WEAK RELAXED FILTER.
+// Queries weak_relaxed_no_trend events (immediate log) and almost_trade_outcome
+// events where failedConditions contains "weak_relaxed_no_trend" (15-min outcome).
+// Returns: total rejected, by-symbol, by-session, would_have_won%, avg_move.
+app.get("/api/weak-relaxed", (req, res) => {
+  const date     = req.query.date ? parseDate(req.query.date) : undefined;
+  const rejected = queryEvents({ type: "weak_relaxed_no_trend",   date, limit: 10000 });
+  const outcomes = queryEvents({ type: "almost_trade_outcome",     date, limit: 10000 })
+    .filter(o => Array.isArray(o.data.failedConditions) && o.data.failedConditions.includes("weak_relaxed_no_trend"));
+
+  // ── per-symbol aggregation
+  const bySymbol = {};
+  for (const r of rejected) {
+    const sym = r.data.symbol || "UNKNOWN";
+    if (!bySymbol[sym]) bySymbol[sym] = { symbol: sym, rejected: 0, outcomes: 0, wins: 0, losses: 0, totalMove: 0 };
+    bySymbol[sym].rejected++;
+  }
+  for (const o of outcomes) {
+    const sym = o.data.symbol || "UNKNOWN";
+    if (!bySymbol[sym]) bySymbol[sym] = { symbol: sym, rejected: 0, outcomes: 0, wins: 0, losses: 0, totalMove: 0 };
+    bySymbol[sym].outcomes++;
+    bySymbol[sym].totalMove += Math.abs(o.data.maxMovePips || 0);
+    if (o.data.directionCorrect) bySymbol[sym].wins++;
+    else                          bySymbol[sym].losses++;
+  }
+  const symbolStats = Object.values(bySymbol).map(s => ({
+    symbol:          s.symbol,
+    rejected:        s.rejected,
+    outcomes:        s.outcomes,
+    wouldHaveWonPct: s.outcomes ? parseFloat(((s.wins   / s.outcomes) * 100).toFixed(1)) : null,
+    wouldHaveLostPct:s.outcomes ? parseFloat(((s.losses / s.outcomes) * 100).toFixed(1)) : null,
+    avgMove:         s.outcomes ? parseFloat((s.totalMove / s.outcomes).toFixed(2))       : null,
+  })).sort((a, b) => b.rejected - a.rejected);
+
+  // ── per-session aggregation
+  const bySess = {};
+  for (const r of rejected) {
+    const sess = r.data.session || "UNKNOWN";
+    if (!bySess[sess]) bySess[sess] = { session: sess, rejected: 0, outcomes: 0, wins: 0, totalMove: 0 };
+    bySess[sess].rejected++;
+  }
+  for (const o of outcomes) {
+    const sess = o.data.session || "UNKNOWN";
+    if (!bySess[sess]) bySess[sess] = { session: sess, rejected: 0, outcomes: 0, wins: 0, totalMove: 0 };
+    bySess[sess].outcomes++;
+    bySess[sess].totalMove += Math.abs(o.data.maxMovePips || 0);
+    if (o.data.directionCorrect) bySess[sess].wins++;
+  }
+  const sessionStats = Object.values(bySess).map(s => ({
+    session:         s.session,
+    rejected:        s.rejected,
+    outcomes:        s.outcomes,
+    wouldHaveWonPct: s.outcomes ? parseFloat(((s.wins / s.outcomes) * 100).toFixed(1)) : null,
+    avgMove:         s.outcomes ? parseFloat((s.totalMove / s.outcomes).toFixed(2))     : null,
+  })).sort((a, b) => b.rejected - a.rejected);
+
+  // ── overall outcome stats
+  let totalWins = 0, totalOutcomes = outcomes.length, totalMove = 0;
+  for (const o of outcomes) {
+    if (o.data.directionCorrect) totalWins++;
+    totalMove += Math.abs(o.data.maxMovePips || 0);
+  }
+
+  // ── recent rejections (last 50)
+  const recent = rejected.slice(-50).reverse().map(r => ({
+    ts:       r.ts,
+    symbol:   r.data.symbol,
+    session:  r.data.session,
+    side:     r.data.side,
+    passScore:r.data.passScore,
+    spread:   r.data.spread,
+    atrPips:  r.data.atrPips,
+  }));
+
+  res.json({
+    totalRejected:    rejected.length,
+    totalOutcomes,
+    wouldHaveWonPct:  totalOutcomes ? parseFloat(((totalWins / totalOutcomes) * 100).toFixed(1)) : null,
+    wouldHaveLostPct: totalOutcomes ? parseFloat((((totalOutcomes - totalWins) / totalOutcomes) * 100).toFixed(1)) : null,
+    avgMove:          totalOutcomes ? parseFloat((totalMove / totalOutcomes).toFixed(2)) : null,
+    symbolStats,
+    sessionStats,
+    recent,
+  });
+});
+
 // ── root → dashboard ──────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));

@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","EXPORT"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -1849,6 +1849,112 @@ function PipelineAuditTab({ pipeline }) {
   );
 }
 
+// ── FILTERED tab — WEAK RELAXED FILTER analysis (v39.4b) ─────────────────
+function FilteredTab({ data }) {
+  if (!data) return <div className="page"><div className="loading">Loading filter data…</div></div>;
+  const {
+    totalRejected=0, totalOutcomes=0,
+    wouldHaveWonPct=null, wouldHaveLostPct=null, avgMove=null,
+    symbolStats=[], sessionStats=[], recent=[],
+  } = data;
+  const winColor  = v => v==null?"#484f58":v<=35?"#3fb950":v<=50?"#d29922":"#f85149";
+  return (
+    <div className="page">
+      <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:"12px 16px",marginBottom:16}}>
+        <div style={{fontWeight:700,color:"#d29922",fontSize:12,marginBottom:6}}>
+          WEAK RELAXED FILTER — RELAXED gate + M5 trend=FALSE + M1 trend=FALSE → rejected
+        </div>
+        <div style={{fontSize:11,color:"#8b949e",lineHeight:"1.6"}}>
+          Hypothesis: RELAXED entries with <b>no trend alignment at either timeframe</b> are the weakest signals and should be suppressed.<br/>
+          15-min outcome check via existing almostTradeSignals queue — "Would Have Won" = price moved in trade direction after rejection.<br/>
+          HARD gate entries are never affected by this filter.
+        </div>
+      </div>
+
+      <div className="cards">
+        <div className="card"><div className="lbl">Total Rejected</div><div className="val yellow">{totalRejected}</div></div>
+        <div className="card"><div className="lbl">15-min Resolved</div><div className="val">{totalOutcomes}</div></div>
+        <div className="card" title="Price moved in trade direction after rejection — lower = filter working correctly">
+          <div className="lbl">Would Have Won %</div>
+          <div className="val" style={{color:winColor(wouldHaveWonPct)}}>{wouldHaveWonPct!=null?wouldHaveWonPct+"%":"—"}</div>
+        </div>
+        <div className="card" title="Price moved against trade direction — these are correct rejections">
+          <div className="lbl">Would Have Lost %</div>
+          <div className="val green">{wouldHaveLostPct!=null?wouldHaveLostPct+"%":"—"}</div>
+        </div>
+        <div className="card"><div className="lbl">Avg Move (abs)</div><div className="val blue">{avgMove!=null?avgMove+"p":"—"}</div></div>
+      </div>
+
+      <div className="g2">
+        <div className="panel">
+          <div className="ph">By Symbol</div>
+          {symbolStats.length===0
+            ? <div className="empty" style={{padding:16}}>No data yet</div>
+            : <table><thead><tr>
+                <th>Symbol</th><th>Rejected</th><th>Resolved</th><th>Would Win %</th><th>Avg Move</th>
+              </tr></thead><tbody>
+              {symbolStats.map((s,i)=>(
+                <tr key={i}>
+                  <td style={{fontWeight:600}}>{s.symbol}</td>
+                  <td style={{color:"#d29922",fontWeight:700}}>{s.rejected}</td>
+                  <td style={{color:"#484f58"}}>{s.outcomes}</td>
+                  <td style={{color:winColor(s.wouldHaveWonPct),fontWeight:600}}>{s.wouldHaveWonPct!=null?s.wouldHaveWonPct+"%":"—"}</td>
+                  <td style={{color:"#79c0ff"}}>{s.avgMove!=null?s.avgMove+"p":"—"}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          }
+        </div>
+        <div className="panel">
+          <div className="ph">By Session</div>
+          {sessionStats.length===0
+            ? <div className="empty" style={{padding:16}}>No data yet</div>
+            : <table><thead><tr>
+                <th>Session</th><th>Rejected</th><th>Resolved</th><th>Would Win %</th><th>Avg Move</th>
+              </tr></thead><tbody>
+              {sessionStats.map((s,i)=>(
+                <tr key={i}>
+                  <td><span className="tag-session">{s.session}</span></td>
+                  <td style={{color:"#d29922",fontWeight:700}}>{s.rejected}</td>
+                  <td style={{color:"#484f58"}}>{s.outcomes}</td>
+                  <td style={{color:winColor(s.wouldHaveWonPct),fontWeight:600}}>{s.wouldHaveWonPct!=null?s.wouldHaveWonPct+"%":"—"}</td>
+                  <td style={{color:"#79c0ff"}}>{s.avgMove!=null?s.avgMove+"p":"—"}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          }
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph">
+          Recent Rejections <span style={{fontWeight:400,color:"#484f58"}}>{recent.length} most recent — 15-min outcomes appear automatically via resolved column above</span>
+        </div>
+        <div className="pb">
+          {recent.length===0
+            ? <div className="empty" style={{padding:16}}>No rejections yet — accumulates as bot runs</div>
+            : <table><thead><tr>
+                <th>UTC</th><th>Symbol</th><th>Side</th><th>Score</th><th>Spread</th><th>ATR</th><th>Session</th>
+              </tr></thead><tbody>
+              {recent.map((r,i)=>(
+                <tr key={i}>
+                  <td style={{fontSize:11,color:"#484f58"}}>{r.ts?r.ts.slice(11,19):"—"}</td>
+                  <td style={{fontWeight:600}}>{r.symbol}</td>
+                  <td><span className={r.side==="buy"?"tag buy":"tag sell"}>{(r.side||"").toUpperCase()}</span></td>
+                  <td style={{color:"#d29922",fontWeight:600}}>{r.passScore!=null?r.passScore+"/9":"—"}</td>
+                  <td>{r.spread!=null?r.spread.toFixed(2)+"p":"—"}</td>
+                  <td>{r.atrPips!=null?r.atrPips.toFixed(1)+"p":"—"}</td>
+                  <td><span className="tag-session">{r.session||"—"}</span></td>
+                </tr>
+              ))}
+            </tbody></table>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
   const [tab,    setTab]    = useState("LIVE");
@@ -1876,6 +1982,7 @@ function App(){
   const [drift,      setDrift]      = useState(null);
   const [spreadEdge, setSpreadEdge] = useState(null);
   const [cooldownAna,setCooldownAna]= useState(null);
+  const [weakRelaxed,setWeakRelaxed]= useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
   const [ts,     setTs]     = useState(null);
@@ -1932,6 +2039,7 @@ function App(){
     setBlocked(d); setBlockedV2(v2); setCondPerf(cp);
   }
   async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
+  async function refreshFiltered(){ const d=await api("/api/weak-relaxed");   setWeakRelaxed(d); }
 
   useEffect(()=>{
     refresh();
@@ -1946,8 +2054,9 @@ function App(){
     if(tab==="DECYZJE")  refreshEvents();
     if(tab==="INSIGHTS") refreshInsights();
     if(tab==="ANALIZA")  refreshExitMgr();
-    if(tab==="BLOCKED")  refreshBlocked();
-    if(tab==="PIPELINE") refreshPipeline();
+    if(tab==="BLOCKED")   refreshBlocked();
+    if(tab==="PIPELINE")  refreshPipeline();
+    if(tab==="FILTERED")  refreshFiltered();
   },[tab]);
 
   // SSE for live updates
@@ -2001,7 +2110,8 @@ function App(){
       {tab==="EXCURSION" && <ExcursionTab exc={exc}/>}
       {tab==="INSIGHTS"  && <InsightsTab insights={insights} blockedOutcomes={blockedOut} drift={drift} m1exp={m1exp} m5exp={m5exp} m1closeExp={m1closeExp} gateExp={gateExp} analytics={analytics} spreadEdge={spreadEdge} cooldownAna={cooldownAna}/>}
       {tab==="PIPELINE"  && <PipelineAuditTab pipeline={pipeline}/>}
-      {tab==="BLOCKED"   && <BlockedTab  blocked={blocked} blockedV2={blockedV2} condPerf={condPerf}/>}
+      {tab==="BLOCKED"   && <BlockedTab   blocked={blocked} blockedV2={blockedV2} condPerf={condPerf}/>}
+      {tab==="FILTERED"  && <FilteredTab  data={weakRelaxed}/>}
       {tab==="EXPORT"    && <ExportTab/>}
     </>
   );
