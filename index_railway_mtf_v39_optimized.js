@@ -145,12 +145,13 @@ const gatePassCounters = {
 // entry_allowed:   trade actually placed (BUY or SELL fired)
 // Printed every 5 min as PRE_FILTER_PASS_RATE. NEVER read by strategy logic.
 const preFilterCounters = {
-  evaluations:      0,
-  spread_pass:      0,
-  exhaustion_pass:  0,
-  spread_edge_pass: 0,
-  gate_reached:     0,
-  entry_allowed:    0,
+  evaluations:                    0,
+  spread_pass:                    0,
+  exhaustion_pass:                0,
+  spread_edge_pass:               0,
+  gate_reached:                   0,
+  entry_allowed:                  0,
+  weak_relaxed_no_trend_rejected: 0,   // v39.4b: RELAXED + no M5 trend + no M1 trend
 };
 
 // ── FILTER EFFECTIVENESS COUNTERS — TELEMETRY ONLY ───────────────────────────
@@ -1646,6 +1647,15 @@ async function strategy(symbol) {
     const _buyAll  = _buyHard  || _buyRelaxed;
     const _sellAll = _sellHard || _sellRelaxed;
 
+    // ── WEAK RELAXED FILTER (v39.4b) — TELEMETRY + REJECT ────────────────────
+    // Rejects RELAXED-gate entries where BOTH M5 trend AND M1 trend are FALSE.
+    // Rationale: RELAXED requires anchor(ema+str+candle) but NOT trend alignment.
+    // When BOTH trend EMAs are against direction, this is the weakest RELAXED entry.
+    // HARD entries are NEVER affected — _buyHard / _sellHard overrides this check.
+    // DOES NOT change any threshold, filter, TP, SL, risk, or exit logic.
+    const _weakRelaxedBuyReject  = !_buyHard  && _buyRelaxed  && !_m5b.trend && !_m1b.trend;
+    const _weakRelaxedSellReject = !_sellHard && _sellRelaxed && !_m5s.trend && !_m1s.trend;
+
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
     // Use unique keys per tier to prevent m5/m1 key collision.
     // m5_* and m1_* allow us to distinguish where each tier fails.
@@ -1857,11 +1867,74 @@ async function strategy(symbol) {
       }
     }
 
+    // ── WEAK RELAXED REJECTION LOG + OUTCOME QUEUE (v39.4b) ─────────────────
+    // Fires when _weakRelaxedBuyReject / _weakRelaxedSellReject is true.
+    // Increments counter, logs weak_relaxed_no_trend event, queues 15-min outcome.
+    // Outcome check reuses almostTradeSignals + checkAlmostTradeOutcomes — no new code.
+    if (_weakRelaxedBuyReject) {
+      preFilterCounters.weak_relaxed_no_trend_rejected++;
+      console.log(`[WEAK_RELAXED_REJECT] BUY ${symbol} passScore=${_buyPassScore}/9 RELAXED+m5trend=F+m1trend=F → weak_relaxed_no_trend`);
+      const _wrAtId = `${signalId}_weakbuy`;
+      logEvent({
+        type:             "weak_relaxed_no_trend",
+        signalId, symbol, session,
+        side:             "buy",
+        passScore:        _buyPassScore,
+        ...fullSnapshot,
+      });
+      almostTradeSignals[_wrAtId] = {
+        atId:             _wrAtId,
+        signalId,
+        symbol,
+        direction:        "buy",
+        passCount:        _buyPassScore,
+        failedConditions: ["weak_relaxed_no_trend"],
+        decisionTime:     Date.now(),
+        decisionPrice:    lastMidPrice[symbol] || null,
+        session,
+        emaDistance:      parseFloat(emaDistance.toFixed(2)),
+        candleStrength:   parseFloat(candleStrength.toFixed(3)),
+        spread,
+        trendBucket:      trendBkt,
+        volatilityBucket: volBkt,
+        entryDistance:    parseFloat(entryDistance.toFixed(2)),
+      };
+    }
+    if (_weakRelaxedSellReject) {
+      preFilterCounters.weak_relaxed_no_trend_rejected++;
+      console.log(`[WEAK_RELAXED_REJECT] SELL ${symbol} passScore=${_sellPassScore}/9 RELAXED+m5trend=F+m1trend=F → weak_relaxed_no_trend`);
+      const _wrAtId = `${signalId}_weaksell`;
+      logEvent({
+        type:             "weak_relaxed_no_trend",
+        signalId, symbol, session,
+        side:             "sell",
+        passScore:        _sellPassScore,
+        ...fullSnapshot,
+      });
+      almostTradeSignals[_wrAtId] = {
+        atId:             _wrAtId,
+        signalId,
+        symbol,
+        direction:        "sell",
+        passCount:        _sellPassScore,
+        failedConditions: ["weak_relaxed_no_trend"],
+        decisionTime:     Date.now(),
+        decisionPrice:    lastMidPrice[symbol] || null,
+        session,
+        emaDistance:      parseFloat(emaDistance.toFixed(2)),
+        candleStrength:   parseFloat(candleStrength.toFixed(3)),
+        spread,
+        trendBucket:      trendBkt,
+        volatilityBucket: volBkt,
+        entryDistance:    parseFloat(entryDistance.toFixed(2)),
+      };
+    }
+
     // ── BUY ───────────────────────────────────────────────────────────────
     // GATE v3 — see _buyAll / _buyHard / _buyRelaxed above for exact logic.
     // Soft: m5trend, m1trend, m1close. Hard: m5close, m5candle, ema, strength, m1candle, m1prev.
     // Relaxed path: passScore >= 6 AND anchor(ema + strength + candle) all TRUE.
-    if (_buyAll) {
+    if (_buyAll && !_weakRelaxedBuyReject) {
       const _m1TrendStatus = m1LastFast > m1LastSlow; // M1TREND_EXP: tracked, not blocking
       const _m5TrendStatus = lastFast > lastSlow;      // M5TREND_EXP: tracked, not blocking
       const _m1CloseStatus = m1LastClose > m1LastFast; // M1CLOSE_EXP: tracked, not blocking
@@ -1931,7 +2004,7 @@ async function strategy(symbol) {
     // GATE v3 — see _sellAll / _sellHard / _sellRelaxed above for exact logic.
     // Soft: m5trend, m1trend, m1close. Hard: m5close, m5candle, ema, strength, m1candle, m1prev.
     // Relaxed path: passScore >= 6 AND anchor(ema + strength + candle) all TRUE.
-    if (_sellAll) {
+    if (_sellAll && !_weakRelaxedSellReject) {
       const _m1TrendStatus = m1LastFast < m1LastSlow; // M1TREND_EXP: tracked, not blocking
       const _m5TrendStatus = lastFast < lastSlow;      // M5TREND_EXP: tracked, not blocking
       const _m1CloseStatus = m1LastClose < m1LastFast; // M1CLOSE_EXP: tracked, not blocking
