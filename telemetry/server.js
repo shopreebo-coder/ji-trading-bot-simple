@@ -402,6 +402,10 @@ app.get("/api/exit-manager", (req, res) => {
   let totalMfe60   = 0, nMfe60   = 0;
   let totalMfe120  = 0, nMfe120  = 0;
   let totalRetained = 0, nRetained = 0;
+  // EXIT FLOOR PROTECTION stats (v39.4)
+  let floorTriggeredCount = 0;
+  let totalSavedLoss = 0, nSavedLoss = 0;
+  let totalProtectedProfit = 0, nProtectedProfit = 0;
   const reasonCounts = {};
 
   for (const c of closes) {
@@ -419,6 +423,12 @@ app.get("/api/exit-manager", (req, res) => {
     if (d.peak != null && d.peak > 0 && d.profitPips != null) {
       totalRetained += (Math.max(0, d.profitPips) / d.peak) * 100;
       nRetained++;
+    }
+    // EXIT FLOOR PROTECTION (v39.4)
+    if (d.exit_floor_triggered === true) {
+      floorTriggeredCount++;
+      if (d.saved_loss        != null && Number.isFinite(d.saved_loss))        { totalSavedLoss       += d.saved_loss;        nSavedLoss++;        }
+      if (d.protected_profit  != null && Number.isFinite(d.protected_profit))  { totalProtectedProfit += d.protected_profit;  nProtectedProfit++;  }
     }
   }
 
@@ -443,6 +453,10 @@ app.get("/api/exit-manager", (req, res) => {
     sampleMfe60:            nMfe60,
     sampleMfe120:           nMfe120,
     reasonDistribution,
+    // EXIT FLOOR PROTECTION stats (v39.4)
+    floor_triggered_count:  floorTriggeredCount,
+    avg_saved_pips:         nSavedLoss       ? parseFloat((totalSavedLoss       / nSavedLoss).toFixed(2))       : null,
+    avg_protected_profit:   nProtectedProfit ? parseFloat((totalProtectedProfit / nProtectedProfit).toFixed(2)) : null,
   });
 });
 
