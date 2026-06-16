@@ -1958,7 +1958,7 @@ function FilteredTab({ data }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // SNOWBALL LAB TAB
 // ══════════════════════════════════════════════════════════════════════════════
-const LAB_SUBTABS = ["Overview","Shadow A","Shadow B","Shadow C","Comparison","Virtual Perf","Ranking"];
+const LAB_SUBTABS = ["Overview","Shadow A","Shadow B","Shadow C","Shadow D","Comparison","Virtual Perf","Ranking"];
 
 function LabCard({ title, value, sub, color="#e6edf3" }){
   return (
@@ -2198,16 +2198,21 @@ function LabShadowC({ d }){
       <div className="panel" style={{marginBottom:12}}>
         <div className="ph">About Engine C — Statistical Memory</div>
         <div style={{padding:"8px 12px",fontSize:12,color:"#8b949e",lineHeight:1.7}}>
-          Engine C uses only historical trade outcomes. It requires at least 5 trades with the same market fingerprint
-          (or 10 trades with the same pass-count pattern) before making a decision.
-          Low <span style={{color:"#3fb950"}}>decided</span> count and high <span style={{color:"#8b949e"}}>abstain</span> count is expected early on — this engine gains reliability as trade history accumulates.
-          <br/>Threshold: historicalWinrate ≥ 52% AND historicalExpectancy &gt; 0
+          Engine C (v40) uses <strong style={{color:"#79c0ff"}}>K-Nearest-Neighbours similarity</strong> on a 15-dim feature vector
+          (9 condition flags + passCount + entryGate + spread / ATR / EMA distance / candle strength).
+          It joins <code>trade_open</code> + <code>trade_close</code> by signalId to build a historical paired dataset,
+          then finds K=10 most similar historical entries and computes win-rate from that neighbourhood.
+          <br/>
+          <strong style={{color:"#3fb950"}}>TRADE</strong>: neighbourhood WR ≥ 55% &nbsp;·&nbsp;
+          <strong style={{color:"#f85149"}}>SKIP</strong>: ≤ 45% &nbsp;·&nbsp;
+          <strong style={{color:"#8b949e"}}>ABSTAIN</strong>: 45–55% uncertain zone, or fewer than 3 neighbours above 0.70 similarity.
+          <br/>⚠ OANDA SL/TP exits do not emit <code>trade_close</code> events — high abstain rate is expected until the paired dataset grows.
         </div>
       </div>
       <div className="panel">
         <div className="ph">Recent Decisions (Engine C)</div>
         {d.recent?.length>0
-          ? <table><thead><tr><th>UTC</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Conf</th><th>Hist WR</th><th>Hist Exp</th><th>FP N</th><th>Cond N</th></tr></thead>
+          ? <table><thead><tr><th>UTC</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Conf</th><th>KNN WR</th><th>KNN Exp</th><th>K Neigh</th><th>Avg Sim</th></tr></thead>
             <tbody>{d.recent.map((r,i)=>(
               <tr key={i}>
                 <td style={{fontSize:11,color:"#484f58"}}>{r.ts?r.ts.slice(11,19):"—"}</td>
@@ -2221,11 +2226,121 @@ function LabShadowC({ d }){
                 <td style={{color:r.historicalExpectancy>0?"#3fb950":r.historicalExpectancy!=null?"#f85149":"#484f58",fontWeight:700}}>
                   {r.historicalExpectancy!=null?r.historicalExpectancy+"p":"—"}
                 </td>
-                <td style={{color:"#484f58"}}>{r.fpSamples??'—'}</td>
-                <td style={{color:"#484f58"}}>{r.cpSamples??'—'}</td>
+                <td style={{color:"#79c0ff",fontWeight:700}}>{r.kNeighbours??'—'}</td>
+                <td style={{color:"#8b949e"}}>{r.avgSimilarity!=null?Math.round(r.avgSimilarity*100)+"%":"—"}</td>
               </tr>
             ))}</tbody></table>
           : <div className="empty" style={{padding:12}}>No decisions yet</div>
+        }
+      </div>
+    </div>
+  );
+}
+
+function LabShadowD({ d }){
+  if (!d) return <div className="empty" style={{padding:24}}>Loading Engine D data…</div>;
+  return (
+    <div>
+      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        <LabCard title="Total Decisions" value={d.totalDecisions}                                            color="#79c0ff"/>
+        <LabCard title="Meta Trade"      value={d.wouldTradeCount}                                           color="#3fb950"/>
+        <LabCard title="Meta Skip"       value={d.wouldSkipCount}                                            color="#f85149"/>
+        <LabCard title="Meta Abstain"    value={d.abstainCount}    sub={`${d.abstainRate??'—'}%`}            color="#8b949e"/>
+        <LabCard title="Avg Vote Score"  value={d.avgVoteScore!=null?Math.round(d.avgVoteScore*100)+"%":null} color="#d29922"/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+        <div className="panel">
+          <div className="ph">Weight Distribution (avg across all signals)</div>
+          {[["Engine A (Quality)",d.avgWeightA,"#3fb950"],["Engine B (Context)",d.avgWeightB,"#d29922"],["Engine C (KNN)",d.avgWeightC,"#79c0ff"]].map(([lbl,w,col])=>(
+            <div key={lbl} style={{marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
+                <span style={{color:"#8b949e"}}>{lbl}</span>
+                <span style={{color:col,fontWeight:700}}>{w!=null?Math.round(w*100)+"%":"—"}</span>
+              </div>
+              <div style={{background:"#0d1117",borderRadius:4,height:8}}>
+                <div style={{background:col,width:`${w!=null?Math.round(w*100):33}%`,height:8,borderRadius:4,transition:"width .3s"}}/>
+              </div>
+            </div>
+          ))}
+          <div style={{fontSize:11,color:"#484f58",marginTop:8}}>
+            Weights learned per (symbol, session) from historical engine accuracy.<br/>Cold-start = equal 33% each.
+          </div>
+        </div>
+        <div className="panel">
+          <div className="ph">Meta Confidence Breakdown</div>
+          {d.confCounts && Object.entries(d.confCounts).sort(([a],[b])=>["HIGH","MEDIUM","LOW","NONE"].indexOf(a)-["HIGH","MEDIUM","LOW","NONE"].indexOf(b)).map(([k,v])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"5px 0",borderBottom:"1px solid #21262d"}}>
+              <span style={{color:k==="HIGH"?"#3fb950":k==="MEDIUM"?"#d29922":k==="LOW"?"#79c0ff":"#484f58",fontWeight:600}}>{k}</span>
+              <span style={{color:"#e6edf3",fontWeight:700}}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div className="panel">
+          <div className="ph">Regime at Signal Time</div>
+          {d.regimeCounts && Object.entries(d.regimeCounts).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"5px 0",borderBottom:"1px solid #21262d"}}>
+              <span style={{color:k==="TRENDING"?"#3fb950":k==="RANGING"?"#d29922":k==="VOLATILE"?"#f85149":"#8b949e"}}>{k}</span>
+              <span style={{color:"#79c0ff",fontWeight:700}}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="panel" style={{marginBottom:12}}>
+        <div className="ph">By Symbol — Vote Score Distribution</div>
+        {d.bySymbol?.length>0
+          ? <table><thead><tr><th>Symbol</th><th>N</th><th>Trade</th><th>Skip</th><th>Abstain</th><th>Avg Vote</th></tr></thead>
+            <tbody>{d.bySymbol.map((s,i)=>(
+              <tr key={i}>
+                <td style={{fontWeight:600}}>{s.symbol}</td>
+                <td style={{color:"#79c0ff"}}>{s.count}</td>
+                <td style={{color:"#3fb950",fontWeight:700}}>{s.trade}</td>
+                <td style={{color:"#f85149",fontWeight:700}}>{s.skip}</td>
+                <td style={{color:"#8b949e"}}>{s.abstain}</td>
+                <td style={{color:s.avgVoteScore>=0.55?"#3fb950":s.avgVoteScore!=null&&s.avgVoteScore<=0.45?"#f85149":"#d29922",fontWeight:700}}>
+                  {s.avgVoteScore!=null?Math.round(s.avgVoteScore*100)+"%":"—"}
+                </td>
+              </tr>
+            ))}</tbody></table>
+          : <div className="empty" style={{padding:12}}>No decisions yet</div>
+        }
+      </div>
+      <div className="panel" style={{marginBottom:12}}>
+        <div className="ph">About Engine D — Meta Engine</div>
+        <div style={{padding:"8px 12px",fontSize:12,color:"#8b949e",lineHeight:1.8}}>
+          Engine D does <strong>not</strong> analyse the market. It analyses only the outputs of Engines A, B, and C.<br/>
+          Dynamic weights are learned per <code>(symbol, session)</code> from historical engine accuracy vs resolved trade outcomes.<br/>
+          Cold-start uses equal weights 1/3 each until enough resolved trades accumulate.<br/>
+          <strong style={{color:"#3fb950"}}>TRADE</strong> if meta vote ≥ 55% &nbsp;·&nbsp;
+          <strong style={{color:"#f85149"}}>SKIP</strong> if ≤ 45% &nbsp;·&nbsp;
+          <strong style={{color:"#8b949e"}}>ABSTAIN</strong> if 45–55% uncertain zone, or all engines abstain.
+          Abstaining engine weight is redistributed proportionally to decided engines.
+        </div>
+      </div>
+      <div className="panel">
+        <div className="ph">Recent Meta Decisions (Engine D)</div>
+        {d.recent?.length>0
+          ? <table><thead><tr>
+              <th>UTC</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Conf</th>
+              <th>Vote</th><th>W-A</th><th>W-B</th><th>W-C</th><th>Decided</th><th>Regime</th>
+            </tr></thead>
+            <tbody>{d.recent.map((r,i)=>(
+              <tr key={i}>
+                <td style={{fontSize:11,color:"#484f58"}}>{r.ts?r.ts.slice(11,19):"—"}</td>
+                <td style={{fontWeight:600}}>{r.symbol}</td>
+                <td><span className={r.side==="buy"?"tag buy":"tag sell"}>{(r.side||"").toUpperCase()}</span></td>
+                <td><LabStatus v={r.wouldTrade}/></td>
+                <td><LabConf conf={r.confidence}/></td>
+                <td style={{color:r.metaVoteScore>=0.55?"#3fb950":r.metaVoteScore!=null&&r.metaVoteScore<=0.45?"#f85149":"#d29922",fontWeight:700}}>
+                  {r.metaVoteScore!=null?Math.round(r.metaVoteScore*100)+"%":"—"}
+                </td>
+                <td style={{color:"#3fb950"}}>{r.weightA!=null?Math.round(r.weightA*100)+"%":"—"}</td>
+                <td style={{color:"#d29922"}}>{r.weightB!=null?Math.round(r.weightB*100)+"%":"—"}</td>
+                <td style={{color:"#79c0ff"}}>{r.weightC!=null?Math.round(r.weightC*100)+"%":"—"}</td>
+                <td style={{color:"#484f58"}}>{r.decidedEngines??'—'}/3</td>
+                <td style={{color:"#8b949e",fontSize:11}}>{r.regime||"—"}</td>
+              </tr>
+            ))}</tbody></table>
+          : <div className="empty" style={{padding:12}}>No decisions yet — Engine D accumulates as new signals arrive after deployment</div>
         }
       </div>
     </div>
@@ -2282,7 +2397,7 @@ function LabComparison({ d }){
         <div className="ph">Recent Comparisons</div>
         {d.recent?.length>0
           ? <table><thead><tr>
-              <th>UTC</th><th>Symbol</th><th>Side</th><th>A</th><th>B</th><th>C</th>
+              <th>UTC</th><th>Symbol</th><th>Side</th><th>A</th><th>B</th><th>C</th><th>D (Meta)</th>
               <th>Agree %</th><th>All Agree</th><th>Caution</th>
             </tr></thead>
             <tbody>{d.recent.map((r,i)=>(
@@ -2293,6 +2408,7 @@ function LabComparison({ d }){
                 <td><LabStatus v={r.engineADecision}/></td>
                 <td><LabStatus v={r.engineBDecision}/></td>
                 <td><LabStatus v={r.engineCDecision}/></td>
+                <td><LabStatus v={r.engineDDecision}/></td>
                 <td style={{color:r.agreementPct>=66?"#3fb950":r.agreementPct!=null?"#d29922":"#484f58",fontWeight:700}}>
                   {r.agreementPct!=null?r.agreementPct+"%":"—"}
                 </td>
@@ -2312,10 +2428,11 @@ function LabComparison({ d }){
 function LabVirtualPerf({ d }){
   if (!d) return <div className="empty" style={{padding:24}}>Loading Virtual Performance…</div>;
   const engines = [
-    { label:"LIVE BOT (reference)", ...d.live, isLive:true },
-    { label:"Engine A — Quality",   ...d.engineA },
-    { label:"Engine B — Context",   ...d.engineB },
-    { label:"Engine C — Stats",     ...d.engineC },
+    { label:"LIVE BOT (reference)",  ...d.live,    isLive:true },
+    { label:"Engine A — Quality",    ...d.engineA },
+    { label:"Engine B — Context",    ...d.engineB },
+    { label:"Engine C — KNN",        ...d.engineC },
+    { label:"Engine D — Meta",       ...d.engineD },
   ];
   return (
     <div>
@@ -2370,7 +2487,7 @@ function LabVirtualPerf({ d }){
 
 function LabRanking({ d }){
   if (!d) return <div className="empty" style={{padding:24}}>Loading Engine Ranking…</div>;
-  const rankColors = ["#ffd700","#c0c0c0","#cd7f32"];
+  const rankColors = ["#ffd700","#c0c0c0","#cd7f32","#388bfd"];
   return (
     <div>
       {d.dataQualityNote && d.dataQualityNote !== "ADEQUATE" &&
@@ -2386,10 +2503,10 @@ function LabRanking({ d }){
         Win Rate: <span style={{color:"#3fb950",fontWeight:700}}>{d.liveBot?.winRate!=null?d.liveBot.winRate+"%":"—"}</span>&nbsp;·&nbsp;
         Expectancy: <span style={{color:"#3fb950",fontWeight:700}}>{d.liveBot?.expectancy!=null?d.liveBot.expectancy+"p":"—"}</span>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
         {d.engines?.map((e,i)=>(
           <div key={i} style={{background:"#161b22",border:`2px solid ${rankColors[i]||"#30363d"}`,borderRadius:8,padding:"16px"}}>
-            <div style={{fontSize:20,marginBottom:4}}>{i===0?"🥇":i===1?"🥈":"🥉"}</div>
+            <div style={{fontSize:20,marginBottom:4}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"🏅"}</div>
             <div style={{fontWeight:700,color:"#e6edf3",marginBottom:8,fontSize:13}}>{e.label}</div>
             <div style={{display:"flex",flexDirection:"column",gap:4,fontSize:12}}>
               <div>Decisions: <span style={{color:"#79c0ff"}}>{e.totalDecisions??'—'}</span></div>
@@ -2418,11 +2535,11 @@ function LabRanking({ d }){
 
 function SnowballLabTab({ data }){
   const [sub, setSub] = useState("Overview");
-  const {overview, shadowA, shadowB, shadowC, comparison, virtualPerf, ranking} = data||{};
+  const {overview, shadowA, shadowB, shadowC, shadowD, comparison, virtualPerf, ranking} = data||{};
   return (
     <div className="content">
       <div style={{marginBottom:16}}>
-        <div style={{fontSize:18,fontWeight:700,color:"#79c0ff",marginBottom:4}}>⚗ SNOWBALL LAB v1</div>
+        <div style={{fontSize:18,fontWeight:700,color:"#79c0ff",marginBottom:4}}>⚗ SNOWBALL LAB v2</div>
         <div style={{fontSize:12,color:"#484f58"}}>
           Shadow Engine Framework — virtual decision tracking · read-only · LIVE BOT unaffected
         </div>
@@ -2440,6 +2557,7 @@ function SnowballLabTab({ data }){
       {sub==="Shadow A"     && <LabShadowA     d={shadowA}     />}
       {sub==="Shadow B"     && <LabShadowB     d={shadowB}     />}
       {sub==="Shadow C"     && <LabShadowC     d={shadowC}     />}
+      {sub==="Shadow D"     && <LabShadowD     d={shadowD}     />}
       {sub==="Comparison"   && <LabComparison  d={comparison}  />}
       {sub==="Virtual Perf" && <LabVirtualPerf d={virtualPerf} />}
       {sub==="Ranking"      && <LabRanking     d={ranking}     />}
@@ -2534,12 +2652,13 @@ function App(){
   async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
   async function refreshFiltered(){ const d=await api("/api/weak-relaxed");   setWeakRelaxed(d); }
   async function refreshLab(){
-    const [ov, sa, sb, sc, cmp, vp, rk] = await Promise.all([
-      api("/api/lab/overview"), api("/api/lab/shadow-a"),  api("/api/lab/shadow-b"),
-      api("/api/lab/shadow-c"), api("/api/lab/comparison"),api("/api/lab/virtual-performance"),
-      api("/api/lab/engine-ranking"),
+    const [ov, sa, sb, sc, sd, cmp, vp, rk] = await Promise.all([
+      api("/api/lab/overview"),     api("/api/lab/shadow-a"),
+      api("/api/lab/shadow-b"),     api("/api/lab/shadow-c"),
+      api("/api/lab/shadow-d"),     api("/api/lab/comparison"),
+      api("/api/lab/virtual-performance"), api("/api/lab/engine-ranking"),
     ]);
-    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, comparison:cmp, virtualPerf:vp, ranking:rk });
+    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk });
   }
 
   useEffect(()=>{

@@ -2265,7 +2265,8 @@ app.get("/api/lab/shadow-c", (req, res) => {
       ts: d.sourceTs, symbol: d.symbol, session: d.session, side: d.side,
       wouldTrade: d.wouldTrade, confidence: d.confidence, reason: d.reason,
       historicalWinrate: d.historicalWinrate, historicalExpectancy: d.historicalExpectancy,
-      fpSamples: d.fpSamples, cpSamples: d.cpSamples,
+      kNeighbours: d.kNeighbours, avgSimilarity: d.avgSimilarity,
+      profitFactor: d.profitFactor, datasetSize: d.datasetSize,
     })),
   });
 });
@@ -2321,6 +2322,7 @@ app.get("/api/lab/comparison", (req, res) => {
       engineADecision: c.engineADecision, engineAScore: c.engineAScore,
       engineBDecision: c.engineBDecision, engineBState: c.engineBState,
       engineCDecision: c.engineCDecision, engineCWinrate: c.engineCWinrate,
+      engineDDecision: c.engineDDecision, engineDVoteScore: c.engineDVoteScore,
       agreementPct: c.agreementPct, allAgree: c.allAgree, cautionFlag: c.cautionFlag,
     })),
   });
@@ -2328,10 +2330,11 @@ app.get("/api/lab/comparison", (req, res) => {
 
 // ── GET /api/lab/virtual-performance ─────────────────────────────────────────
 app.get("/api/lab/virtual-performance", (req, res) => {
-  let rawA = [], rawB = [], rawC = [];
+  let rawA = [], rawB = [], rawC = [], rawD = [];
   try { rawA = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
   try { rawB = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
   try { rawC = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
+  try { rawD = db.prepare("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
 
   const closeMap = buildCloseMap(10000);
 
@@ -2355,24 +2358,27 @@ app.get("/api/lab/virtual-performance", (req, res) => {
       label: "LIVE BOT", trades: allCloses.length, wins: liveWins, losses: liveLosses, breakevens: liveBE,
       winRate: liveWR, expectancy: liveExp, profitFactor: livePF, avgMFE: liveMFE,
     },
-    engineA: { label: "Engine A (Quality)", ...computeVirtualPerf(rawA, closeMap) },
-    engineB: { label: "Engine B (Context)", ...computeVirtualPerf(rawB, closeMap) },
-    engineC: { label: "Engine C (Stats)",   ...computeVirtualPerf(rawC, closeMap) },
+    engineA: { label: "Engine A — Quality Score",  ...computeVirtualPerf(rawA, closeMap) },
+    engineB: { label: "Engine B — Market Context", ...computeVirtualPerf(rawB, closeMap) },
+    engineC: { label: "Engine C — KNN Memory",     ...computeVirtualPerf(rawC, closeMap) },
+    engineD: { label: "Engine D — Meta Engine",    ...computeVirtualPerf(rawD, closeMap) },
   });
 });
 
 // ── GET /api/lab/engine-ranking ───────────────────────────────────────────────
 app.get("/api/lab/engine-ranking", (req, res) => {
-  let rawA = [], rawB = [], rawC = [];
+  let rawA = [], rawB = [], rawC = [], rawD = [];
   try { rawA = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
   try { rawB = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
   try { rawC = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
+  try { rawD = db.prepare("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
 
   const closeMap = buildCloseMap(10000);
 
   const perfA = computeVirtualPerf(rawA, closeMap);
   const perfB = computeVirtualPerf(rawB, closeMap);
   const perfC = computeVirtualPerf(rawC, closeMap);
+  const perfD = computeVirtualPerf(rawD, closeMap);
 
   // Live bot reference
   const allCloses = Object.values(closeMap);
@@ -2384,9 +2390,10 @@ app.get("/api/lab/engine-ranking", (req, res) => {
 
   // Rank engines by expectancy (most reliable indicator)
   const engines = [
-    { id: "ENGINE_A", label: "Engine A — Quality Score", ...perfA },
+    { id: "ENGINE_A", label: "Engine A — Quality Score",  ...perfA },
     { id: "ENGINE_B", label: "Engine B — Market Context", ...perfB },
-    { id: "ENGINE_C", label: "Engine C — Statistical Memory", ...perfC },
+    { id: "ENGINE_C", label: "Engine C — KNN Memory",     ...perfC },
+    { id: "ENGINE_D", label: "Engine D — Meta Engine",    ...perfD },
   ].sort((a, b) => {
     // Sort by expectancy (null last), then winRate
     if (a.expectancy == null && b.expectancy == null) return 0;
@@ -2400,12 +2407,83 @@ app.get("/api/lab/engine-ranking", (req, res) => {
 
   res.json({
     generated:   new Date().toISOString(),
-    note:        "Ranking based on virtual expectancy. Minimum 10 resolved trades required for reliable ranking. Engine C abstains when historical data is insufficient — lower totalDecisions is expected.",
+    note:        "Ranking based on virtual expectancy. Minimum 10 resolved trades required for reliable ranking. Engine C and D abstain when data is insufficient — lower totalDecisions is expected for both.",
     liveBot:     { label: "LIVE BOT (reference)", winRate: liveWR, expectancy: liveExp, trades: allCloses.length },
     engines,
     dataQualityNote: allCloses.length < 50
       ? "INSUFFICIENT_DATA — fewer than 50 closed trades. Rankings are unreliable. Collect more data before interpreting results."
       : allCloses.length < 200 ? "LOW_DATA — fewer than 200 closed trades. Treat rankings as indicative only." : "ADEQUATE",
+  });
+});
+
+// ── GET /api/lab/shadow-d ─────────────────────────────────────────────────────
+app.get("/api/lab/shadow-d", (req, res) => {
+  let rows = [];
+  try {
+    rows = db.prepare("SELECT ts,data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 2000").all();
+  } catch (_) {}
+
+  const all = rows.map(r => {
+    try { const d = JSON.parse(r.data); d._ts = r.ts; return d; } catch (_) { return null; }
+  }).filter(Boolean);
+
+  const abstains       = all.filter(d => d.wouldTrade === null || d.wouldTrade === undefined);
+  const decided        = all.filter(d => d.wouldTrade !== null  && d.wouldTrade !== undefined);
+  const wouldTrade     = decided.filter(d => d.wouldTrade === true);
+  const wouldSkip      = decided.filter(d => d.wouldTrade === false);
+
+  const totalDecisions = all.length;
+  const abstainCount   = abstains.length;
+  const decidedCount   = decided.length;
+  const wouldTradeCount = wouldTrade.length;
+  const wouldSkipCount  = wouldSkip.length;
+  const abstainRate    = totalDecisions > 0 ? parseFloat(((abstainCount / totalDecisions) * 100).toFixed(1)) : null;
+
+  const withScore  = all.filter(d => d.metaVoteScore != null);
+  const avgVoteScore = withScore.length > 0
+    ? parseFloat((withScore.reduce((s, d) => s + d.metaVoteScore, 0) / withScore.length).toFixed(3)) : null;
+
+  const withW    = all.filter(d => d.weightA != null);
+  const avgWeightA = withW.length > 0 ? parseFloat((withW.reduce((s, d) => s + d.weightA, 0) / withW.length).toFixed(3)) : null;
+  const avgWeightB = withW.length > 0 ? parseFloat((withW.reduce((s, d) => s + d.weightB, 0) / withW.length).toFixed(3)) : null;
+  const avgWeightC = withW.length > 0 ? parseFloat((withW.reduce((s, d) => s + d.weightC, 0) / withW.length).toFixed(3)) : null;
+
+  const confCounts = {};
+  for (const d of all) { const c = d.confidence || "NONE"; confCounts[c] = (confCounts[c] || 0) + 1; }
+
+  const regimeCounts = {};
+  for (const d of all) { const r = d.regime || "UNKNOWN"; regimeCounts[r] = (regimeCounts[r] || 0) + 1; }
+
+  const symMap = {};
+  for (const d of all) {
+    const s = d.symbol || "UNKNOWN";
+    if (!symMap[s]) symMap[s] = { symbol: s, count: 0, trade: 0, skip: 0, abstain: 0, voteSum: 0, voteN: 0 };
+    symMap[s].count++;
+    if (d.wouldTrade === true)       symMap[s].trade++;
+    else if (d.wouldTrade === false) symMap[s].skip++;
+    else                             symMap[s].abstain++;
+    if (d.metaVoteScore != null)    { symMap[s].voteSum += d.metaVoteScore; symMap[s].voteN++; }
+  }
+  const bySymbol = Object.values(symMap).map(s => ({
+    ...s,
+    avgVoteScore: s.voteN > 0 ? parseFloat((s.voteSum / s.voteN).toFixed(3)) : null,
+  })).sort((a, b) => b.count - a.count);
+
+  res.json({
+    generated: new Date().toISOString(),
+    totalDecisions, abstainCount, decidedCount, wouldTradeCount, wouldSkipCount,
+    abstainRate, avgVoteScore, avgWeightA, avgWeightB, avgWeightC,
+    confCounts, regimeCounts, bySymbol,
+    engineStatus: "live — weights learned per (symbol, session); cold-start = equal 1/3",
+    recent: all.slice(0, 20).map(d => ({
+      ts:            d._ts,      symbol:        d.symbol,
+      session:       d.session,  side:          d.side,
+      wouldTrade:    d.wouldTrade, confidence:  d.confidence,
+      metaVoteScore: d.metaVoteScore, weightA:  d.weightA,
+      weightB:       d.weightB,  weightC:       d.weightC,
+      regime:        d.regime,   decidedEngines: d.decidedEngines,
+      agreeCount:    d.agreeCount, reason:      d.reason,
+    })),
   });
 });
 
