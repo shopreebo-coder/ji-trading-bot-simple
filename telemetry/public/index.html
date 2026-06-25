@@ -2533,9 +2533,61 @@ function LabRanking({ d }){
   );
 }
 
+function ShadowStatusBanner({ d }){
+  if (!d) return null;
+  const isGate    = d.shadowMode === "GATE";
+  const pct       = d.dataCollection?.progressPct ?? 0;
+  const closed    = d.dataCollection?.closedTrades ?? 0;
+  const target    = d.dataCollection?.target ?? 250;
+  const ready     = d.dataCollection?.ready  ?? false;
+  const evals     = d.gateStats?.evaluations ?? 0;
+  const blocks    = d.gateStats?.blocks       ?? 0;
+  const blockRate = d.gateStats?.blockRate;
+  return (
+    <div style={{
+      marginBottom:16, padding:"10px 16px",
+      background: isGate ? "#1c2a1c" : "#1c1f2a",
+      border:`1px solid ${isGate?"#3fb950":"#388bfd"}`,
+      borderRadius:8, display:"flex", gap:20, flexWrap:"wrap", alignItems:"center",
+    }}>
+      <div>
+        <span style={{fontSize:11,color:"#484f58",marginRight:6}}>META D MODE</span>
+        <span style={{
+          fontWeight:700, fontSize:13,
+          color: isGate ? "#3fb950" : "#388bfd",
+          background: isGate ? "#3fb95022" : "#388bfd22",
+          border:`1px solid ${isGate?"#3fb950":"#388bfd"}`,
+          borderRadius:4, padding:"2px 8px",
+        }}>{d.shadowMode}</span>
+      </div>
+      <div style={{flex:1,minWidth:200}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3}}>
+          <span style={{color:"#8b949e"}}>Data Collection</span>
+          <span style={{color:ready?"#3fb950":"#d29922",fontWeight:700}}>{closed}/{target} closed trades ({pct}%)</span>
+        </div>
+        <div style={{background:"#0d1117",borderRadius:4,height:6}}>
+          <div style={{background:ready?"#3fb950":"#388bfd",width:`${pct}%`,height:6,borderRadius:4,transition:"width .4s"}}/>
+        </div>
+        {ready && !isGate &&
+          <div style={{fontSize:11,color:"#3fb950",marginTop:3}}>
+            ✓ Dataset mature — ready for GATE mode
+          </div>
+        }
+      </div>
+      <div style={{fontSize:12,color:"#8b949e"}}>
+        <span>Gate evals: <span style={{color:"#79c0ff",fontWeight:700}}>{evals}</span></span>
+        {isGate && <span style={{marginLeft:12}}>Blocks: <span style={{color:"#f85149",fontWeight:700}}>{blocks}</span> ({blockRate??'—'}%)</span>}
+      </div>
+      <div style={{fontSize:11,color:"#484f58"}}>
+        {isGate ? "⚠ GATE active — Meta D can block trades" : "● Observing — all trades allowed"}
+      </div>
+    </div>
+  );
+}
+
 function SnowballLabTab({ data }){
   const [sub, setSub] = useState("Overview");
-  const {overview, shadowA, shadowB, shadowC, shadowD, comparison, virtualPerf, ranking} = data||{};
+  const {overview, shadowA, shadowB, shadowC, shadowD, comparison, virtualPerf, ranking, shadowStatus} = data||{};
   return (
     <div className="content">
       <div style={{marginBottom:16}}>
@@ -2553,7 +2605,7 @@ function SnowballLabTab({ data }){
           }}>{t}</div>
         ))}
       </div>
-      {sub==="Overview"     && <LabOverview    d={overview}    />}
+      {sub==="Overview"     && <div><ShadowStatusBanner d={shadowStatus}/><LabOverview d={overview}/></div>}
       {sub==="Shadow A"     && <LabShadowA     d={shadowA}     />}
       {sub==="Shadow B"     && <LabShadowB     d={shadowB}     />}
       {sub==="Shadow C"     && <LabShadowC     d={shadowC}     />}
@@ -2652,13 +2704,14 @@ function App(){
   async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
   async function refreshFiltered(){ const d=await api("/api/weak-relaxed");   setWeakRelaxed(d); }
   async function refreshLab(){
-    const [ov, sa, sb, sc, sd, cmp, vp, rk] = await Promise.all([
+    const [ov, sa, sb, sc, sd, cmp, vp, rk, ss] = await Promise.all([
       api("/api/lab/overview"),     api("/api/lab/shadow-a"),
       api("/api/lab/shadow-b"),     api("/api/lab/shadow-c"),
       api("/api/lab/shadow-d"),     api("/api/lab/comparison"),
       api("/api/lab/virtual-performance"), api("/api/lab/engine-ranking"),
+      api("/api/shadow/status"),
     ]);
-    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk });
+    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk, shadowStatus:ss });
   }
 
   useEffect(()=>{

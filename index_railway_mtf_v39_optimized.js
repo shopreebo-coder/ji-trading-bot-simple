@@ -10,6 +10,15 @@ try {
   console.error("[TELEMETRY] Not loaded:", e.message);
 }
 
+// Shadow Gate — Snowball Lab Meta D integration v40.1
+// OBSERVE mode by default (data collection, never blocks). Fail-safe: always-allow on error.
+let shadowGate = async (_signal) => ({ blocked: false, mode: "FAILSAFE" });
+try {
+  shadowGate = require("./telemetry/shadowlab").shadowGate;
+} catch (e) {
+  console.error("[SHADOW_GATE] Not loaded:", e.message);
+}
+
 console.log("FOREX ENGINE PRO v39.1 (BALANCED MTF)");
 
 const API_KEY    = process.env.OANDA_API_KEY;
@@ -1971,6 +1980,17 @@ async function strategy(symbol) {
       );
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
+      // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
+      const _gBuy = await shadowGate({
+        signalId, symbol, session, side: "buy",
+        conditionMap: _buyCondMap, passCount: _buyPassCount,
+        entryGate: _entryGate, spread, atrPips, emaDistance, candleStrength,
+      });
+      if (_gBuy.blocked) {
+        console.log(`[SHADOW_GATE] BUY ${symbol} BLOCKED — ${_gBuy.reason}`);
+        return;
+      }
+      // ── END SHADOW GATE ─────────────────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _buyPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
@@ -2041,6 +2061,17 @@ async function strategy(symbol) {
       );
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
+      // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
+      const _gSell = await shadowGate({
+        signalId, symbol, session, side: "sell",
+        conditionMap: _sellCondMap, passCount: _sellPassCount,
+        entryGate: _entryGate, spread, atrPips, emaDistance, candleStrength,
+      });
+      if (_gSell.blocked) {
+        console.log(`[SHADOW_GATE] SELL ${symbol} BLOCKED — ${_gSell.reason}`);
+        return;
+      }
+      // ── END SHADOW GATE ─────────────────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _sellPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY

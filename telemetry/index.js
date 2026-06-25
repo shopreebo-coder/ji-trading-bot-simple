@@ -85,4 +85,58 @@ function getLastId() {
   return Number(row?.id ?? 0);
 }
 
-module.exports = { logEvent, db, emitter, BOT_ID, DATA_DIR, getLastId };
+// ── database backup ───────────────────────────────────────────────────────────
+/**
+ * Copies events.db → events_backup_<timestamp>.db in DATA_DIR.
+ * Keeps last 5 backups, deletes older ones.
+ * Called automatically before destructive operations; callable via API.
+ */
+function backupDatabase() {
+  try {
+    const ts  = new Date().toISOString().replace(/[:.]/g, "-");
+    const dst = path.join(DATA_DIR, `events_backup_${ts}.db`);
+    fs.copyFileSync(DB_PATH, dst);
+    // Keep only the last 5 backups
+    const backups = fs.readdirSync(DATA_DIR)
+      .filter(f => f.startsWith("events_backup_") && f.endsWith(".db"))
+      .sort();
+    if (backups.length > 5) {
+      backups.slice(0, backups.length - 5).forEach(f => {
+        try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch (_) {}
+      });
+    }
+    console.log(`[TELEMETRY] Backup: ${dst} (${backups.length} kept)`);
+    return { ok: true, path: dst };
+  } catch (err) {
+    console.error("[TELEMETRY] Backup failed:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+// ── DB stats (for health checks / status endpoints) ───────────────────────────
+function getDbStats() {
+  try {
+    const total = db.prepare("SELECT COUNT(*) AS n FROM events").get()?.n ?? 0;
+    const types = db.prepare(
+      "SELECT type, COUNT(*) AS n FROM events GROUP BY type ORDER BY n DESC LIMIT 20"
+    ).all();
+    const oldest = db.prepare("SELECT ts FROM events ORDER BY id ASC  LIMIT 1").get()?.ts ?? null;
+    const newest = db.prepare("SELECT ts FROM events ORDER BY id DESC LIMIT 1").get()?.ts ?? null;
+    return { total, types, oldest, newest, path: DB_PATH };
+  } catch (err) {
+    return { total: 0, types: [], path: DB_PATH, error: err.message };
+  }
+}
+
+// ── startup integrity log ─────────────────────────────────────────────────────
+(function _startupLog() {
+  try {
+    const s = getDbStats();
+    console.log(`[TELEMETRY] DB: ${s.path} | events: ${s.total} | oldest: ${s.oldest ? s.oldest.slice(0, 10) : "—"} | newest: ${s.newest ? s.newest.slice(0, 10) : "—"}`);
+    if (s.total > 0) console.log("[TELEMETRY] ✓ Historical data preserved");
+    // Log a startup marker (helps verify persistence across deploys)
+    logEvent({ type: "system_startup", totalEvents: s.total, dbPath: s.path });
+  } catch (_) {}
+})();
+
+module.exports = { logEvent, db, emitter, BOT_ID, DATA_DIR, getLastId, backupDatabase, getDbStats };
