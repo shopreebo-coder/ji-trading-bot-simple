@@ -2,7 +2,23 @@
 /**
  * Telemetry core — logEvent() + SQLite persistence + EventEmitter
  * Uses Node.js built-in  node:sqlite  (available since Node 22, no deps needed).
- * DB path: $DATA_DIR/events.db  (Railway volume at /data, else ./data)
+ *
+ * DB PATH RULES — READ CAREFULLY:
+ *   DATA_DIR env var set  → uses that path  (persistent if it points to a Railway Volume)
+ *   DATA_DIR not set      → falls back to ./data  (local dev / Replit workspace)
+ *
+ * RAILWAY PERSISTENCE REQUIREMENT:
+ *   Without an explicit DATA_DIR pointing to a mounted Volume, data is stored on
+ *   the container's ephemeral filesystem and WILL BE LOST on every redeploy.
+ *
+ *   To persist data on Railway:
+ *     1. Railway dashboard → Service → Storage → Add Volume → Mount at /data
+ *     2. Railway dashboard → Variables → Add  DATA_DIR=/data
+ *     3. Redeploy
+ *
+ * IMPORTANT: Do NOT rely on /data being writable — Railway containers allow writes
+ * to /data even without a Volume, but without a Volume the path is ephemeral.
+ * Only DATA_DIR env var guarantees the path is intentionally configured.
  */
 
 const { DatabaseSync } = require("node:sqlite");
@@ -11,11 +27,25 @@ const fs               = require("fs");
 const path             = require("path");
 
 // ── data directory ────────────────────────────────────────────────────────────
+// BUG FIX (v40.1): Removed the /data accessSync auto-detection.
+// Railway containers have a writable /data even without a Volume — auto-detecting
+// it silently stored the DB on ephemeral container storage and caused data loss
+// on every redeploy. DATA_DIR must be explicitly set to guarantee persistence.
+const DATA_DIR_EXPLICIT = !!process.env.DATA_DIR;
+
 const DATA_DIR = (() => {
+  // Path 1: Explicitly configured — required for Railway persistence
   if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  try { fs.accessSync("/data", fs.constants.W_OK); return "/data"; } catch (_) {}
+
+  // Path 2: Local fallback — persistent in Replit workspace, ephemeral on Railway
   return path.join(__dirname, "..", "data");
 })();
+
+// Warn loudly if not explicitly configured (will be ephemeral on Railway)
+if (!DATA_DIR_EXPLICIT) {
+  console.warn("[TELEMETRY] ⚠  DATA_DIR env var not set — using local fallback: " + DATA_DIR);
+  console.warn("[TELEMETRY] ⚠  On Railway: data WILL BE LOST on redeploy. Add a Volume at /data and set DATA_DIR=/data.");
+}
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -131,12 +161,15 @@ function getDbStats() {
 // ── startup integrity log ─────────────────────────────────────────────────────
 (function _startupLog() {
   try {
-    const s = getDbStats();
-    console.log(`[TELEMETRY] DB: ${s.path} | events: ${s.total} | oldest: ${s.oldest ? s.oldest.slice(0, 10) : "—"} | newest: ${s.newest ? s.newest.slice(0, 10) : "—"}`);
-    if (s.total > 0) console.log("[TELEMETRY] ✓ Historical data preserved");
-    // Log a startup marker (helps verify persistence across deploys)
-    logEvent({ type: "system_startup", totalEvents: s.total, dbPath: s.path });
+    const s    = getDbStats();
+    const pMark = DATA_DIR_EXPLICIT ? "✓ PERSISTENT (DATA_DIR explicitly set)" : "⚠ EPHEMERAL on Railway (DATA_DIR not set)";
+    console.log(`[TELEMETRY] DB path  : ${s.path}`);
+    console.log(`[TELEMETRY] Storage  : ${pMark}`);
+    console.log(`[TELEMETRY] Events   : ${s.total} | oldest: ${s.oldest ? s.oldest.slice(0, 10) : "—"} | newest: ${s.newest ? s.newest.slice(0, 10) : "—"}`);
+    if (s.total > 0) console.log("[TELEMETRY] ✓ Historical data preserved across this restart");
+    else             console.log("[TELEMETRY] ℹ Fresh database (0 events)");
+    logEvent({ type: "system_startup", totalEvents: s.total, dbPath: s.path, persistent: DATA_DIR_EXPLICIT });
   } catch (_) {}
 })();
 
-module.exports = { logEvent, db, emitter, BOT_ID, DATA_DIR, getLastId, backupDatabase, getDbStats };
+module.exports = { logEvent, db, emitter, BOT_ID, DATA_DIR, DATA_DIR_EXPLICIT, getLastId, backupDatabase, getDbStats };

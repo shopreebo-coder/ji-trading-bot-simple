@@ -12,7 +12,7 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") }
 const express    = require("express");
 const path       = require("path");
 const { spawn }  = require("child_process");
-const { db, emitter, getLastId, backupDatabase, getDbStats } = require("./index");
+const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT } = require("./index");
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
 
 const PORT = process.env.PORT || 3001;
@@ -2440,10 +2440,15 @@ app.get("/api/shadow/status", (req, res) => {
       blockRate:   mem.gateEvals > 0 ? parseFloat(((mem.gateBlocks / mem.gateEvals) * 100).toFixed(1)) : null,
     },
     database: {
-      path:        dbSt.path,
-      totalEvents: dbSt.total,
-      oldest:      dbSt.oldest,
-      newest:      dbSt.newest,
+      path:             dbSt.path,
+      dataDirExplicit:  DATA_DIR_EXPLICIT,
+      persistent:       DATA_DIR_EXPLICIT,
+      totalEvents:      dbSt.total,
+      oldest:           dbSt.oldest,
+      newest:           dbSt.newest,
+      persistenceNote:  DATA_DIR_EXPLICIT
+        ? "✓ DATA_DIR explicitly set — data persists across Railway redeploys"
+        : "⚠ DATA_DIR not set — data is EPHEMERAL on Railway. Add Volume at /data and set DATA_DIR=/data",
     },
     failSafe: "active — shadow errors always allow live execution",
   });
