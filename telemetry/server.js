@@ -14,6 +14,7 @@ const path       = require("path");
 const { spawn }  = require("child_process");
 const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT } = require("./index");
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
+const { shadowM, getShadowMStats, getShadowMTrades }                   = require("./shadowm");
 
 const PORT = process.env.PORT || 3001;
 const app  = express();
@@ -2532,6 +2533,50 @@ app.get("/api/lab/unified-report", (req, res) => {
   });
 });
 
+// ── GET /api/shadowm/status ───────────────────────────────────────────────────
+app.get("/api/shadowm/status", (req, res) => {
+  try {
+    const stats = getShadowMStats();
+    res.json({ ok: true, module: "Shadow M", mode: "OBSERVE", stats });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/trades ───────────────────────────────────────────────────
+app.get("/api/shadowm/trades", (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit  || "100", 10), 500);
+    const offset = parseInt(req.query.offset || "0", 10);
+    const trades = getShadowMTrades({ limit, offset });
+    res.json({ ok: true, trades, total: trades.length });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/active ───────────────────────────────────────────────────
+app.get("/api/shadowm/active", (req, res) => {
+  try {
+    const trades = getShadowMTrades({ limit: 50, openOnly: true });
+    res.json({ ok: true, active: trades.length, trades });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/dashboard ────────────────────────────────────────────────
+// Used by the Exit Lab UI — stats + recent closed trades in one call.
+app.get("/api/shadowm/dashboard", (req, res) => {
+  try {
+    const stats  = getShadowMStats();
+    const trades = getShadowMTrades({ limit: 50 });
+    res.json({ ok: true, stats, trades });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // ── GET /api/lab/shadow-d ─────────────────────────────────────────────────────
 app.get("/api/lab/shadow-d", (req, res) => {
   let rows = [];
@@ -2614,4 +2659,5 @@ app.listen(PORT, () => {
   console.log(`[SERVER] API on :${PORT}  DB: ${DATA_DIR}/events.db`);
   startBot();
   shadowLab.start();
+  shadowM.start();
 });

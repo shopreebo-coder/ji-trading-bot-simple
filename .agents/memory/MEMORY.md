@@ -1,0 +1,3 @@
+- [Shadow M architecture](shadowm-architecture.md) — event-driven exit lab; uses trade_state_snapshot (30s from live bot), no OANDA polling required
+- [GitHub push blocker](github-push.md) — GITHUB_PERSONAL_ACCESS_TOKEN returns 401; must regenerate at github.com/settings/tokens
+- [Railway persistence](railway-persistence.md) — must set DATA_DIR=/data + Volume at /data; /data is writable without Volume (silent data loss)

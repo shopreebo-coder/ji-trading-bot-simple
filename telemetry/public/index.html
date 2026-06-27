@@ -1956,9 +1956,152 @@ function FilteredTab({ data }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SHADOW M — EXIT LAB TAB
+// ══════════════════════════════════════════════════════════════════════════════
+
+function LabShadowM({ d }){
+  if(!d) return <div style={{color:"#8b949e",padding:20}}>Loading Exit Lab…</div>;
+  const { stats={}, trades=[] } = d;
+  const {
+    tradesObserved=0, activeNow=0,
+    avgMfe=null, avgMae=null, avgDuration=null,
+    avgProfitLive=null, avgProfitSaved=null, totalProfitSaved=null,
+    avgGivenBack=null, exitEfficiency=null,
+    bestStrategyOverall=null, strategyRankingOverall=[],
+  } = stats;
+
+  const p  = (v,d=1) => v!=null ? `${v>0?"+":""}${v.toFixed(d)}p` : "—";
+  const pc = (v)     => v!=null ? `${v.toFixed(1)}%` : "—";
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:16,fontWeight:700,color:"#f0883e",marginBottom:4}}>🧪 EXIT LAB — Shadow M</div>
+        <div style={{fontSize:12,color:"#484f58"}}>OBSERVE MODE · no trade influence · independent memory · event-driven (trade_state_snapshot)</div>
+      </div>
+
+      {/* Empty state */}
+      {tradesObserved===0 && trades.length===0 && (
+        <div style={{background:"#0d1117",border:"1px dashed #30363d",borderRadius:8,padding:32,textAlign:"center",color:"#484f58"}}>
+          <div style={{fontSize:36,marginBottom:8}}>🔬</div>
+          <div style={{fontSize:14,fontWeight:600,color:"#8b949e",marginBottom:6}}>Exit Lab is ready</div>
+          <div style={{fontSize:12,marginBottom:4}}>Shadow M will begin tracking the moment the bot opens its first trade.</div>
+          <div style={{fontSize:11,color:"#30363d"}}>Feed: trade_open → trade_state_snapshot (30s) → trade_close</div>
+        </div>
+      )}
+
+      {/* Stat cards */}
+      {(tradesObserved>0||activeNow>0) && (
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
+          <LabCard title="Trades Observed" value={tradesObserved} sub={activeNow>0?`${activeNow} active`:"all closed"} color="#79c0ff"/>
+          <LabCard title="Avg MFE"         value={avgMfe!=null?`${avgMfe.toFixed(1)}p`:"—"} sub="peak potential" color="#3fb950"/>
+          <LabCard title="Avg MAE"         value={avgMae!=null?`${avgMae.toFixed(1)}p`:"—"} sub="max adverse"    color="#f85149"/>
+          <LabCard title="Avg Duration"    value={avgDuration!=null?`${avgDuration.toFixed(0)} min`:"—"} sub="time in trade" color="#a5d6ff"/>
+          <LabCard title="Avg Live Profit" value={avgProfitLive!=null?`${avgProfitLive.toFixed(1)}p`:"—"} sub="what Live captured"/>
+          <LabCard title="Exit Efficiency" value={pc(exitEfficiency)} sub="avg MFE captured" color="#79c0ff"/>
+          <LabCard title="Avg Given Back"  value={avgGivenBack!=null?`${avgGivenBack.toFixed(1)}p`:"—"} sub="MFE − Live profit" color="#f0883e"/>
+          <LabCard title="Avg Profit Saved" value={avgProfitSaved!=null?`${avgProfitSaved>0?"+":""}${avgProfitSaved.toFixed(1)}p`:"—"} sub="avg over Live" color={avgProfitSaved>0?"#3fb950":"#f85149"}/>
+          <LabCard title="Total Saved"     value={totalProfitSaved!=null?`${totalProfitSaved>0?"+":""}${totalProfitSaved.toFixed(1)}p`:"—"} sub="cumulative pips" color={totalProfitSaved>0?"#3fb950":"#f85149"}/>
+        </div>
+      )}
+
+      {/* Best strategy banner */}
+      {bestStrategyOverall && bestStrategyOverall!=="Live (no improvement)" && (
+        <div style={{background:"#1c1107",border:"1px solid #f0883e",borderRadius:6,padding:"10px 16px",marginBottom:16,display:"flex",gap:20,alignItems:"center"}}>
+          <div style={{fontSize:11,color:"#8b949e",flexShrink:0}}>BEST EXIT STRATEGY</div>
+          <div style={{fontSize:15,fontWeight:700,color:"#f0883e"}}>{bestStrategyOverall}</div>
+          <div style={{fontSize:11,color:"#484f58",marginLeft:"auto"}}>based on {tradesObserved} trades</div>
+        </div>
+      )}
+
+      {/* Strategy ranking table */}
+      {strategyRankingOverall.length>0 && (
+        <div style={{marginBottom:24}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#e6edf3",marginBottom:8}}>Strategy Ranking — Avg Pips (vs Live baseline)</div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead>
+              <tr style={{color:"#8b949e",borderBottom:"1px solid #21262d"}}>
+                <th style={{padding:"6px 8px",textAlign:"left"}}>#</th>
+                <th style={{padding:"6px 8px",textAlign:"left"}}>Strategy</th>
+                <th style={{padding:"6px 8px",textAlign:"right"}}>Avg Pips</th>
+                <th style={{padding:"6px 8px",textAlign:"right"}}>Triggered</th>
+                <th style={{padding:"6px 8px",textAlign:"right"}}>vs Live</th>
+              </tr>
+            </thead>
+            <tbody>
+              {strategyRankingOverall.map((s,i)=>{
+                const live = strategyRankingOverall.find(x=>x.strategy==="Live (baseline)");
+                const diff = (s.avgPips!=null && live?.avgPips!=null) ? s.avgPips-live.avgPips : null;
+                const isLive = s.strategy==="Live (baseline)";
+                return (
+                  <tr key={s.strategy} style={{borderBottom:"1px solid #21262d",background:i===0&&!isLive?"#0e1a0e":"transparent"}}>
+                    <td style={{padding:"5px 8px",color:i===0&&!isLive?"#f0883e":"#8b949e"}}>{i+1}</td>
+                    <td style={{padding:"5px 8px",color:isLive?"#8b949e":i===0?"#f0883e":"#e6edf3",fontWeight:i===0&&!isLive?700:400}}>{s.strategy}</td>
+                    <td style={{padding:"5px 8px",textAlign:"right",color:s.avgPips>0?"#3fb950":s.avgPips<0?"#f85149":"#8b949e"}}>{s.avgPips!=null?`${s.avgPips>0?"+":""}${s.avgPips.toFixed(1)}`:"—"}</td>
+                    <td style={{padding:"5px 8px",textAlign:"right",color:"#8b949e"}}>{s.triggered ?? s.count ?? "—"}</td>
+                    <td style={{padding:"5px 8px",textAlign:"right",color:diff>0?"#3fb950":diff<0?"#f85149":"#484f58"}}>{isLive?"—":diff!=null?`${diff>0?"+":""}${diff.toFixed(1)}p`:"—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Live vs Shadow M trade comparison */}
+      {trades.length>0 && (
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:"#e6edf3",marginBottom:8}}>Live vs Shadow M — Recent Trades</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,whiteSpace:"nowrap"}}>
+              <thead>
+                <tr style={{color:"#8b949e",borderBottom:"1px solid #21262d"}}>
+                  <th style={{padding:"6px 8px",textAlign:"left"}}>Symbol</th>
+                  <th style={{padding:"6px 8px",textAlign:"left"}}>Side</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>Live (p)</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>MFE (p)</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>MAE (p)</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>Given Back</th>
+                  <th style={{padding:"6px 8px",textAlign:"left"}}>Best Exit</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>Best (p)</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>Saved</th>
+                  <th style={{padding:"6px 8px",textAlign:"right"}}>Min</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map((t,i)=>{
+                  const sv = t.profitSaved;
+                  const sc = sv>0.5?"#3fb950":sv<-0.5?"#f85149":"#484f58";
+                  const open = !t.exitTime;
+                  return (
+                    <tr key={t.signalId||i} style={{borderBottom:"1px solid #21262d",opacity:open?0.7:1}}>
+                      <td style={{padding:"4px 8px",color:"#79c0ff"}}>{t.symbol}{open?" 🔄":""}</td>
+                      <td style={{padding:"4px 8px",color:t.side==="buy"?"#3fb950":"#f85149"}}>{(t.side||"?").toUpperCase()}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:t.profitLive>=0?"#3fb950":"#f85149"}}>{t.profitLive!=null?t.profitLive.toFixed(1):"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:"#3fb950"}}>{t.mfe!=null?t.mfe.toFixed(1):"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:"#f85149"}}>{t.mae!=null?t.mae.toFixed(1):"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:"#f0883e"}}>{t.profitGivenBack!=null?t.profitGivenBack.toFixed(1):"—"}</td>
+                      <td style={{padding:"4px 8px",color:"#a5d6ff",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis"}}>{t.bestStrategy||"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:"#e6edf3"}}>{t.bestProfit!=null?t.bestProfit.toFixed(1):"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:sc,fontWeight:sv>0.5?700:400}}>{sv!=null?`${sv>0?"+":""}${sv.toFixed(1)}`:"—"}</td>
+                      <td style={{padding:"4px 8px",textAlign:"right",color:"#8b949e"}}>{t.durationMin!=null?Math.round(t.durationMin):"—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // SNOWBALL LAB TAB
 // ══════════════════════════════════════════════════════════════════════════════
-const LAB_SUBTABS = ["Overview","Shadow A","Shadow B","Shadow C","Shadow D","Comparison","Virtual Perf","Ranking"];
+const LAB_SUBTABS = ["Overview","Shadow A","Shadow B","Shadow C","Shadow D","Comparison","Virtual Perf","Ranking","Exit Lab"];
 
 function LabCard({ title, value, sub, color="#e6edf3" }){
   return (
@@ -2587,7 +2730,7 @@ function ShadowStatusBanner({ d }){
 
 function SnowballLabTab({ data }){
   const [sub, setSub] = useState("Overview");
-  const {overview, shadowA, shadowB, shadowC, shadowD, comparison, virtualPerf, ranking, shadowStatus} = data||{};
+  const {overview, shadowA, shadowB, shadowC, shadowD, comparison, virtualPerf, ranking, shadowStatus, shadowM} = data||{};
   return (
     <div className="content">
       <div style={{marginBottom:16}}>
@@ -2613,6 +2756,7 @@ function SnowballLabTab({ data }){
       {sub==="Comparison"   && <LabComparison  d={comparison}  />}
       {sub==="Virtual Perf" && <LabVirtualPerf d={virtualPerf} />}
       {sub==="Ranking"      && <LabRanking     d={ranking}     />}
+      {sub==="Exit Lab"     && <LabShadowM     d={shadowM}     />}
     </div>
   );
 }
@@ -2704,14 +2848,14 @@ function App(){
   async function refreshPipeline(){ const d=await api("/api/pipeline-audit"); setPipeline(d); }
   async function refreshFiltered(){ const d=await api("/api/weak-relaxed");   setWeakRelaxed(d); }
   async function refreshLab(){
-    const [ov, sa, sb, sc, sd, cmp, vp, rk, ss] = await Promise.all([
+    const [ov, sa, sb, sc, sd, cmp, vp, rk, ss, sm] = await Promise.all([
       api("/api/lab/overview"),     api("/api/lab/shadow-a"),
       api("/api/lab/shadow-b"),     api("/api/lab/shadow-c"),
       api("/api/lab/shadow-d"),     api("/api/lab/comparison"),
       api("/api/lab/virtual-performance"), api("/api/lab/engine-ranking"),
-      api("/api/shadow/status"),
+      api("/api/shadow/status"),    api("/api/shadowm/dashboard"),
     ]);
-    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk, shadowStatus:ss });
+    setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk, shadowStatus:ss, shadowM:sm });
   }
 
   useEffect(()=>{
