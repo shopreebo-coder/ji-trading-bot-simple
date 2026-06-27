@@ -12,8 +12,9 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") }
 const express    = require("express");
 const path       = require("path");
 const { spawn }  = require("child_process");
-const { db, emitter, getLastId } = require("./index");
-const { shadowLab }               = require("./shadowlab");
+const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT } = require("./index");
+const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
+const { shadowM, getShadowMStats, getShadowMTrades }                   = require("./shadowm");
 
 const PORT = process.env.PORT || 3001;
 const app  = express();
@@ -2416,6 +2417,166 @@ app.get("/api/lab/engine-ranking", (req, res) => {
   });
 });
 
+// ── GET /api/shadow/status ────────────────────────────────────────────────────
+app.get("/api/shadow/status", (req, res) => {
+  const mem  = getShadowMemoryStats();
+  const dbSt = getDbStats();
+  res.json({
+    generated:     new Date().toISOString(),
+    shadowMode:    mem.mode,
+    gateActive:    mem.mode === "GATE",
+    dataCollection: {
+      closedTrades:    mem.closedTrades,
+      target:          mem.dataCollectionTarget,
+      progressPct:     mem.dataCollectionPct,
+      ready:           mem.dataCollectionReady,
+      note:            mem.dataCollectionReady
+        ? "Dataset mature — consider switching to GATE mode via POST /api/shadow/mode"
+        : `Collecting data: ${mem.closedTrades}/${mem.dataCollectionTarget} closed trades (${mem.dataCollectionPct}%)`,
+    },
+    memoryCounts: mem.counts,
+    gateStats: {
+      evaluations: mem.gateEvals,
+      blocks:      mem.gateBlocks,
+      blockRate:   mem.gateEvals > 0 ? parseFloat(((mem.gateBlocks / mem.gateEvals) * 100).toFixed(1)) : null,
+    },
+    database: {
+      path:             dbSt.path,
+      dataDirExplicit:  DATA_DIR_EXPLICIT,
+      persistent:       DATA_DIR_EXPLICIT,
+      totalEvents:      dbSt.total,
+      oldest:           dbSt.oldest,
+      newest:           dbSt.newest,
+      persistenceNote:  DATA_DIR_EXPLICIT
+        ? "✓ DATA_DIR explicitly set — data persists across Railway redeploys"
+        : "⚠ DATA_DIR not set — data is EPHEMERAL on Railway. Add Volume at /data and set DATA_DIR=/data",
+    },
+    failSafe: "active — shadow errors always allow live execution",
+  });
+});
+
+// ── POST /api/shadow/mode ─────────────────────────────────────────────────────
+app.post("/api/shadow/mode", express.json(), (req, res) => {
+  const { mode } = req.body || {};
+  if (!mode) return res.status(400).json({ error: "mode required: OBSERVE or GATE" });
+  try {
+    setShadowMode(mode);
+    res.json({ ok: true, mode: getShadowMode(), message: `Shadow mode switched to ${getShadowMode()}` });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ── POST /api/system/backup ───────────────────────────────────────────────────
+app.post("/api/system/backup", (_req, res) => {
+  const result = backupDatabase();
+  if (result.ok) res.json({ ok: true, path: result.path });
+  else           res.status(500).json({ ok: false, error: result.error });
+});
+
+// ── GET /api/lab/unified-report ───────────────────────────────────────────────
+app.get("/api/lab/unified-report", (req, res) => {
+  const limit = 2000;
+  const parse = rows => rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
+
+  let dA = [], dB = [], dC = [], dD = [], dComp = [], dGate = [];
+  try { dA    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_a'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
+  try { dB    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_b'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
+  try { dC    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_c'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
+  try { dD    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_d'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
+  try { dComp = parse(db.prepare("SELECT data FROM events WHERE type='lab_comparison'  ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
+  try { dGate = parse(db.prepare("SELECT data FROM events WHERE type='shadow_gate_eval' ORDER BY id DESC LIMIT 500").all());    } catch (_) {}
+
+  const closeMap = buildCloseMap(5000);
+  const allCloses = Object.values(closeMap);
+
+  const mem = getShadowMemoryStats();
+
+  const snapshot = (arr) => {
+    if (!arr.length) return null;
+    const trade = arr.filter(d => d.wouldTrade === true).length;
+    const skip  = arr.filter(d => d.wouldTrade === false).length;
+    const abs   = arr.filter(d => d.wouldTrade == null).length;
+    return { n: arr.length, trade, skip, abstain: abs,
+             tradePct: arr.length ? parseFloat(((trade/arr.length)*100).toFixed(1)) : null };
+  };
+
+  res.json({
+    generated:      new Date().toISOString(),
+    shadowMode:     mem.mode,
+    dataCollection: { closedTrades: mem.closedTrades, target: mem.dataCollectionTarget, pct: mem.dataCollectionPct },
+    engineA:   snapshot(dA),
+    engineB:   snapshot(dB),
+    engineC:   snapshot(dC),
+    engineD:   snapshot(dD),
+    comparison: {
+      n:            dComp.length,
+      allAgree:     dComp.filter(d => d.allAgree).length,
+      cautionFlags: dComp.filter(d => d.cautionFlag).length,
+    },
+    gate: {
+      evals:  dGate.length,
+      blocks: dGate.filter(d => d.blocked).length,
+      recent: dGate.slice(0, 10).map(d => ({
+        symbol: d.symbol, session: d.session, side: d.side,
+        mode: d.mode, engineDDecision: d.engineDDecision,
+        engineDConfidence: d.engineDConfidence, blocked: d.blocked,
+      })),
+    },
+    liveBot: {
+      closedTrades: allCloses.length,
+      wins:   allCloses.filter(d => (d.profitPips||0) >  1.0).length,
+      losses: allCloses.filter(d => (d.profitPips||0) <  0).length,
+      expectancy: allCloses.length > 0
+        ? parseFloat((allCloses.reduce((s,d) => s+(d.profitPips||0), 0) / allCloses.length).toFixed(2)) : null,
+    },
+  });
+});
+
+// ── GET /api/shadowm/status ───────────────────────────────────────────────────
+app.get("/api/shadowm/status", (req, res) => {
+  try {
+    const stats = getShadowMStats();
+    res.json({ ok: true, module: "Shadow M", mode: "OBSERVE", stats });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/trades ───────────────────────────────────────────────────
+app.get("/api/shadowm/trades", (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit  || "100", 10), 500);
+    const offset = parseInt(req.query.offset || "0", 10);
+    const trades = getShadowMTrades({ limit, offset });
+    res.json({ ok: true, trades, total: trades.length });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/active ───────────────────────────────────────────────────
+app.get("/api/shadowm/active", (req, res) => {
+  try {
+    const trades = getShadowMTrades({ limit: 50, openOnly: true });
+    res.json({ ok: true, active: trades.length, trades });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── GET /api/shadowm/dashboard ────────────────────────────────────────────────
+// Used by the Exit Lab UI — stats + recent closed trades in one call.
+app.get("/api/shadowm/dashboard", (req, res) => {
+  try {
+    const stats  = getShadowMStats();
+    const trades = getShadowMTrades({ limit: 50 });
+    res.json({ ok: true, stats, trades });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // ── GET /api/lab/shadow-d ─────────────────────────────────────────────────────
 app.get("/api/lab/shadow-d", (req, res) => {
   let rows = [];
@@ -2498,4 +2659,5 @@ app.listen(PORT, () => {
   console.log(`[SERVER] API on :${PORT}  DB: ${DATA_DIR}/events.db`);
   startBot();
   shadowLab.start();
+  shadowM.start();
 });

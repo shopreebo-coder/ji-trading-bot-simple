@@ -860,11 +860,202 @@ class ShadowLab {
 // ── singleton ──────────────────────────────────────────────────────────────────
 const shadowLab = new ShadowLab();
 
+// ══════════════════════════════════════════════════════════════════════════════
+// SHADOW MODE — controls whether Meta D can block live execution
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * OBSERVE (default / data collection mode):
+ *   Meta D runs on every signal and logs its decision, but NEVER blocks execution.
+ *   Use during the first 250–300 closed trades to build Shadow Memory.
+ *
+ * GATE:
+ *   Meta D can block execution when wouldTrade===false AND confidence==="HIGH".
+ *   All other outcomes (abstain, LOW/MEDIUM, error) always allow.
+ *   Switch via POST /api/shadow/mode  { mode: "GATE" } when dataset is mature.
+ */
+let _shadowMode = (process.env.SHADOW_MODE || "OBSERVE").toUpperCase();
+if (_shadowMode !== "GATE") _shadowMode = "OBSERVE"; // enforce valid values
+
+function getShadowMode()  { return _shadowMode; }
+function setShadowMode(m) {
+  const v = (m || "").toUpperCase();
+  if (v !== "OBSERVE" && v !== "GATE") throw new Error(`Invalid shadow mode: ${m}`);
+  const prev = _shadowMode;
+  _shadowMode = v;
+  console.log(`[SHADOWLAB] Mode: ${prev} → ${v}`);
+  logEvent({ type: "shadow_mode_change", from: prev, to: v });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SHADOW GATE — called by index.js before every trade execution
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Runs the full A→B→C→D pipeline synchronously.
+ * ALWAYS returns an object, NEVER throws (fail-safe by design).
+ *
+ * Returns: { blocked: boolean, mode, reason, confidence, voteScore? }
+ *
+ * OBSERVE mode:  blocked = false  (always allows, just logs)
+ * GATE mode:     blocked = true   ONLY when D.wouldTrade===false AND D.confidence==="HIGH"
+ * Any error:     blocked = false  (fail-safe — live bot must not be stopped)
+ */
+function shadowGate(signal) {
+  try {
+    const engineA = ShadowQualityEngine.evaluate(signal);
+    const engineB = ShadowContextEngine.evaluate(signal);
+    const engineC = ShadowKNNEngine.evaluate(signal);
+    const engineD = ShadowMetaEngine.evaluate(signal, engineA, engineB, engineC);
+
+    // Log gate evaluation (always — this feeds Shadow Memory even in OBSERVE)
+    try {
+      logEvent({
+        type:              "shadow_gate_eval",
+        symbol:            signal.symbol,  session:          signal.session,
+        signalId:          signal.signalId, side:             signal.side,
+        mode:              _shadowMode,
+        engineADecision:   engineA.wouldTrade,  engineAScore:     engineA.score,
+        engineAConfidence: engineA.confidence,
+        engineBDecision:   engineB.wouldTrade,  engineBState:     engineB.marketState,
+        engineBConfidence: engineB.confidence,
+        engineCDecision:   engineC.wouldTrade,  engineCWinrate:   engineC.historicalWinrate,
+        engineCKNeigh:     engineC.kNeighbours, engineCConfidence: engineC.confidence,
+        engineDDecision:   engineD.wouldTrade,  engineDVoteScore: engineD.metaVoteScore,
+        engineDConfidence: engineD.confidence,  engineDReason:    engineD.reason,
+      });
+    } catch (_) {}
+
+    // OBSERVE mode — data collection, never block
+    if (_shadowMode === "OBSERVE") {
+      return { blocked: false, mode: "OBSERVE", reason: "observe_mode_data_collection", confidence: engineD.confidence };
+    }
+
+    // GATE mode — block only on HIGH-confidence SKIP
+    if (engineD.wouldTrade === false && engineD.confidence === "HIGH") {
+      try {
+        logEvent({
+          type:      "shadow_gate_block",
+          symbol:    signal.symbol,    session:    signal.session,
+          signalId:  signal.signalId,  side:       signal.side,
+          reason:    engineD.reason,   confidence: engineD.confidence,
+          voteScore: engineD.metaVoteScore,
+          weightA:   engineD.weightA,  weightB:    engineD.weightB,  weightC: engineD.weightC,
+        });
+      } catch (_) {}
+      return {
+        blocked:    true,
+        mode:       "GATE",
+        reason:     engineD.reason,
+        confidence: engineD.confidence,
+        voteScore:  engineD.metaVoteScore,
+      };
+    }
+
+    // Everything else in GATE mode → allow
+    return {
+      blocked:    false,
+      mode:       "GATE",
+      reason:     engineD.wouldTrade === null ? "meta_abstain_allow" :
+                  engineD.wouldTrade === true  ? "meta_approved"     : "meta_low_confidence_allow",
+      confidence: engineD.confidence,
+      voteScore:  engineD.metaVoteScore,
+    };
+
+  } catch (err) {
+    // CRITICAL FAIL-SAFE — shadow error must never stop the live bot
+    console.error("[SHADOW_GATE] Error (fail-safe active):", err.message);
+    return { blocked: false, mode: "FAILSAFE", reason: "shadow_error_" + err.message.slice(0, 80) };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SHADOW MEMORY STATS — for status/health endpoints
+// ══════════════════════════════════════════════════════════════════════════════
+function getShadowMemoryStats() {
+  try {
+    const counts = {};
+    const types  = ["lab_shadow_a","lab_shadow_b","lab_shadow_c","lab_shadow_d",
+                     "lab_comparison","shadow_gate_eval","shadow_gate_block","trade_close"];
+    for (const t of types) {
+      try {
+        counts[t] = db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type='${t}'`).get()?.n ?? 0;
+      } catch (_) { counts[t] = 0; }
+    }
+    const closedTrades = counts["trade_close"] || 0;
+    const dataCollectionTarget  = 250;
+    const dataCollectionPct     = Math.min(100, Math.round((closedTrades / dataCollectionTarget) * 100));
+    const dataCollectionReady   = closedTrades >= dataCollectionTarget;
+    return {
+      mode: _shadowMode,
+      counts,
+      closedTrades,
+      dataCollectionTarget,
+      dataCollectionPct,
+      dataCollectionReady,
+      gateEvals:  counts["shadow_gate_eval"]  || 0,
+      gateBlocks: counts["shadow_gate_block"] || 0,
+    };
+  } catch (err) {
+    return { mode: _shadowMode, error: err.message };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SHADOW POSITION ADVISOR — architecture stub (v40.1)
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Architecture placeholder for future Shadow ↔ Live position co-management.
+ *
+ * Full implementation requires:
+ *   - bidirectional IPC between manageTrades() and shadowlab
+ *   - Shadow learning which market conditions favor BE/trail/early close
+ *   - Sufficient historical position-management data (estimated: 500+ closed trades)
+ *
+ * Current status: OBSERVER ONLY — logs position snapshots for future training.
+ * Live bot manages positions exclusively. No active intervention.
+ */
+class ShadowPositionAdvisor {
+  static ID = "SHADOW_POSITION_ADVISOR_v0";
+
+  /**
+   * Called passively from manageTrades() — logs position snapshot for training data.
+   * Does NOT affect position management. No exceptions thrown.
+   */
+  static observe(trade, context = {}) {
+    try {
+      logEvent({
+        type:             "shadow_position_obs",
+        tradeId:          trade?.id          ?? "?",
+        symbol:           trade?.instrument  ?? "?",
+        unrealizedPnlPips: context.unrealizedPnlPips ?? null,
+        currentPrice:     context.currentPrice      ?? null,
+        session:          context.session           ?? null,
+        openPrice:        context.openPrice         ?? null,
+        beApplied:        context.beApplied         ?? false,
+        trailApplied:     context.trailApplied      ?? false,
+        mfe:              context.mfe               ?? null,
+      });
+    } catch (_) {}
+  }
+
+  /**
+   * Future: return a position-management recommendation.
+   * Currently always returns "none" — live bot handles everything.
+   */
+  static advise(_trade, _context) {
+    return { action: "none", reason: "advisor_not_implemented_v40" };
+  }
+}
+
 module.exports = {
   shadowLab,
-  ShadowQualityEngine,   // A — FROZEN
-  ShadowContextEngine,   // B — FROZEN
-  ShadowKNNEngine,       // C — rebuilt
-  ShadowMetaEngine,      // D — new
+  ShadowQualityEngine,       // A — FROZEN
+  ShadowContextEngine,       // B — FROZEN
+  ShadowKNNEngine,           // C — rebuilt (KNN)
+  ShadowMetaEngine,          // D — meta engine
   ComparisonEngine,
+  ShadowPositionAdvisor,     // position management stub
+  shadowGate,                // Live+Shadow gate (called from index.js)
+  getShadowMode,             // returns current mode string
+  setShadowMode,             // switches OBSERVE ↔ GATE
+  getShadowMemoryStats,      // memory / data collection status
 };
