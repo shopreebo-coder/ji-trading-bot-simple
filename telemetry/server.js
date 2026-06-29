@@ -92,6 +92,7 @@ function handleBotLine(raw) {
     const [, sym, side] = openM;
     live.openTrades[sym] = { symbol: sym, side: side.toLowerCase(), pips: 0, peak: 0, breakEven: false, entryTime: Date.now() };
     broadcastSSE({ source: "live", type: "trade_opened", symbol: sym, side: side.toLowerCase() });
+    console.log(`[SHADOW M DIAG] handleBotLine detected trade_open: ${sym} ${side} | server PID=${process.pid}`);
     return;
   }
 

@@ -257,8 +257,10 @@ class ShadowM {
     this._started = true;
 
     await _initTables();
+    console.log(`[SHADOW M DIAG] Tables ready. PID=${process.pid} — registering emitter listener`);
 
     emitter.on("event", (row) => {
+      console.log(`[SHADOW M DIAG] emitter fired: type=${row.type} PID=${process.pid}`);
       (async () => {
         try {
           switch (row.type) {
@@ -274,7 +276,7 @@ class ShadowM {
 
     await this._restore();
 
-    console.log("[SHADOW M] Exit Lab online — event-driven, OBSERVE only");
+    console.log(`[SHADOW M] Exit Lab online — event-driven, OBSERVE only | PID=${process.pid}`);
     logEvent({ type: "shadowm_startup", module: "exit_lab", restored: this._active.size });
   }
 
@@ -301,6 +303,7 @@ class ShadowM {
   // ── trade_open → start tracking ──────────────────────────────────────────
   async _onOpen(event) {
     const signalId = event.signalId;
+    console.log(`[SHADOW M DIAG] _onOpen called: signalId=${signalId} symbol=${event.symbol}`);
     if (!signalId) return;
 
     const tracking = {
