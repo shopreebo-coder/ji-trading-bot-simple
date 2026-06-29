@@ -247,23 +247,24 @@ class ShadowKNNEngine {
     return num / this._W_TOTAL;
   }
 
-  // ── Build / return cached historical dataset ───────────────────────────────
-  // Dataset = array of { features, profitPips, isWin, isLoss }
-  // Built by joining trade_open (features) with trade_close (outcome) on signalId,
-  // with fingerprint + time-window fallback for unlinked closes.
-  static _buildDataset() {
-    const now = Date.now();
-    if (this._cache && (now - this._cacheTs) < this.CACHE_TTL) return this._cache;
+  // ── Returns cached dataset synchronously (no DB) — used by shadowGate() ───
+  // Cache is populated async by ShadowLab._cycle() → _refreshDatasetAsync().
+  // On cold start (before first cycle at +8 s): returns [] → engines abstain.
+  static _getDataset() {
+    return this._cache || [];
+  }
 
+  // ── Async cache rebuild — called from ShadowLab._cycle() only ────────────
+  static async _refreshDatasetAsync() {
     let dataset = [];
     try {
-      const opens = db.prepare(
+      const opens = (await db.all(
         "SELECT data FROM events WHERE type='trade_open' ORDER BY id DESC LIMIT 3000"
-      ).all().map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
+      )).map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
-      const closes = db.prepare(
+      const closes = (await db.all(
         "SELECT data FROM events WHERE type='trade_close' ORDER BY id DESC LIMIT 3000"
-      ).all().map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
+      )).map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
       // Primary map: signalId → close
       const bySignal = {};
@@ -311,17 +312,16 @@ class ShadowKNNEngine {
     }
 
     this._cache   = dataset;
-    this._cacheTs = now;
+    this._cacheTs = Date.now();
     if (dataset.length > 0) {
       console.log(`[ENGINE_C] Dataset cached: ${dataset.length} historical pair(s)`);
     }
-    return dataset;
   }
 
   // ── Main evaluation ────────────────────────────────────────────────────────
   static evaluate(signal) {
     const features = this._extract(signal);
-    const dataset  = this._buildDataset();
+    const dataset  = this._getDataset();
 
     // No historical data at all → abstain with explanation
     if (dataset.length === 0) {
@@ -441,10 +441,8 @@ class ShadowMetaEngine {
 
   // ── Weight computation ─────────────────────────────────────────────────────
   static _weights(symbol, session) {
-    if ((Date.now() - this._wCacheTs) > this.CACHE_TTL) {
-      this._rebuildWeights();
-    }
-    // Lookup hierarchy: symbol+session → session → global
+    // Cache is refreshed async by ShadowLab._cycle() — no inline synchronous rebuild.
+    // Cold start (first 8 s): returns equal defaults (1/3 each) which is safe.
     return (
       this._wCache[`${symbol}__${session}`] ||
       this._wCache[`__${session}`]           ||
@@ -453,24 +451,26 @@ class ShadowMetaEngine {
     );
   }
 
-  static _rebuildWeights() {
+  static async _refreshWeightsAsync() {
     this._wCache   = {};
     this._wCacheTs = Date.now();
 
     try {
-      // Load engine decisions
-      const loadEngine = (type) =>
-        db.prepare(`SELECT data FROM events WHERE type='${type}' ORDER BY id DESC LIMIT 5000`)
-          .all().map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
+      // Load engine decisions (async parallel)
+      const loadEngine = async (type) =>
+        (await db.all(`SELECT data FROM events WHERE type='${type}' ORDER BY id DESC LIMIT 5000`))
+          .map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
-      const dA = loadEngine("lab_shadow_a");
-      const dB = loadEngine("lab_shadow_b");
-      const dC = loadEngine("lab_shadow_c");
+      const [dA, dB, dC] = await Promise.all([
+        loadEngine("lab_shadow_a"),
+        loadEngine("lab_shadow_b"),
+        loadEngine("lab_shadow_c"),
+      ]);
 
       // Build outcome map: signalId → { profitPips, isWin, isLoss }
-      const closes = db.prepare(
+      const closes = (await db.all(
         "SELECT data FROM events WHERE type='trade_close' ORDER BY id DESC LIMIT 5000"
-      ).all().map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
+      )).map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
       const outcomeMap = {};
       for (const c of closes) {
@@ -678,11 +678,11 @@ class ShadowLab {
   }
 
   // ── Init: load already-processed signalIds from lab_comparison ──────────
-  _init() {
+  async _init() {
     try {
-      const rows = db.prepare(
+      const rows = await db.all(
         "SELECT data FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 10000"
-      ).all();
+      );
       for (const r of rows) {
         try {
           const d = JSON.parse(r.data);
@@ -695,15 +695,15 @@ class ShadowLab {
   }
 
   // ── Backfill: run Engine D on signals that have A/B/C but not D ─────────
-  _backfillD() {
+  async _backfillD() {
     try {
       // Find signalIds in lab_comparison that don't have a lab_shadow_d entry
-      const compRows = db.prepare(
+      const compRows = await db.all(
         "SELECT data FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 5000"
-      ).all();
-      const labDRows = db.prepare(
+      );
+      const labDRows = await db.all(
         "SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000"
-      ).all();
+      );
 
       const doneD = new Set(
         labDRows.map(r => { try { return JSON.parse(r.data).signalId; } catch (_) { return null; } }).filter(Boolean)
@@ -717,7 +717,7 @@ class ShadowLab {
         if (backfilled >= 50) break; // limit per cycle
 
         // Re-fetch A/B/C results for this signal
-        this._runDForExistingSignal(comp.signalId);
+        await this._runDForExistingSignal(comp.signalId);
         backfilled++;
       }
 
@@ -729,13 +729,13 @@ class ShadowLab {
     }
   }
 
-  _runDForExistingSignal(signalId) {
+  async _runDForExistingSignal(signalId) {
     // Rebuild minimal signal from stored lab events
-    const getEngine = (type) => {
+    const getEngine = async (type) => {
       try {
-        const rows = db.prepare(
+        const rows = await db.all(
           `SELECT data FROM events WHERE type='${type}' ORDER BY id DESC LIMIT 1000`
-        ).all();
+        );
         for (const r of rows) {
           try {
             const d = JSON.parse(r.data);
@@ -746,9 +746,11 @@ class ShadowLab {
       return null;
     };
 
-    const ea = getEngine("lab_shadow_a");
-    const eb = getEngine("lab_shadow_b");
-    const ec = getEngine("lab_shadow_c");
+    const [ea, eb, ec] = await Promise.all([
+      getEngine("lab_shadow_a"),
+      getEngine("lab_shadow_b"),
+      getEngine("lab_shadow_c"),
+    ]);
     if (!ea || !eb || !ec) return;
 
     const signal = {
@@ -770,14 +772,18 @@ class ShadowLab {
   }
 
   // ── Main cycle ───────────────────────────────────────────────────────────
-  _cycle() {
-    if (!this._initialized) this._init();
+  async _cycle() {
+    if (!this._initialized) await this._init();
+
+    // Refresh caches used by shadowGate() synchronously from live bot
+    await ShadowKNNEngine._refreshDatasetAsync();
+    await ShadowMetaEngine._refreshWeightsAsync();
 
     let opens;
     try {
-      opens = db.prepare(
+      opens = await db.all(
         "SELECT id,ts,symbol,data FROM events WHERE type='trade_open' ORDER BY id DESC LIMIT 500"
-      ).all();
+      );
     } catch (err) {
       console.error("[SHADOWLAB] DB read error:", err.message);
       return;
@@ -807,7 +813,7 @@ class ShadowLab {
 
     // Run D backfill on every 5th cycle to catch old A/B/C without D
     this._cycleCount = (this._cycleCount || 0) + 1;
-    if (this._cycleCount % 5 === 0) this._backfillD();
+    if (this._cycleCount % 5 === 0) await this._backfillD();
   }
 
   // ── Process one trade_open through all 4 engines ─────────────────────────
@@ -848,11 +854,11 @@ class ShadowLab {
 
   // ── Public start ──────────────────────────────────────────────────────────
   start() {
-    this._init();
+    this._init().catch(err => console.error("[SHADOWLAB] Init error:", err.message));
     // First pass after 8 s; backfill D after 15 s; then every 30 s
-    setTimeout(() => this._cycle(),     8000);
-    setTimeout(() => this._backfillD(), 15000);
-    setInterval(() => this._cycle(),    30000);
+    setTimeout(() => this._cycle().catch(err => console.error("[SHADOWLAB] Cycle error:", err.message)),          8000);
+    setTimeout(() => this._backfillD().catch(err => console.error("[SHADOWLAB] Backfill error:", err.message)),   15000);
+    setInterval(() => this._cycle().catch(err => console.error("[SHADOWLAB] Cycle error:", err.message)),         30000);
     console.log("[SHADOWLAB] v40 started — A+B FROZEN | C=KNN | D=META | polling every 30 s");
   }
 }
@@ -970,14 +976,14 @@ function shadowGate(signal) {
 // ══════════════════════════════════════════════════════════════════════════════
 // SHADOW MEMORY STATS — for status/health endpoints
 // ══════════════════════════════════════════════════════════════════════════════
-function getShadowMemoryStats() {
+async function getShadowMemoryStats() {
   try {
     const counts = {};
     const types  = ["lab_shadow_a","lab_shadow_b","lab_shadow_c","lab_shadow_d",
                      "lab_comparison","shadow_gate_eval","shadow_gate_block","trade_close"];
     for (const t of types) {
       try {
-        counts[t] = db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type='${t}'`).get()?.n ?? 0;
+        counts[t] = (await db.get(`SELECT COUNT(*) AS n FROM events WHERE type='${t}'`))?.n ?? 0;
       } catch (_) { counts[t] = 0; }
     }
     const closedTrades = counts["trade_close"] || 0;

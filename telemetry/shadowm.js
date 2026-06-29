@@ -13,55 +13,15 @@
  *   trade_state_snapshot → update MFE/MAE, check exit strategies
  *   trade_close          → finalize, rank strategies, persist result
  * ════════════════════════════════════════════════════════════════
+ * DB calls are all async (via db-adapter.js).
+ * Tables are created in _initTables(), called from start().
  */
 
 const { db, emitter, logEvent } = require("./index");
 
-// ── PERSISTENT TABLES (own namespace, no overlap with other shadows) ──────────
+// ── SQL constants (replaces prepared statements — adapter handles conversion) ──
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS shadowm_trades (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    signal_id         TEXT UNIQUE NOT NULL,
-    symbol            TEXT,
-    side              TEXT,
-    sl_pips           REAL,
-    tp_pips           REAL,
-    atr_entry         REAL,
-    entry_time        TEXT,
-    exit_time         TEXT,
-    profit_live       REAL,
-    mfe               REAL DEFAULT 0,
-    mae               REAL DEFAULT 0,
-    duration_min      REAL,
-    profit_given_back REAL,
-    ex_atr_trail      REAL,
-    ex_profit_protect REAL,
-    ex_time_1h        REAL,
-    ex_time_2h        REAL,
-    ex_time_4h        REAL,
-    ex_breakeven      REAL,
-    ex_tp_ext         REAL,
-    best_strategy     TEXT,
-    best_profit       REAL,
-    profit_saved      REAL,
-    data              TEXT
-  );
-  CREATE TABLE IF NOT EXISTS shadowm_timeline (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    signal_id   TEXT    NOT NULL,
-    ts          TEXT    NOT NULL,
-    pips        REAL,
-    mfe         REAL,
-    mae         REAL,
-    minutes     REAL
-  );
-  CREATE INDEX IF NOT EXISTS idx_smt_sid  ON shadowm_trades(signal_id);
-  CREATE INDEX IF NOT EXISTS idx_smtl_sid ON shadowm_timeline(signal_id);
-`);
-
-// Prepared once, reused on every tick ──────────────────────────────────────────
-const _upsert = db.prepare(`
+const _UPSERT_SQL = `
   INSERT INTO shadowm_trades
     (signal_id, symbol, side, sl_pips, tp_pips, atr_entry, entry_time,
      exit_time, profit_live, mfe, mae, duration_min, profit_given_back,
@@ -90,12 +50,56 @@ const _upsert = db.prepare(`
     best_profit       = excluded.best_profit,
     profit_saved      = excluded.profit_saved,
     data              = excluded.data
-`);
+`;
 
-const _insertTimeline = db.prepare(`
+const _TIMELINE_SQL = `
   INSERT INTO shadowm_timeline (signal_id, ts, pips, mfe, mae, minutes)
   VALUES (@signal_id, @ts, @pips, @mfe, @mae, @minutes)
-`);
+`;
+
+// ── Create own tables — called from start() ───────────────────────────────────
+async function _initTables() {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS shadowm_trades (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_id         TEXT UNIQUE NOT NULL,
+      symbol            TEXT,
+      side              TEXT,
+      sl_pips           REAL,
+      tp_pips           REAL,
+      atr_entry         REAL,
+      entry_time        TEXT,
+      exit_time         TEXT,
+      profit_live       REAL,
+      mfe               REAL DEFAULT 0,
+      mae               REAL DEFAULT 0,
+      duration_min      REAL,
+      profit_given_back REAL,
+      ex_atr_trail      REAL,
+      ex_profit_protect REAL,
+      ex_time_1h        REAL,
+      ex_time_2h        REAL,
+      ex_time_4h        REAL,
+      ex_breakeven      REAL,
+      ex_tp_ext         REAL,
+      best_strategy     TEXT,
+      best_profit       REAL,
+      profit_saved      REAL,
+      data              TEXT
+    );
+    CREATE TABLE IF NOT EXISTS shadowm_timeline (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_id   TEXT    NOT NULL,
+      ts          TEXT    NOT NULL,
+      pips        REAL,
+      mfe         REAL,
+      mae         REAL,
+      minutes     REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_smt_sid  ON shadowm_trades(signal_id);
+    CREATE INDEX IF NOT EXISTS idx_smtl_sid ON shadowm_timeline(signal_id)
+  `);
+}
 
 // ── STRATEGY LABELS ───────────────────────────────────────────────────────────
 
@@ -248,34 +252,38 @@ class ShadowM {
     this._started = false;
   }
 
-  start() {
+  async start() {
     if (this._started) return;
     this._started = true;
 
+    await _initTables();
+
     emitter.on("event", (row) => {
-      try {
-        switch (row.type) {
-          case "trade_open":           return this._onOpen(row.data);
-          case "trade_state_snapshot": return this._onSnapshot(row.data);
-          case "trade_close":          return this._onClose(row.data);
+      (async () => {
+        try {
+          switch (row.type) {
+            case "trade_open":           await this._onOpen(row.data);     break;
+            case "trade_state_snapshot": await this._onSnapshot(row.data); break;
+            case "trade_close":          await this._onClose(row.data);    break;
+          }
+        } catch (err) {
+          console.error("[SHADOW M] Handler error:", err.message);
         }
-      } catch (err) {
-        console.error("[SHADOW M] Handler error:", err.message);
-      }
+      })();
     });
 
-    this._restore();
+    await this._restore();
 
     console.log("[SHADOW M] Exit Lab online — event-driven, OBSERVE only");
     logEvent({ type: "shadowm_startup", module: "exit_lab", restored: this._active.size });
   }
 
   // ── Restore in-flight trades after process restart ────────────────────────
-  _restore() {
+  async _restore() {
     try {
-      const rows = db.prepare(
+      const rows = await db.all(
         "SELECT data FROM shadowm_trades WHERE exit_time IS NULL ORDER BY id ASC"
-      ).all();
+      );
       for (const row of rows) {
         try {
           const t = JSON.parse(row.data);
@@ -291,7 +299,7 @@ class ShadowM {
   }
 
   // ── trade_open → start tracking ──────────────────────────────────────────
-  _onOpen(event) {
+  async _onOpen(event) {
     const signalId = event.signalId;
     if (!signalId) return;
 
@@ -318,14 +326,14 @@ class ShadowM {
     };
 
     this._active.set(signalId, tracking);
-    _upsert.run(_toRow(tracking));
+    await db.run(_UPSERT_SQL, _toRow(tracking));
 
     logEvent({ type: "shadowm_open", symbol: tracking.symbol, signalId, side: tracking.side });
     console.log(`[SHADOW M] Tracking: ${tracking.symbol} ${(tracking.side || "?").toUpperCase()} | id:${signalId}`);
   }
 
   // ── trade_state_snapshot → update strategies ──────────────────────────────
-  _onSnapshot(event) {
+  async _onSnapshot(event) {
     const signalId = event.signalId;
     if (!signalId) return;
     const t = this._active.get(signalId);
@@ -346,14 +354,14 @@ class ShadowM {
 
     // Timeline: every other tick to keep DB lean
     if (t.tickCount % 2 === 0) {
-      _insertTimeline.run({ signal_id: signalId, ts, pips, mfe: t.mfe, mae: t.mae, minutes });
+      await db.run(_TIMELINE_SQL, { signal_id: signalId, ts, pips, mfe: t.mfe, mae: t.mae, minutes });
     }
 
-    _upsert.run(_toRow(t));
+    await db.run(_UPSERT_SQL, _toRow(t));
   }
 
   // ── trade_close → finalize + rank ────────────────────────────────────────
-  _onClose(event) {
+  async _onClose(event) {
     const signalId = event.signalId;
     if (!signalId) return;
     const t = this._active.get(signalId);
@@ -372,7 +380,7 @@ class ShadowM {
       : (t.mfe > 0 && t.profitLive !== null ? parseFloat((t.mfe - t.profitLive).toFixed(2)) : null);
 
     _rankStrategies(t);
-    _upsert.run(_toRow(t));
+    await db.run(_UPSERT_SQL, _toRow(t));
 
     logEvent({
       type:            "shadowm_close",
@@ -402,13 +410,13 @@ const shadowM = new ShadowM();
 
 // ── TELEMETRY / QUERY FUNCTIONS ────────────────────────────────────────────────
 
-function getShadowMStats() {
-  const closed = db.prepare(
+async function getShadowMStats() {
+  const closed = await db.all(
     "SELECT * FROM shadowm_trades WHERE exit_time IS NOT NULL"
-  ).all();
-  const activeCount = db.prepare(
+  );
+  const activeCount = (await db.get(
     "SELECT COUNT(*) AS n FROM shadowm_trades WHERE exit_time IS NULL"
-  ).get().n;
+  ))?.n ?? 0;
 
   const n = closed.length;
   if (n === 0) {
@@ -491,11 +499,12 @@ function getShadowMStats() {
   };
 }
 
-function getShadowMTrades({ limit = 50, offset = 0, openOnly = false } = {}) {
+async function getShadowMTrades({ limit = 50, offset = 0, openOnly = false } = {}) {
   const where = openOnly ? "WHERE exit_time IS NULL" : "";
-  const rows  = db.prepare(
-    `SELECT * FROM shadowm_trades ${where} ORDER BY id DESC LIMIT ? OFFSET ?`
-  ).all(limit, offset);
+  const rows  = await db.all(
+    `SELECT * FROM shadowm_trades ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    limit, offset
+  );
 
   return rows.map(r => {
     let ranking = [];
@@ -528,10 +537,11 @@ function getShadowMTrades({ limit = 50, offset = 0, openOnly = false } = {}) {
   });
 }
 
-function getShadowMTimeline(signalId, limit = 200) {
-  return db.prepare(
-    "SELECT ts, pips, mfe, mae, minutes FROM shadowm_timeline WHERE signal_id = ? ORDER BY id ASC LIMIT ?"
-  ).all(signalId, limit);
+async function getShadowMTimeline(signalId, limit = 200) {
+  return await db.all(
+    "SELECT ts, pips, mfe, mae, minutes FROM shadowm_timeline WHERE signal_id = ? ORDER BY id ASC LIMIT ?",
+    signalId, limit
+  );
 }
 
 module.exports = { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline };

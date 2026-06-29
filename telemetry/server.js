@@ -12,9 +12,9 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") }
 const express    = require("express");
 const path       = require("path");
 const { spawn }  = require("child_process");
-const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT } = require("./index");
+const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT, DB_PATH, USE_PG } = require("./index");
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
-const { shadowM, getShadowMStats, getShadowMTrades }                   = require("./shadowm");
+const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = require("./shadowm");
 
 const PORT = process.env.PORT || 3001;
 const app  = express();
@@ -189,7 +189,7 @@ function classifyOutcome(d) {
   return "WIN";
 }
 
-function queryEvents({ type, symbol, date, limit = 500 } = {}) {
+async function queryEvents({ type, symbol, date, limit = 500 } = {}) {
   let sql    = "SELECT id,ts,bot_id,type,symbol,data FROM events WHERE 1=1";
   const args = [];
   if (type)   { sql += " AND type=?";            args.push(type); }
@@ -197,12 +197,12 @@ function queryEvents({ type, symbol, date, limit = 500 } = {}) {
   if (date)   { sql += " AND substr(ts,1,10)=?"; args.push(date); }
   sql += " ORDER BY id DESC LIMIT ?";
   args.push(limit);
-  return db.prepare(sql).all(...args).map(r => ({ ...r, data: JSON.parse(r.data) }));
+  return (await db.all(sql, ...args)).map(r => ({ ...r, data: JSON.parse(r.data) }));
 }
 
 // ── API: GET /api/events ──────────────────────────────────────────────────────
-app.get("/api/events", (req, res) => {
-  const rows = queryEvents({
+app.get("/api/events", async (req, res) => {
+  const rows = await queryEvents({
     type:   req.query.type,
     symbol: req.query.symbol,
     date:   req.query.date ? parseDate(req.query.date) : undefined,
@@ -212,12 +212,12 @@ app.get("/api/events", (req, res) => {
 });
 
 // ── API: GET /api/trades ──────────────────────────────────────────────────────
-app.get("/api/trades", (req, res) => {
+app.get("/api/trades", async (req, res) => {
   const date   = req.query.date   ? parseDate(req.query.date) : undefined;
   const symbol = req.query.symbol;
 
-  const opens  = queryEvents({ type: "trade_open",  symbol, date, limit: 1000 });
-  const closes = queryEvents({ type: "trade_close", symbol, date, limit: 1000 });
+  const opens  = await queryEvents({ type: "trade_open",  symbol, date, limit: 1000 });
+  const closes = await queryEvents({ type: "trade_close", symbol, date, limit: 1000 });
 
   const closeMap = {};
   for (const c of closes) {
@@ -236,9 +236,9 @@ app.get("/api/trades", (req, res) => {
 });
 
 // ── API: GET /api/today ───────────────────────────────────────────────────────
-app.get("/api/today", (req, res) => {
+app.get("/api/today", async (req, res) => {
   const date   = parseDate("today");
-  const closes = queryEvents({ type: "trade_close", date, limit: 1000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 1000 });
 
   let wins = 0, losses = 0, breakevens = 0, totalPeak = 0, totalDur = 0;
   for (const c of closes) {
@@ -253,7 +253,7 @@ app.get("/api/today", (req, res) => {
 
   const n        = closes.length;
   const decisive = wins + losses;
-  const blocks   = queryEvents({ date, limit: 1000 })
+  const blocks   = (await queryEvents({ date, limit: 1000 }))
     .filter(e => ["spread_block","cooldown_block","correlation_block","pullback_block","margin_block",
                   "exhaustion_block","spread_edge_block","symbol_disabled_block"].includes(e.type));
 
@@ -275,11 +275,11 @@ app.get("/api/today", (req, res) => {
 });
 
 // ── API: GET /api/stats ───────────────────────────────────────────────────────
-app.get("/api/stats", (req, res) => {
+app.get("/api/stats", async (req, res) => {
   const symbol = req.query.symbol;
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
 
-  const closes = queryEvents({ type: "trade_close", symbol, date, limit: 5000 });
+  const closes = await queryEvents({ type: "trade_close", symbol, date, limit: 5000 });
   let wins = 0, losses = 0, breakevens = 0, totalPeak = 0, totalDur = 0;
   for (const c of closes) {
     const d  = c.data;
@@ -293,10 +293,13 @@ app.get("/api/stats", (req, res) => {
   const n        = closes.length;
   const decisive = wins + losses;
 
-  const checks = queryEvents({ type: "buy_check",  symbol, date, limit: 5000 })
-    .concat(queryEvents({ type: "sell_check", symbol, date, limit: 5000 }));
+  const [_chkBuy, _chkSell] = await Promise.all([
+    await queryEvents({ type: "buy_check",  symbol, date, limit: 5000 }),
+    await queryEvents({ type: "sell_check", symbol, date, limit: 5000 }),
+  ]);
+  const checks = _chkBuy.concat(_chkSell);
 
-  const allBlocks = queryEvents({ date, limit: 10000 })
+  const allBlocks = (await queryEvents({ date, limit: 10000 }))
     .filter(e => e.type.endsWith("_block"));
 
   const blockCounts = {};
@@ -318,9 +321,9 @@ app.get("/api/stats", (req, res) => {
 });
 
 // ── API: GET /api/symbols ─────────────────────────────────────────────────────
-app.get("/api/symbols", (req, res) => {
+app.get("/api/symbols", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const map = {};
   for (const c of closes) {
@@ -350,7 +353,7 @@ app.get("/api/symbols", (req, res) => {
 });
 
 // ── API: GET /api/live ────────────────────────────────────────────────────────
-app.get("/api/live", (req, res) => {
+app.get("/api/live", async (req, res) => {
   res.json({
     botStatus:    live.botStatus,
     dailyTrades:  live.dailyTrades,
@@ -360,10 +363,10 @@ app.get("/api/live", (req, res) => {
 });
 
 // ── API: GET /api/export ──────────────────────────────────────────────────────
-app.get("/api/export", (req, res) => {
+app.get("/api/export", async (req, res) => {
   const date   = parseDate(req.query.date || "today");
   const format = req.query.format || "json";
-  const rows   = queryEvents({ date, limit: 50000 });
+  const rows   = await queryEvents({ date, limit: 50000 });
 
   if (format === "csv") {
     const cols    = ["id","ts","bot_id","type","symbol"];
@@ -393,9 +396,9 @@ app.get("/api/export", (req, res) => {
 // Aggregate exit quality metrics across all closed trades.
 // Fields: avg_mfe_capture_pct, avg_profit_given_back, exit_efficiency,
 //         avg_mfe30, avg_mfe60, avg_mfe120 (time-based MFE snapshots).
-app.get("/api/exit-manager", (req, res) => {
+app.get("/api/exit-manager", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   let totalMfeCap  = 0, nMfeCap  = 0;
   let totalGiven   = 0, nGiven   = 0;
@@ -468,10 +471,10 @@ app.get("/api/exit-manager", (req, res) => {
 // HIGH  0.90–1.15 — near-miss, almost profitable edge
 // MEDIUM 0.60–0.90 — moderate shortfall
 // LOW   < 0.60    — very poor edge, wide spread relative to expected move
-app.get("/api/spread-edge-analysis", (req, res) => {
+app.get("/api/spread-edge-analysis", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
-  const blocks   = queryEvents({ type: "spread_edge_block", date, limit: 20000 });
-  const outcomes = queryEvents({ type: "blocked_outcome",   date, limit: 20000 })
+  const blocks   = await queryEvents({ type: "spread_edge_block", date, limit: 20000 });
+  const outcomes = (await queryEvents({ type: "blocked_outcome",   date, limit: 20000 }))
     .filter(o => o.data.blockType === "spread_edge_block");
 
   const outcomeBySignal = {};
@@ -522,10 +525,10 @@ app.get("/api/spread-edge-analysis", (req, res) => {
 // Analyzes cooldown_block events: blocked count, direction breakdown, move stats.
 // Direction from lastDirection field (set v39.3+, proxied from lastTradeDirection[symbol]).
 // Subsequent price movement from blocked_outcome events (15-min window).
-app.get("/api/cooldown-analysis", (req, res) => {
+app.get("/api/cooldown-analysis", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
-  const blocks   = queryEvents({ type: "cooldown_block",  date, limit: 20000 });
-  const outcomes = queryEvents({ type: "blocked_outcome", date, limit: 20000 })
+  const blocks   = await queryEvents({ type: "cooldown_block",  date, limit: 20000 });
+  const outcomes = (await queryEvents({ type: "blocked_outcome", date, limit: 20000 }))
     .filter(o => o.data.blockType === "cooldown_block");
 
   const outcomeBySignal = {};
@@ -592,7 +595,7 @@ app.get("/api/cooldown-analysis", (req, res) => {
 });
 
 // ── SSE: GET /api/events/stream ───────────────────────────────────────────────
-app.get("/api/events/stream", (req, res) => {
+app.get("/api/events/stream", async (req, res) => {
   res.writeHead(200, {
     "Content-Type":  "text/event-stream",
     "Cache-Control": "no-cache",
@@ -614,12 +617,12 @@ app.get("/api/events/stream", (req, res) => {
 });
 
 // ── API: GET /api/winrate-analysis ───────────────────────────────────────────
-app.get("/api/winrate-analysis", (req, res) => {
+app.get("/api/winrate-analysis", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
 
-  const opens  = queryEvents({ type: "trade_open",    date, limit: 5000  });
-  const closes = queryEvents({ type: "trade_close",   date, limit: 5000  });
-  const regime = queryEvents({ type: "market_regime", date, limit: 50000 });
+  const opens  = await queryEvents({ type: "trade_open",    date, limit: 5000  });
+  const closes = await queryEvents({ type: "trade_close",   date, limit: 5000  });
+  const regime = await queryEvents({ type: "market_regime", date, limit: 50000 });
 
   const regBySymbol = {};
   for (const r of regime) {
@@ -711,12 +714,12 @@ app.get("/api/winrate-analysis", (req, res) => {
 });
 
 // ── API: GET /api/fingerprints ────────────────────────────────────────────────
-app.get("/api/fingerprints", (req, res) => {
+app.get("/api/fingerprints", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
   const minN = parseInt(req.query.min || "1");
 
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 5000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 5000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 5000 });
 
   const matched = [];
   for (const o of opens) {
@@ -770,10 +773,10 @@ app.get("/api/fingerprints", (req, res) => {
 });
 
 // ── API: GET /api/excursion ───────────────────────────────────────────────────
-app.get("/api/excursion", (req, res) => {
+app.get("/api/excursion", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
 
-  const closes = queryEvents({ type: "trade_close", date, limit: 5000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 5000 });
   const real   = closes.map(c => ({ ...c, oc: classifyOutcome(c.data) }));
   const wins   = real.filter(r => r.oc === "WIN");
   const losses = real.filter(r => r.oc === "LOSS");
@@ -851,11 +854,14 @@ app.get("/api/excursion", (req, res) => {
 // ── API: GET /api/confirmation-lag ───────────────────────────────────────────
 // Counts how often each entry condition is TRUE vs FALSE across all buy/sell checks.
 // Lowest trueRate = most restrictive condition = likely the lag source.
-app.get("/api/confirmation-lag", (req, res) => {
+app.get("/api/confirmation-lag", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
 
-  const checks = queryEvents({ type: "buy_check",  date, limit: 5000 })
-    .concat(queryEvents({ type: "sell_check", date, limit: 5000 }));
+  const [_chkBuy, _chkSell] = await Promise.all([
+    await queryEvents({ type: "buy_check",  date, limit: 5000 }),
+    await queryEvents({ type: "sell_check", date, limit: 5000 }),
+  ]);
+  const checks = _chkBuy.concat(_chkSell);
 
   const conditions = ["trend","candle","ema","strength","m1trend","m1candle","m1prev","m1close"];
   const counts = {};
@@ -887,13 +893,13 @@ app.get("/api/confirmation-lag", (req, res) => {
     conditions:       result,
     mostRestrictive:  result[0]                  || null,
     leastRestrictive: result[result.length - 1]  || null,
-    postEntryFailures: queryEvents({ type: "post_entry_failure", date, limit: 500 }).length,
+    postEntryFailures: await queryEvents({ type: "post_entry_failure", date, limit: 500 }).length,
   });
 });
 
 // ── API: GET /api/regime ──────────────────────────────────────────────────────
-app.get("/api/regime", (req, res) => {
-  const rows = queryEvents({
+app.get("/api/regime", async (req, res) => {
+  const rows = await queryEvents({
     type:   "market_regime",
     symbol: req.query.symbol,
     date:   req.query.date ? parseDate(req.query.date) : undefined,
@@ -905,9 +911,9 @@ app.get("/api/regime", (req, res) => {
 // ── API: GET /api/session-performance ────────────────────────────────────────
 // Aggregates trade_close events by market session (ASIA/LONDON/OVERLAP/NEW_YORK/DEAD_ZONE).
 // Returns win rate, avg profit, avg MFE per session for regime-based analysis.
-app.get("/api/session-performance", (req, res) => {
+app.get("/api/session-performance", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const map = {};
   for (const c of closes) {
@@ -946,9 +952,9 @@ app.get("/api/session-performance", (req, res) => {
 // ── API: GET /api/blocked-outcomes ───────────────────────────────────────────
 // Returns blocked_outcome events for filter effectiveness analysis.
 // Shows whether filtered signals would have been profitable 15 min later.
-app.get("/api/blocked-outcomes", (req, res) => {
+app.get("/api/blocked-outcomes", async (req, res) => {
   const date  = req.query.date ? parseDate(req.query.date) : undefined;
-  const rows  = queryEvents({ type: "blocked_outcome", date, limit: 2000 });
+  const rows  = await queryEvents({ type: "blocked_outcome", date, limit: 2000 });
 
   const byType = {};
   for (const r of rows) {
@@ -974,9 +980,9 @@ app.get("/api/blocked-outcomes", (req, res) => {
 
 // ── API: GET /api/drift ───────────────────────────────────────────────────────
 // Returns recent strategy_drift_alert events for monitoring.
-app.get("/api/drift", (req, res) => {
+app.get("/api/drift", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
-  const rows = queryEvents({ type: "strategy_drift_alert", date, limit: 100 });
+  const rows = await queryEvents({ type: "strategy_drift_alert", date, limit: 100 });
   res.json({ alerts: rows.map(r => ({ ts: r.ts, ...r.data })), total: rows.length });
 });
 
@@ -984,11 +990,11 @@ app.get("/api/drift", (req, res) => {
 // Aggregated decision intelligence — best/worst session, symbol, fingerprint,
 // exit efficiency, filter cost analysis, regime performance.
 // Powers the INSIGHTS tab in the dashboard.
-app.get("/api/insights", (req, res) => {
+app.get("/api/insights", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const closes = queryEvents({ type: "trade_close",  date, limit: 10000 });
-  const opens  = queryEvents({ type: "trade_open",   date, limit: 10000 });
-  const blocks = queryEvents({ date, limit: 20000 })
+  const closes = await queryEvents({ type: "trade_close",  date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",   date, limit: 10000 });
+  const blocks = await queryEvents({ date, limit: 20000 })
     .filter(e => e.type.endsWith("_block") && !e.type.startsWith("signal_"));
 
   // ── Session performance ───────────────────────────────────────────────────
@@ -1100,10 +1106,10 @@ app.get("/api/insights", (req, res) => {
   const bestVolRegime    = [...volStats].sort((a, b) => b.winRate - a.winRate)[0] || null;
 
   // ── Post-entry failures ───────────────────────────────────────────────────
-  const postEntryFailures = queryEvents({ type: "post_entry_failure", date, limit: 500 }).length;
+  const postEntryFailures = await queryEvents({ type: "post_entry_failure", date, limit: 500 }).length;
 
   // ── Drift alerts ──────────────────────────────────────────────────────────
-  const driftAlerts = queryEvents({ type: "strategy_drift_alert", date, limit: 10 });
+  const driftAlerts = await queryEvents({ type: "strategy_drift_alert", date, limit: 10 });
 
   res.json({
     summary: {
@@ -1135,10 +1141,10 @@ app.get("/api/insights", (req, res) => {
 // Segments all closed trades by m1TrendAtEntry boolean from trade_open events.
 // Group A: m1trend=true (baseline)   Group B: m1trend=false (experiment)
 // Compare win rate, avg pips, avg MFE, avg MAE, exit efficiency for both groups.
-app.get("/api/m1trend-experiment", (req, res) => {
+app.get("/api/m1trend-experiment", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   // Index opens by signalId for fast lookup
   const openMap = {};
@@ -1195,10 +1201,10 @@ app.get("/api/m1trend-experiment", (req, res) => {
 // ── API: GET /api/almost-trades ───────────────────────────────────────────────
 // Returns per-condition stats aggregated from almost_trade_outcome events.
 // "Almost trades" = setups passing >= 4 of 9 gate conditions that were NOT executed.
-app.get("/api/almost-trades", (req, res) => {
+app.get("/api/almost-trades", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
-  const outcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
-  const signals  = queryEvents({ type: "almost_trade",         date, limit: 10000 });
+  const outcomes = await queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+  const signals  = await queryEvents({ type: "almost_trade",         date, limit: 10000 });
 
   const condMap = {};
   for (const o of outcomes) {
@@ -1263,9 +1269,9 @@ app.get("/api/almost-trades", (req, res) => {
 // Blocked Winners Analysis V2 — per-condition BUY / SELL split.
 // For each failing gate condition: shows whether it blocks BUY setups,
 // SELL setups, or both, and how far price moved afterward.
-app.get("/api/blocked-winners-v2", (req, res) => {
+app.get("/api/blocked-winners-v2", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
-  const outcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+  const outcomes = await queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
 
   const condAll  = {};
   const condBuy  = {};
@@ -1315,14 +1321,14 @@ app.get("/api/blocked-winners-v2", (req, res) => {
 // Per-condition pass / fail stats linked to trade outcomes via signalId.
 // For each of the 9 gate conditions: pass count, fail count, win rate,
 // avg pips, avg MFE, avg MAE — computed only for evaluations that led to a trade.
-app.get("/api/condition-performance", (req, res) => {
+app.get("/api/condition-performance", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
   const checks = [
-    ...queryEvents({ type: "buy_check",  date, limit: 10000 }),
-    ...queryEvents({ type: "sell_check", date, limit: 10000 }),
+    ...await queryEvents({ type: "buy_check",  date, limit: 10000 }),
+    ...await queryEvents({ type: "sell_check", date, limit: 10000 }),
   ];
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const closeBySignal = {};
   for (const c of closes) {
@@ -1333,7 +1339,7 @@ app.get("/api/condition-performance", (req, res) => {
 
   // BLOCKED WINNERS % — join buy/sell_check.signalId → almost_trade_outcome.signalId
   // When condition k=false AND signal produced an almost_trade_outcome with reached4p → blocked winner
-  const atOutcomes = queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
+  const atOutcomes = await queryEvents({ type: "almost_trade_outcome", date, limit: 10000 });
   const atBySignal = {};
   for (const o of atOutcomes) {
     const sid = o.data.signalId;
@@ -1396,10 +1402,10 @@ app.get("/api/condition-performance", (req, res) => {
 // Project Snowball — M5Trend hard-block removal experiment.
 // Segments all closed trades by m5TrendAtEntry boolean from trade_open events.
 // Group A: m5trend=true (baseline)   Group B: m5trend=false (experiment)
-app.get("/api/m5trend-experiment", (req, res) => {
+app.get("/api/m5trend-experiment", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const openMap = {};
   for (const o of opens) {
@@ -1456,10 +1462,10 @@ app.get("/api/m5trend-experiment", (req, res) => {
 // Project Snowball — M1Close hard-block removal experiment.
 // Segments all closed trades by m1CloseAtEntry boolean from trade_open events.
 // Group A: m1close=true (baseline)   Group B: m1close=false (experiment)
-app.get("/api/m1close-experiment", (req, res) => {
+app.get("/api/m1close-experiment", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const openMap = {};
   for (const o of opens) {
@@ -1515,10 +1521,10 @@ app.get("/api/m1close-experiment", (req, res) => {
 // ── API: GET /api/gate-experiment ─────────────────────────────────────────────
 // Project Snowball — Gate v3 relaxed path tracking.
 // Segments trades by entryGate: "HARD" (6 conditions) vs "RELAXED" (passScore>=6 + anchor).
-app.get("/api/gate-experiment", (req, res) => {
+app.get("/api/gate-experiment", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const openMap = {};
   for (const o of opens) {
@@ -1575,11 +1581,11 @@ app.get("/api/gate-experiment", (req, res) => {
 // Module 1: Per-condition failure analysis — which conditions were FALSE on losing post-entry trades.
 // Module 4: Failure pattern clustering   — unique condition patterns on LOSS trades, sorted by count.
 // Module 5: Session failure analysis     — post-entry failures grouped by trading session.
-app.get("/api/post-entry-failures", (req, res) => {
+app.get("/api/post-entry-failures", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const pefs   = queryEvents({ type: "post_entry_failure", date, limit: 5000 });
-  const opens  = queryEvents({ type: "trade_open",         date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close",        date, limit: 10000 });
+  const pefs   = await queryEvents({ type: "post_entry_failure", date, limit: 5000 });
+  const opens  = await queryEvents({ type: "trade_open",         date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close",        date, limit: 10000 });
 
   const openMap  = {};
   const closeMap = {};
@@ -1673,10 +1679,10 @@ app.get("/api/post-entry-failures", (req, res) => {
 // ── API: GET /api/trade-quality ────────────────────────────────────────────────
 // Module 2: Trade Quality Score — segments closed trades by passCount (# of 9 conditions met at entry).
 // Compares win rate, avg pips, avg MFE, avg MAE across 9/9 vs 8/9 vs 7/9 etc.
-app.get("/api/trade-quality", (req, res) => {
+app.get("/api/trade-quality", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
-  const opens  = queryEvents({ type: "trade_open",  date, limit: 10000 });
-  const closes = queryEvents({ type: "trade_close", date, limit: 10000 });
+  const opens  = await queryEvents({ type: "trade_open",  date, limit: 10000 });
+  const closes = await queryEvents({ type: "trade_close", date, limit: 10000 });
 
   const openMap = {};
   for (const o of opens) {
@@ -1720,34 +1726,34 @@ app.get("/api/trade-quality", (req, res) => {
 // ── API: GET /api/pipeline-audit ─────────────────────────────────────────────
 // Full decision pipeline waterfall: counts at every stage + recent rejections.
 // Answers: WHY Checks=0, WHERE signals disappear, WHAT the terminal blocker is.
-app.get("/api/pipeline-audit", (req, res) => {
+app.get("/api/pipeline-audit", async (req, res) => {
   const date  = req.query.date ? parseDate(req.query.date) : undefined;
   const lim   = 50000;
 
   // ── Stage counts ────────────────────────────────────────────────────────
-  const detected    = queryEvents({ type: "signal_detected",          date, limit: lim }).length;
-  const cooldown    = queryEvents({ type: "cooldown_block",            date, limit: lim }).length;
-  const openTrade   = queryEvents({ type: "open_trade_block",          date, limit: lim }).length;
-  const correlation = queryEvents({ type: "correlation_block",         date, limit: lim }).length;
-  const disabled    = queryEvents({ type: "symbol_disabled_block",     date, limit: lim }).length;
-  const spread      = queryEvents({ type: "spread_block",              date, limit: lim }).length;
-  const candleRows  = queryEvents({ type: "candle_block",              date, limit: lim });
+  const detected    = await queryEvents({ type: "signal_detected",          date, limit: lim }).length;
+  const cooldown    = await queryEvents({ type: "cooldown_block",            date, limit: lim }).length;
+  const openTrade   = await queryEvents({ type: "open_trade_block",          date, limit: lim }).length;
+  const correlation = await queryEvents({ type: "correlation_block",         date, limit: lim }).length;
+  const disabled    = await queryEvents({ type: "symbol_disabled_block",     date, limit: lim }).length;
+  const spread      = await queryEvents({ type: "spread_block",              date, limit: lim }).length;
+  const candleRows  = await queryEvents({ type: "candle_block",              date, limit: lim });
   const candleM5    = candleRows.filter(e => e.data.reason === "m5_insufficient").length;
   const candleM1    = candleRows.filter(e => e.data.reason === "m1_insufficient").length;
-  const exhaustion  = queryEvents({ type: "exhaustion_block",          date, limit: lim }).length;
-  const spreadEdge  = queryEvents({ type: "spread_edge_block",         date, limit: lim }).length;
-  const pullback    = queryEvents({ type: "pullback_block",            date, limit: lim }).length;
-  const margin      = queryEvents({ type: "margin_block",              date, limit: lim }).length;
-  const defense     = queryEvents({ type: "defense_mode_skip",         date, limit: lim }).length;
+  const exhaustion  = await queryEvents({ type: "exhaustion_block",          date, limit: lim }).length;
+  const spreadEdge  = await queryEvents({ type: "spread_edge_block",         date, limit: lim }).length;
+  const pullback    = await queryEvents({ type: "pullback_block",            date, limit: lim }).length;
+  const margin      = await queryEvents({ type: "margin_block",              date, limit: lim }).length;
+  const defense     = await queryEvents({ type: "defense_mode_skip",         date, limit: lim }).length;
 
-  const buyChecks   = queryEvents({ type: "buy_check",                 date, limit: lim }).length;
-  const sellChecks  = queryEvents({ type: "sell_check",                date, limit: lim }).length;
+  const buyChecks   = await queryEvents({ type: "buy_check",                 date, limit: lim }).length;
+  const sellChecks  = await queryEvents({ type: "sell_check",                date, limit: lim }).length;
   const checksTotal = buyChecks;  // one per eval (same as sellChecks)
 
-  const gateBlocks  = queryEvents({ type: "entry_blocked_at_gate",     date, limit: lim }).length;
-  const almostN     = queryEvents({ type: "almost_trade",              date, limit: lim }).length;
-  const tradeOpens  = queryEvents({ type: "trade_open",                date, limit: lim }).length;
-  const closes      = queryEvents({ type: "trade_close",               date, limit: lim });
+  const gateBlocks  = await queryEvents({ type: "entry_blocked_at_gate",     date, limit: lim }).length;
+  const almostN     = await queryEvents({ type: "almost_trade",              date, limit: lim }).length;
+  const tradeOpens  = await queryEvents({ type: "trade_open",                date, limit: lim }).length;
+  const closes      = await queryEvents({ type: "trade_close",               date, limit: lim });
   const tradeCloses = closes.length;
 
   // Outcome taxonomy
@@ -1810,11 +1816,11 @@ app.get("/api/pipeline-audit", (req, res) => {
   // ── Recent 20 rejected opportunities ─────────────────────────────────────
   // Union: signals that passed spread_edge but didn't trade.
   // Sources: pullback_block, margin_block, defense_mode_skip, entry_blocked_at_gate, almost_trade
-  const pullbackRows  = queryEvents({ type: "pullback_block",           date, limit: 500 });
-  const marginRows    = queryEvents({ type: "margin_block",             date, limit: 500 });
-  const defenseRows   = queryEvents({ type: "defense_mode_skip",        date, limit: 500 });
-  const gateBlockRows = queryEvents({ type: "entry_blocked_at_gate",    date, limit: 500 });
-  const almostRows    = queryEvents({ type: "almost_trade",             date, limit: 500 });
+  const pullbackRows  = await queryEvents({ type: "pullback_block",           date, limit: 500 });
+  const marginRows    = await queryEvents({ type: "margin_block",             date, limit: 500 });
+  const defenseRows   = await queryEvents({ type: "defense_mode_skip",        date, limit: 500 });
+  const gateBlockRows = await queryEvents({ type: "entry_blocked_at_gate",    date, limit: 500 });
+  const almostRows    = await queryEvents({ type: "almost_trade",             date, limit: 500 });
 
   const rejected = [
     ...pullbackRows.map(e => ({
@@ -1872,7 +1878,7 @@ app.get("/api/pipeline-audit", (req, res) => {
   // ── Telemetry taxonomy ───────────────────────────────────────────────────
   const taxonomy = {
     SIGNAL_DETECTED:   { event: "signal_detected",   count: detected,    note: "every strategy() call" },
-    SIGNAL_FILTERED:   { event: "signal_filtered",   count: queryEvents({ type: "signal_filtered", date, limit: lim }).length, note: "sub-event on every block" },
+    SIGNAL_FILTERED:   { event: "signal_filtered",   count: await queryEvents({ type: "signal_filtered", date, limit: lim }).length, note: "sub-event on every block" },
     ORDER_CREATED:     { event: "N/A",               count: 0,           note: "market orders — no pending-order creation phase" },
     ORDER_CANCELLED:   { event: "N/A",               count: 0,           note: "no pending orders used" },
     ORDER_EXPIRED:     { event: "N/A",               count: 0,           note: "no pending orders used" },
@@ -1921,10 +1927,10 @@ app.get("/api/pipeline-audit", (req, res) => {
 // Queries weak_relaxed_no_trend events (immediate log) and almost_trade_outcome
 // events where failedConditions contains "weak_relaxed_no_trend" (15-min outcome).
 // Returns: total rejected, by-symbol, by-session, would_have_won%, avg_move.
-app.get("/api/weak-relaxed", (req, res) => {
+app.get("/api/weak-relaxed", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
-  const rejected = queryEvents({ type: "weak_relaxed_no_trend",   date, limit: 10000 });
-  const outcomes = queryEvents({ type: "almost_trade_outcome",     date, limit: 10000 })
+  const rejected = await queryEvents({ type: "weak_relaxed_no_trend",   date, limit: 10000 });
+  const outcomes = await queryEvents({ type: "almost_trade_outcome",     date, limit: 10000 })
     .filter(o => Array.isArray(o.data.failedConditions) && o.data.failedConditions.includes("weak_relaxed_no_trend"));
 
   // ── per-symbol aggregation
@@ -2008,11 +2014,11 @@ app.get("/api/weak-relaxed", (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Shared helper: build closeMap from trade_close events ─────────────────────
-function buildCloseMap(limit = 5000) {
+async function buildCloseMap(limit = 5000) {
   try {
-    return db.prepare(
-      "SELECT data FROM events WHERE type='trade_close' ORDER BY id DESC LIMIT ?"
-    ).all(limit).reduce((m, r) => {
+    return (await db.all(
+      "SELECT data FROM events WHERE type='trade_close' ORDER BY id DESC LIMIT ?", limit
+    )).reduce((m, r) => {
       try { const d = JSON.parse(r.data); if (d.signalId) m[d.signalId] = d; } catch (_) {}
       return m;
     }, {});
@@ -2077,13 +2083,13 @@ function computeVirtualPerf(labEvents, closeMap) {
 }
 
 // ── GET /api/lab/overview ─────────────────────────────────────────────────────
-app.get("/api/lab/overview", (req, res) => {
+app.get("/api/lab/overview", async (req, res) => {
   const limit = 5000;
   let rowsA = [], rowsB = [], rowsC = [], rowsComp = [];
-  try { rowsA    = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a'    ORDER BY id DESC LIMIT ?").all(limit); } catch (_) {}
-  try { rowsB    = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b'    ORDER BY id DESC LIMIT ?").all(limit); } catch (_) {}
-  try { rowsC    = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c'    ORDER BY id DESC LIMIT ?").all(limit); } catch (_) {}
-  try { rowsComp = db.prepare("SELECT data FROM events WHERE type='lab_comparison'  ORDER BY id DESC LIMIT ?").all(limit); } catch (_) {}
+  try { rowsA    = await db.all("SELECT data FROM events WHERE type='lab_shadow_a'    ORDER BY id DESC LIMIT ?", limit); } catch (_) {}
+  try { rowsB    = await db.all("SELECT data FROM events WHERE type='lab_shadow_b'    ORDER BY id DESC LIMIT ?", limit); } catch (_) {}
+  try { rowsC    = await db.all("SELECT data FROM events WHERE type='lab_shadow_c'    ORDER BY id DESC LIMIT ?", limit); } catch (_) {}
+  try { rowsComp = await db.all("SELECT data FROM events WHERE type='lab_comparison'  ORDER BY id DESC LIMIT ?", limit); } catch (_) {}
 
   const parseAll = rows => rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
   const dA = parseAll(rowsA);
@@ -2112,7 +2118,7 @@ app.get("/api/lab/overview", (req, res) => {
   // Last processed timestamp
   let lastTs = null;
   try {
-    const row = db.prepare("SELECT ts FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 1").get();
+    const row = await db.get("SELECT ts FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 1");
     if (row) lastTs = row.ts;
   } catch (_) {}
 
@@ -2128,9 +2134,9 @@ app.get("/api/lab/overview", (req, res) => {
 });
 
 // ── GET /api/lab/shadow-a ─────────────────────────────────────────────────────
-app.get("/api/lab/shadow-a", (req, res) => {
+app.get("/api/lab/shadow-a", async (req, res) => {
   let rows = [];
-  try { rows = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 1000").all(); } catch (_) {}
+  try { rows = await db.all("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 1000"); } catch (_) {}
   const decisions = rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
   // Score distribution buckets: 0-20, 20-40, 40-60, 60-80, 80-100
@@ -2196,9 +2202,9 @@ app.get("/api/lab/shadow-a", (req, res) => {
 });
 
 // ── GET /api/lab/shadow-b ─────────────────────────────────────────────────────
-app.get("/api/lab/shadow-b", (req, res) => {
+app.get("/api/lab/shadow-b", async (req, res) => {
   let rows = [];
-  try { rows = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 1000").all(); } catch (_) {}
+  try { rows = await db.all("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 1000"); } catch (_) {}
   const decisions = rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
   const states = {};
@@ -2235,9 +2241,9 @@ app.get("/api/lab/shadow-b", (req, res) => {
 });
 
 // ── GET /api/lab/shadow-c ─────────────────────────────────────────────────────
-app.get("/api/lab/shadow-c", (req, res) => {
+app.get("/api/lab/shadow-c", async (req, res) => {
   let rows = [];
-  try { rows = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 1000").all(); } catch (_) {}
+  try { rows = await db.all("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 1000"); } catch (_) {}
   const decisions = rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
   const confBreak = { HIGH: 0, MEDIUM: 0, LOW: 0, NONE: 0 };
@@ -2273,9 +2279,9 @@ app.get("/api/lab/shadow-c", (req, res) => {
 });
 
 // ── GET /api/lab/comparison ───────────────────────────────────────────────────
-app.get("/api/lab/comparison", (req, res) => {
+app.get("/api/lab/comparison", async (req, res) => {
   let rows = [];
-  try { rows = db.prepare("SELECT data FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 1000").all(); } catch (_) {}
+  try { rows = await db.all("SELECT data FROM events WHERE type='lab_comparison' ORDER BY id DESC LIMIT 1000"); } catch (_) {}
   const comps = rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
   const withDecisions = comps.filter(c => c.decidedEngines > 0);
@@ -2330,14 +2336,14 @@ app.get("/api/lab/comparison", (req, res) => {
 });
 
 // ── GET /api/lab/virtual-performance ─────────────────────────────────────────
-app.get("/api/lab/virtual-performance", (req, res) => {
+app.get("/api/lab/virtual-performance", async (req, res) => {
   let rawA = [], rawB = [], rawC = [], rawD = [];
-  try { rawA = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawB = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawC = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawD = db.prepare("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
+  try { rawA = await db.all("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawB = await db.all("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawC = await db.all("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawD = await db.all("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
 
-  const closeMap = buildCloseMap(10000);
+  const closeMap = await buildCloseMap(10000);
 
   // Live bot stats (from trade_close events directly)
   const allCloses = Object.values(closeMap);
@@ -2367,14 +2373,14 @@ app.get("/api/lab/virtual-performance", (req, res) => {
 });
 
 // ── GET /api/lab/engine-ranking ───────────────────────────────────────────────
-app.get("/api/lab/engine-ranking", (req, res) => {
+app.get("/api/lab/engine-ranking", async (req, res) => {
   let rawA = [], rawB = [], rawC = [], rawD = [];
-  try { rawA = db.prepare("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawB = db.prepare("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawC = db.prepare("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
-  try { rawD = db.prepare("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000").all(); } catch (_) {}
+  try { rawA = await db.all("SELECT data FROM events WHERE type='lab_shadow_a' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawB = await db.all("SELECT data FROM events WHERE type='lab_shadow_b' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawC = await db.all("SELECT data FROM events WHERE type='lab_shadow_c' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
+  try { rawD = await db.all("SELECT data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 5000"); } catch (_) {}
 
-  const closeMap = buildCloseMap(10000);
+  const closeMap = await buildCloseMap(10000);
 
   const perfA = computeVirtualPerf(rawA, closeMap);
   const perfB = computeVirtualPerf(rawB, closeMap);
@@ -2418,9 +2424,9 @@ app.get("/api/lab/engine-ranking", (req, res) => {
 });
 
 // ── GET /api/shadow/status ────────────────────────────────────────────────────
-app.get("/api/shadow/status", (req, res) => {
-  const mem  = getShadowMemoryStats();
-  const dbSt = getDbStats();
+app.get("/api/shadow/status", async (req, res) => {
+  const mem  = await getShadowMemoryStats();
+  const dbSt = await getDbStats();
   res.json({
     generated:     new Date().toISOString(),
     shadowMode:    mem.mode,
@@ -2456,7 +2462,7 @@ app.get("/api/shadow/status", (req, res) => {
 });
 
 // ── POST /api/shadow/mode ─────────────────────────────────────────────────────
-app.post("/api/shadow/mode", express.json(), (req, res) => {
+app.post("/api/shadow/mode", express.json(), async (req, res) => {
   const { mode } = req.body || {};
   if (!mode) return res.status(400).json({ error: "mode required: OBSERVE or GATE" });
   try {
@@ -2468,29 +2474,29 @@ app.post("/api/shadow/mode", express.json(), (req, res) => {
 });
 
 // ── POST /api/system/backup ───────────────────────────────────────────────────
-app.post("/api/system/backup", (_req, res) => {
-  const result = backupDatabase();
+app.post("/api/system/backup", async (_req, res) => {
+  const result = await backupDatabase();
   if (result.ok) res.json({ ok: true, path: result.path });
   else           res.status(500).json({ ok: false, error: result.error });
 });
 
 // ── GET /api/lab/unified-report ───────────────────────────────────────────────
-app.get("/api/lab/unified-report", (req, res) => {
+app.get("/api/lab/unified-report", async (req, res) => {
   const limit = 2000;
   const parse = rows => rows.map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
   let dA = [], dB = [], dC = [], dD = [], dComp = [], dGate = [];
-  try { dA    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_a'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
-  try { dB    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_b'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
-  try { dC    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_c'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
-  try { dD    = parse(db.prepare("SELECT data FROM events WHERE type='lab_shadow_d'    ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
-  try { dComp = parse(db.prepare("SELECT data FROM events WHERE type='lab_comparison'  ORDER BY id DESC LIMIT ?").all(limit)); } catch (_) {}
-  try { dGate = parse(db.prepare("SELECT data FROM events WHERE type='shadow_gate_eval' ORDER BY id DESC LIMIT 500").all());    } catch (_) {}
+  try { dA    = parse(await db.all("SELECT data FROM events WHERE type='lab_shadow_a'    ORDER BY id DESC LIMIT ?", limit)); } catch (_) {}
+  try { dB    = parse(await db.all("SELECT data FROM events WHERE type='lab_shadow_b'    ORDER BY id DESC LIMIT ?", limit)); } catch (_) {}
+  try { dC    = parse(await db.all("SELECT data FROM events WHERE type='lab_shadow_c'    ORDER BY id DESC LIMIT ?", limit)); } catch (_) {}
+  try { dD    = parse(await db.all("SELECT data FROM events WHERE type='lab_shadow_d'    ORDER BY id DESC LIMIT ?", limit)); } catch (_) {}
+  try { dComp = parse(await db.all("SELECT data FROM events WHERE type='lab_comparison'  ORDER BY id DESC LIMIT ?", limit)); } catch (_) {}
+  try { dGate = parse(await db.all("SELECT data FROM events WHERE type='shadow_gate_eval' ORDER BY id DESC LIMIT 500")); } catch (_) {}
 
-  const closeMap = buildCloseMap(5000);
+  const closeMap = await buildCloseMap(5000);
   const allCloses = Object.values(closeMap);
 
-  const mem = getShadowMemoryStats();
+  const mem = await getShadowMemoryStats();
 
   const snapshot = (arr) => {
     if (!arr.length) return null;
@@ -2534,9 +2540,9 @@ app.get("/api/lab/unified-report", (req, res) => {
 });
 
 // ── GET /api/shadowm/status ───────────────────────────────────────────────────
-app.get("/api/shadowm/status", (req, res) => {
+app.get("/api/shadowm/status", async (req, res) => {
   try {
-    const stats = getShadowMStats();
+    const stats = await getShadowMStats();
     res.json({ ok: true, module: "Shadow M", mode: "OBSERVE", stats });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -2544,11 +2550,11 @@ app.get("/api/shadowm/status", (req, res) => {
 });
 
 // ── GET /api/shadowm/trades ───────────────────────────────────────────────────
-app.get("/api/shadowm/trades", (req, res) => {
+app.get("/api/shadowm/trades", async (req, res) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit  || "100", 10), 500);
     const offset = parseInt(req.query.offset || "0", 10);
-    const trades = getShadowMTrades({ limit, offset });
+    const trades = await getShadowMTrades({ limit, offset });
     res.json({ ok: true, trades, total: trades.length });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -2556,9 +2562,9 @@ app.get("/api/shadowm/trades", (req, res) => {
 });
 
 // ── GET /api/shadowm/active ───────────────────────────────────────────────────
-app.get("/api/shadowm/active", (req, res) => {
+app.get("/api/shadowm/active", async (req, res) => {
   try {
-    const trades = getShadowMTrades({ limit: 50, openOnly: true });
+    const trades = await getShadowMTrades({ limit: 50, openOnly: true });
     res.json({ ok: true, active: trades.length, trades });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -2567,10 +2573,10 @@ app.get("/api/shadowm/active", (req, res) => {
 
 // ── GET /api/shadowm/dashboard ────────────────────────────────────────────────
 // Used by the Exit Lab UI — stats + recent closed trades in one call.
-app.get("/api/shadowm/dashboard", (req, res) => {
+app.get("/api/shadowm/dashboard", async (req, res) => {
   try {
-    const stats  = getShadowMStats();
-    const trades = getShadowMTrades({ limit: 50 });
+    const stats  = await getShadowMStats();
+    const trades = await getShadowMTrades({ limit: 50 });
     res.json({ ok: true, stats, trades });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -2578,10 +2584,10 @@ app.get("/api/shadowm/dashboard", (req, res) => {
 });
 
 // ── GET /api/lab/shadow-d ─────────────────────────────────────────────────────
-app.get("/api/lab/shadow-d", (req, res) => {
+app.get("/api/lab/shadow-d", async (req, res) => {
   let rows = [];
   try {
-    rows = db.prepare("SELECT ts,data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 2000").all();
+    rows = await db.all("SELECT ts,data FROM events WHERE type='lab_shadow_d' ORDER BY id DESC LIMIT 2000");
   } catch (_) {}
 
   const all = rows.map(r => {
@@ -2649,15 +2655,14 @@ app.get("/api/lab/shadow-d", (req, res) => {
 });
 
 // ── root → dashboard ──────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
+app.get("/", async (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // ── start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  const { DATA_DIR } = require("./index");
-  console.log(`[SERVER] API on :${PORT}  DB: ${DATA_DIR}/events.db`);
+  console.log(`[SERVER] API on :${PORT}  DB: ${DB_PATH}`);
   startBot();
   shadowLab.start();
-  shadowM.start();
+  shadowM.start().catch(err => console.error("[SERVER] shadowM.start:", err.message));
 });
