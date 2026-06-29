@@ -17,7 +17,7 @@
  * Tables are created in _initTables(), called from start().
  */
 
-const { db, emitter, logEvent } = require("./index");
+const { db, logEvent } = require("./index");
 
 // ── SQL constants (replaces prepared statements — adapter handles conversion) ──
 
@@ -248,8 +248,11 @@ function _toRow(t) {
 
 class ShadowM {
   constructor() {
-    this._active  = new Map();  // signalId → tracking object
-    this._started = false;
+    this._active    = new Map();  // signalId → tracking object (live open trades)
+    this._started   = false;
+    this._lastId    = 0;          // highest events.id polled so far
+    this._knownSids = new Set();  // all signalIds ever opened — prevents duplicate open on replay
+    this._polling   = false;      // guard against concurrent poll ticks
   }
 
   async start() {
@@ -257,46 +260,79 @@ class ShadowM {
     this._started = true;
 
     await _initTables();
-    console.log(`[SHADOW M DIAG] Tables ready. PID=${process.pid} — registering emitter listener`);
-
-    emitter.on("event", (row) => {
-      console.log(`[SHADOW M DIAG] emitter fired: type=${row.type} PID=${process.pid}`);
-      (async () => {
-        try {
-          switch (row.type) {
-            case "trade_open":           await this._onOpen(row.data);     break;
-            case "trade_state_snapshot": await this._onSnapshot(row.data); break;
-            case "trade_close":          await this._onClose(row.data);    break;
-          }
-        } catch (err) {
-          console.error("[SHADOW M] Handler error:", err.message);
-        }
-      })();
-    });
+    console.log(`[SHADOW M DIAG] Tables ready. PID=${process.pid} — starting DB polling`);
 
     await this._restore();
 
-    console.log(`[SHADOW M] Exit Lab online — event-driven, OBSERVE only | PID=${process.pid}`);
+    // DB polling — replaces in-process emitter.
+    // Bot runs as a child process (spawn); emitter is process-local and never crosses that boundary.
+    // Polling the shared PostgreSQL table is the only reliable cross-process mechanism.
+    setInterval(() => this._poll().catch(err => console.error("[SHADOW M] Poll error:", err.message)), 5000);
+
+    console.log(`[SHADOW M] Exit Lab online — DB-polling, OBSERVE only | PID=${process.pid} | lastId=${this._lastId} | active=${this._active.size} | known=${this._knownSids.size}`);
     logEvent({ type: "shadowm_startup", module: "exit_lab", restored: this._active.size });
   }
 
-  // ── Restore in-flight trades after process restart ────────────────────────
+  // ── Restore state after process restart ──────────────────────────────────
   async _restore() {
     try {
+      // 1. Load all known signalIds (open + closed) from shadowm_trades
       const rows = await db.all(
-        "SELECT data FROM shadowm_trades WHERE exit_time IS NULL ORDER BY id ASC"
+        "SELECT signal_id, exit_time, data FROM shadowm_trades ORDER BY id ASC"
       );
       for (const row of rows) {
-        try {
-          const t = JSON.parse(row.data);
-          if (t?.signalId) this._active.set(t.signalId, t);
-        } catch (_) {}
+        this._knownSids.add(row.signal_id);
+        if (!row.exit_time) {
+          try {
+            const t = JSON.parse(row.data);
+            if (t?.signalId) this._active.set(t.signalId, t);
+          } catch (_) {}
+        }
       }
-      if (this._active.size > 0) {
-        console.log(`[SHADOW M] Restored ${this._active.size} in-progress trade(s)`);
+
+      // 2. Recover polling cursor — stored by Shadow M as type='shadowm_cursor' in events table
+      //    If no cursor exists (first deployment), _lastId stays 0 → full historical catchup
+      const cursorRow = await db.get(
+        "SELECT data FROM events WHERE type='shadowm_cursor' ORDER BY id DESC LIMIT 1"
+      );
+      if (cursorRow) {
+        const d = typeof cursorRow.data === "string" ? JSON.parse(cursorRow.data) : cursorRow.data;
+        this._lastId = typeof d?.lastId === "number" ? d.lastId : 0;
       }
+
+      console.log(`[SHADOW M] Restore: active=${this._active.size} knownSids=${this._knownSids.size} lastId=${this._lastId}`);
     } catch (err) {
       console.error("[SHADOW M] Restore error:", err.message);
+    }
+  }
+
+  // ── DB polling loop — queries events table every 5 s for new trade events ─
+  async _poll() {
+    if (this._polling) return;
+    this._polling = true;
+    try {
+      const rows = await db.all(
+        "SELECT id, type, data FROM events WHERE id > ? AND type IN ('trade_open','trade_state_snapshot','trade_close') ORDER BY id ASC LIMIT 500",
+        this._lastId
+      );
+
+      let newOpens = 0, newSnaps = 0, newCloses = 0;
+      for (const row of rows) {
+        const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        console.log(`[SHADOW M DIAG] Poll id=${row.id} type=${row.type} signalId=${data.signalId || "?"}`);
+        if (row.type === "trade_open")           { await this._onOpen(data);     newOpens++;  }
+        if (row.type === "trade_state_snapshot") { await this._onSnapshot(data); newSnaps++;  }
+        if (row.type === "trade_close")          { await this._onClose(data);    newCloses++; }
+        this._lastId = row.id;
+      }
+
+      if (rows.length > 0) {
+        console.log(`[SHADOW M DIAG] Poll done: +${newOpens} opens +${newSnaps} snaps +${newCloses} closes | lastId=${this._lastId} | active=${this._active.size}`);
+        // Persist cursor so restart doesn't replay from scratch
+        logEvent({ type: "shadowm_cursor", lastId: this._lastId, newOpens, newSnaps, newCloses });
+      }
+    } finally {
+      this._polling = false;
     }
   }
 
@@ -305,6 +341,10 @@ class ShadowM {
     const signalId = event.signalId;
     console.log(`[SHADOW M DIAG] _onOpen called: signalId=${signalId} symbol=${event.symbol}`);
     if (!signalId) return;
+    if (this._knownSids.has(signalId)) {
+      console.log(`[SHADOW M DIAG] _onOpen skipped (already known): ${signalId}`);
+      return;
+    }
 
     const tracking = {
       signalId,
@@ -328,8 +368,10 @@ class ShadowM {
       strategies:        _newStrategies(),
     };
 
+    this._knownSids.add(signalId);
     this._active.set(signalId, tracking);
     await db.run(_UPSERT_SQL, _toRow(tracking));
+    console.log(`[SHADOW M DIAG] shadowm_trades UPSERT OK: signalId=${signalId} symbol=${tracking.symbol} | tradesObserved(open)=${this._active.size}`);
 
     logEvent({ type: "shadowm_open", symbol: tracking.symbol, signalId, side: tracking.side });
     console.log(`[SHADOW M] Tracking: ${tracking.symbol} ${(tracking.side || "?").toUpperCase()} | id:${signalId}`);
@@ -384,6 +426,7 @@ class ShadowM {
 
     _rankStrategies(t);
     await db.run(_UPSERT_SQL, _toRow(t));
+    console.log(`[SHADOW M DIAG] shadowm_trades CLOSE OK: signalId=${signalId} profitLive=${t.profitLive?.toFixed(1)} best="${t.bestStrategy}" saved=${t.profitSaved?.toFixed(1)}`);
 
     logEvent({
       type:            "shadowm_close",
