@@ -12,7 +12,7 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") }
 const express    = require("express");
 const path       = require("path");
 const { spawn }  = require("child_process");
-const { db, emitter, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT, DB_PATH, USE_PG } = require("./index");
+const { db, emitter, logEvent, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT, DB_PATH, USE_PG } = require("./index");
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
 const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = require("./shadowm");
 
@@ -31,11 +31,10 @@ const live = {
   lastSeen:     null,
 };
 
-// ── Restore live state from DB on startup ─────────────────────────────────────
-// After Railway restart the live object starts empty.  Reconstruct daily trade
-// count and any positions that were open before the restart so the dashboard
-// panel is not blank until the bot logs its next stdout tick.
-(async function _restoreLiveState() {
+// ── Restore live state from DB ────────────────────────────────────────────────
+// Callable at startup AND after each bot auto-restart so the dashboard never
+// shows stale ghost positions from a previous bot lifecycle.
+async function restoreLiveState() {
   try {
     const today = new Date().toISOString().slice(0, 10);
     const [opens, closes, dailyRow] = await Promise.all([
@@ -44,8 +43,8 @@ const live = {
       db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_open' AND substr(ts,1,10)=?", today),
     ]);
 
-    if (dailyRow?.n > 0) {
-      live.dailyTrades = dailyRow.n;
+    if (dailyRow?.n >= 0) {
+      live.dailyTrades = dailyRow.n ?? 0;
       console.log(`[SERVER] Restored dailyTrades=${live.dailyTrades} from DB (${today})`);
     }
 
@@ -53,6 +52,9 @@ const live = {
     for (const r of closes) {
       try { const d = JSON.parse(r.data); if (d.signalId) closedSids.add(d.signalId); } catch (_) {}
     }
+
+    // Rebuild openTrades from scratch — clears any ghost entries from previous bot lifecycle
+    live.openTrades = {};
     for (const r of opens) {
       try {
         const d = JSON.parse(r.data);
@@ -68,13 +70,14 @@ const live = {
       } catch (_) {}
     }
     const n = Object.keys(live.openTrades).length;
-    if (n > 0) {
-      console.log(`[SERVER] Restored ${n} open position(s) from DB: ${Object.keys(live.openTrades).join(", ")}`);
-    }
+    console.log(`[SERVER] Live state restored: ${n} open position(s)${n > 0 ? " — " + Object.keys(live.openTrades).join(", ") : ""}`);
   } catch (err) {
     console.error("[SERVER] Live state restore error:", err.message);
   }
-})();
+}
+
+// Run at startup
+restoreLiveState();
 
 const sseClients = new Set();
 
@@ -87,6 +90,14 @@ function broadcastSSE(msg) {
 
 // forward DB events to SSE
 emitter.on("event", (row) => broadcastSSE({ source: "db", ...row }));
+
+// L-7: SSE heartbeat — detects and removes zombie connections every 30 s
+setInterval(() => {
+  const payload = ": heartbeat\n\n";
+  for (const res of sseClients) {
+    try { res.write(payload); } catch (_) { sseClients.delete(res); }
+  }
+}, 30000);
 
 // ── stdout parser (live pips / trade status) ──────────────────────────────────
 let lineBuffer = "";
@@ -102,7 +113,10 @@ function handleBotLine(raw) {
     return;
   }
   if (exitLines) {
-    if (/^(reason|profit|peak|minutes|breakEven)=/.test(line)) {
+    // "floor=" added for the PROFIT_FLOOR exit path (index.js:1210) which includes
+    // a floor= field before minutes= and breakEven=.  Without it the collector
+    // flushed prematurely on floor=, losing minutes/breakEven from the parse.
+    if (/^(reason|profit|peak|floor|minutes|breakEven)=/.test(line)) {
       exitLines.push(line);
       if (line.startsWith("breakEven=")) {
         parseExitBlock(exitLines);
@@ -177,10 +191,65 @@ function parseExitBlock(lines) {
   }
 }
 
+// ── bot restart state — circuit breaker + daily-limit guard ──────────────────
+const MAX_DAILY_TRADES_ENV = parseInt(process.env.MAX_DAILY_TRADES || "50");
+// Backoff schedule in ms: 5s → 15s → 30s → 60s cap
+const _RESTART_DELAYS = [5000, 15000, 30000, 60000];
+let _restartCount     = 0;
+let _botStartedAt     = 0;    // timestamp when current bot process was spawned
+
+function _scheduleRestart(exitCode) {
+  live.botStatus = "stopped";
+  broadcastSSE({ source: "live", type: "bot_status", status: "stopped" });
+
+  // M-1: Refresh live state from DB after bot exits so dashboard clears any positions
+  // that were closed via SL/TP or during the downtime window.
+  restoreLiveState().catch(err => console.error("[SERVER] restoreLiveState on restart:", err.message));
+
+  // C-1: Daily-limit guard — if today's count already meets/exceeds the limit, defer
+  // restart until next UTC midnight to prevent dailyTrades counter bypass on crash+restart.
+  if (live.dailyTrades >= MAX_DAILY_TRADES_ENV) {
+    const now      = new Date();
+    const midnight = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1
+    ));
+    const delayMs  = Math.max(midnight.getTime() - Date.now(), 0) + 5000;
+    const minLeft  = Math.round(delayMs / 60000);
+    console.log(
+      `[SERVER] Daily limit reached (${live.dailyTrades}/${MAX_DAILY_TRADES_ENV}) — ` +
+      `deferring bot restart until UTC midnight (~${minLeft} min)`
+    );
+    logEvent({
+      type:           "bot_daily_limit_defer",
+      dailyTrades:    live.dailyTrades,
+      maxDailyTrades: MAX_DAILY_TRADES_ENV,
+      resumeAt:       midnight.toISOString(),
+    });
+    setTimeout(startBot, delayMs);
+    return;
+  }
+
+  // L-5: Exponential backoff — reset counter if the bot ran for >5 min (healthy run)
+  if (_botStartedAt && Date.now() - _botStartedAt > 5 * 60 * 1000) {
+    _restartCount = 0;
+  }
+  const delay = _RESTART_DELAYS[Math.min(_restartCount, _RESTART_DELAYS.length - 1)];
+  _restartCount++;
+
+  if (_restartCount > _RESTART_DELAYS.length) {
+    console.warn(`[SERVER] Bot crash loop detected (${_restartCount} restarts) — backing off ${delay / 1000}s`);
+    logEvent({ type: "bot_restart_loop", restartCount: _restartCount, delayMs: delay });
+  } else {
+    console.log(`[SERVER] Bot exited (${exitCode}), restart in ${delay / 1000}s`);
+  }
+  setTimeout(startBot, delay);
+}
+
 // ── spawn bot ─────────────────────────────────────────────────────────────────
 function startBot() {
   console.log("[SERVER] Spawning: node index.js");
   live.botStatus = "running";
+  _botStartedAt  = Date.now();
 
   const bot = spawn("node", [path.join(__dirname, "..", "index.js")], {
     env: process.env,
@@ -200,12 +269,7 @@ function startBot() {
   bot.stdout.on("data", onData);
   bot.stderr.on("data", onData);
 
-  bot.on("exit", (code) => {
-    live.botStatus = "stopped";
-    broadcastSSE({ source: "live", type: "bot_status", status: "stopped" });
-    console.log(`[SERVER] Bot exited (${code}), restart in 5 s`);
-    setTimeout(startBot, 5000);
-  });
+  bot.on("exit", (code) => _scheduleRestart(code));
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -340,8 +404,8 @@ app.get("/api/stats", async (req, res) => {
   const decisive = wins + losses;
 
   const [_chkBuy, _chkSell] = await Promise.all([
-    await queryEvents({ type: "buy_check",  symbol, date, limit: 5000 }),
-    await queryEvents({ type: "sell_check", symbol, date, limit: 5000 }),
+    queryEvents({ type: "buy_check",  symbol, date, limit: 5000 }),
+    queryEvents({ type: "sell_check", symbol, date, limit: 5000 }),
   ]);
   const checks = _chkBuy.concat(_chkSell);
 
@@ -904,8 +968,8 @@ app.get("/api/confirmation-lag", async (req, res) => {
   const date = req.query.date ? parseDate(req.query.date) : undefined;
 
   const [_chkBuy, _chkSell] = await Promise.all([
-    await queryEvents({ type: "buy_check",  date, limit: 5000 }),
-    await queryEvents({ type: "sell_check", date, limit: 5000 }),
+    queryEvents({ type: "buy_check",  date, limit: 5000 }),
+    queryEvents({ type: "sell_check", date, limit: 5000 }),
   ]);
   const checks = _chkBuy.concat(_chkSell);
 
@@ -1152,7 +1216,7 @@ app.get("/api/insights", async (req, res) => {
   const bestVolRegime    = [...volStats].sort((a, b) => b.winRate - a.winRate)[0] || null;
 
   // ── Post-entry failures ───────────────────────────────────────────────────
-  const postEntryFailures = await queryEvents({ type: "post_entry_failure", date, limit: 500 }).length;
+  const postEntryFailures = (await queryEvents({ type: "post_entry_failure", date, limit: 500 })).length;
 
   // ── Drift alerts ──────────────────────────────────────────────────────────
   const driftAlerts = await queryEvents({ type: "strategy_drift_alert", date, limit: 10 });
@@ -1776,30 +1840,54 @@ app.get("/api/pipeline-audit", async (req, res) => {
   const date  = req.query.date ? parseDate(req.query.date) : undefined;
   const lim   = 50000;
 
-  // ── Stage counts ────────────────────────────────────────────────────────
-  const detected    = await queryEvents({ type: "signal_detected",          date, limit: lim }).length;
-  const cooldown    = await queryEvents({ type: "cooldown_block",            date, limit: lim }).length;
-  const openTrade   = await queryEvents({ type: "open_trade_block",          date, limit: lim }).length;
-  const correlation = await queryEvents({ type: "correlation_block",         date, limit: lim }).length;
-  const disabled    = await queryEvents({ type: "symbol_disabled_block",     date, limit: lim }).length;
-  const spread      = await queryEvents({ type: "spread_block",              date, limit: lim }).length;
-  const candleRows  = await queryEvents({ type: "candle_block",              date, limit: lim });
+  // ── Stage counts — all queries parallelised; .length extracted from resolved arrays ──
+  // Bug fix: `await queryEvents(...).length` evaluates as `await (promise.length)` = `await undefined`
+  // because property access binds tighter than `await`. All counts now via Promise.all.
+  const [
+    _detectedR, _cooldownR, _openTradeR, _correlationR, _disabledR,
+    _spreadR, candleRows, _exhaustionR, _spreadEdgeR, _pullbackR,
+    _marginR, _defenseR, _buyCheckR, _sellCheckR, _gateBlockR,
+    _almostR, _tradeOpenR, closes,
+  ] = await Promise.all([
+    queryEvents({ type: "signal_detected",      date, limit: lim }),
+    queryEvents({ type: "cooldown_block",        date, limit: lim }),
+    queryEvents({ type: "open_trade_block",      date, limit: lim }),
+    queryEvents({ type: "correlation_block",     date, limit: lim }),
+    queryEvents({ type: "symbol_disabled_block", date, limit: lim }),
+    queryEvents({ type: "spread_block",          date, limit: lim }),
+    queryEvents({ type: "candle_block",          date, limit: lim }),
+    queryEvents({ type: "exhaustion_block",      date, limit: lim }),
+    queryEvents({ type: "spread_edge_block",     date, limit: lim }),
+    queryEvents({ type: "pullback_block",        date, limit: lim }),
+    queryEvents({ type: "margin_block",          date, limit: lim }),
+    queryEvents({ type: "defense_mode_skip",     date, limit: lim }),
+    queryEvents({ type: "buy_check",             date, limit: lim }),
+    queryEvents({ type: "sell_check",            date, limit: lim }),
+    queryEvents({ type: "entry_blocked_at_gate", date, limit: lim }),
+    queryEvents({ type: "almost_trade",          date, limit: lim }),
+    queryEvents({ type: "trade_open",            date, limit: lim }),
+    queryEvents({ type: "trade_close",           date, limit: lim }),
+  ]);
+
+  const detected    = _detectedR.length;
+  const cooldown    = _cooldownR.length;
+  const openTrade   = _openTradeR.length;
+  const correlation = _correlationR.length;
+  const disabled    = _disabledR.length;
+  const spread      = _spreadR.length;
   const candleM5    = candleRows.filter(e => e.data.reason === "m5_insufficient").length;
   const candleM1    = candleRows.filter(e => e.data.reason === "m1_insufficient").length;
-  const exhaustion  = await queryEvents({ type: "exhaustion_block",          date, limit: lim }).length;
-  const spreadEdge  = await queryEvents({ type: "spread_edge_block",         date, limit: lim }).length;
-  const pullback    = await queryEvents({ type: "pullback_block",            date, limit: lim }).length;
-  const margin      = await queryEvents({ type: "margin_block",              date, limit: lim }).length;
-  const defense     = await queryEvents({ type: "defense_mode_skip",         date, limit: lim }).length;
-
-  const buyChecks   = await queryEvents({ type: "buy_check",                 date, limit: lim }).length;
-  const sellChecks  = await queryEvents({ type: "sell_check",                date, limit: lim }).length;
+  const exhaustion  = _exhaustionR.length;
+  const spreadEdge  = _spreadEdgeR.length;
+  const pullback    = _pullbackR.length;
+  const margin      = _marginR.length;
+  const defense     = _defenseR.length;
+  const buyChecks   = _buyCheckR.length;
+  const sellChecks  = _sellCheckR.length;
   const checksTotal = buyChecks;  // one per eval (same as sellChecks)
-
-  const gateBlocks  = await queryEvents({ type: "entry_blocked_at_gate",     date, limit: lim }).length;
-  const almostN     = await queryEvents({ type: "almost_trade",              date, limit: lim }).length;
-  const tradeOpens  = await queryEvents({ type: "trade_open",                date, limit: lim }).length;
-  const closes      = await queryEvents({ type: "trade_close",               date, limit: lim });
+  const gateBlocks  = _gateBlockR.length;
+  const almostN     = _almostR.length;
+  const tradeOpens  = _tradeOpenR.length;
   const tradeCloses = closes.length;
 
   // Outcome taxonomy
@@ -1924,7 +2012,7 @@ app.get("/api/pipeline-audit", async (req, res) => {
   // ── Telemetry taxonomy ───────────────────────────────────────────────────
   const taxonomy = {
     SIGNAL_DETECTED:   { event: "signal_detected",   count: detected,    note: "every strategy() call" },
-    SIGNAL_FILTERED:   { event: "signal_filtered",   count: await queryEvents({ type: "signal_filtered", date, limit: lim }).length, note: "sub-event on every block" },
+    SIGNAL_FILTERED:   { event: "signal_filtered",   count: (await queryEvents({ type: "signal_filtered", date, limit: lim })).length, note: "sub-event on every block" },
     ORDER_CREATED:     { event: "N/A",               count: 0,           note: "market orders — no pending-order creation phase" },
     ORDER_CANCELLED:   { event: "N/A",               count: 0,           note: "no pending orders used" },
     ORDER_EXPIRED:     { event: "N/A",               count: 0,           note: "no pending orders used" },
@@ -2805,6 +2893,42 @@ app.get("/api/lab/shadow-d", async (req, res) => {
       agreeCount:    d.agreeCount, reason:      d.reason,
     })),
   });
+});
+
+// ── API: POST /api/admin/shadowm/force-close ──────────────────────────────────
+// C-2 mitigation: manually inject a synthetic trade_close for a ghost signalId
+// that exists in Shadow M _active but has no corresponding OANDA trade.
+// Use when OANDA rejected an order but logEvent(trade_open) already fired,
+// leaving Shadow M tracking a position that will never naturally close.
+//
+// Body: { "signalId": "...", "reason": "admin_force_close" }
+app.post("/api/admin/shadowm/force-close", express.json(), async (req, res) => {
+  try {
+    const { signalId, reason = "admin_force_close", profitPips = 0 } = req.body || {};
+    if (!signalId || typeof signalId !== "string") {
+      return res.status(400).json({ ok: false, error: "signalId (string) required" });
+    }
+
+    // Write a synthetic trade_close — Shadow M's next poll will pick it up and
+    // call _onClose(), removing the ghost from _active and shadowm_trades.
+    logEvent({
+      type:       "trade_close",
+      signalId,
+      profitPips,
+      outcome:    profitPips > 1.0 ? "WIN" : profitPips < 0 ? "LOSS" : "BREAKEVEN",
+      reason:     reason || "admin_force_close",
+      duration:   0,
+      peak:       0,
+      mfe:        0,
+      mae:        0,
+      adminClose: true,
+    });
+
+    console.log(`[SERVER ADMIN] Synthetic trade_close written for ghost signalId=${signalId}`);
+    res.json({ ok: true, signalId, message: "Synthetic trade_close written — Shadow M will process within 5s" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── API: GET /api/healthz/persistence ─────────────────────────────────────────

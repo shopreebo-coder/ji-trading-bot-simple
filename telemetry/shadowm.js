@@ -486,9 +486,11 @@ class ShadowM {
           await db.run(_UPSERT_SQL, _toRow(t));
           console.log(`[SHADOW M] Late-start tracking: signalId=${signalId} symbol=${t.symbol} — reconstructed from snapshot`);
           logEvent({ type: "shadowm_open", symbol: t.symbol, signalId, side: t.side, lateStart: true });
+          // Fall through — process this snapshot's pips/mfe/mae data immediately.
+        } else {
+          // signalId is known but not in _active → trade was already closed; skip.
+          return;
         }
-        // If _knownSids already has it the trade was closed — skip.
-        return;
       }
     }
 

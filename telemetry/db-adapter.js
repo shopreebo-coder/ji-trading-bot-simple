@@ -29,7 +29,12 @@ let db, DB_PATH, DATA_DIR, DATA_DIR_EXPLICIT;
 if (USE_PG) {
   // ── PostgreSQL backend ────────────────────────────────────────────────────────
   const { Pool } = require("pg");
-  const pool = new Pool({ connectionString: DATABASE_URL });
+  const pool = new Pool({
+    connectionString:      DATABASE_URL,
+    max:                   10,
+    idleTimeoutMillis:     30000,
+    connectionTimeoutMillis: 5000,
+  });
 
   function toPos(sql) {
     let i = 0;

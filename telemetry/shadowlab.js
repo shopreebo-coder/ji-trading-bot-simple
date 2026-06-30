@@ -452,13 +452,15 @@ class ShadowMetaEngine {
   }
 
   static async _refreshWeightsAsync() {
-    this._wCache   = {};
-    this._wCacheTs = Date.now();
+    // Build into a local variable — assigned atomically on success only.
+    // This prevents the race window where _wCache is empty while awaits are in-flight,
+    // and ensures a failed rebuild leaves the previous good weights intact.
+    const newCache = {};
 
     try {
-      // Load engine decisions (async parallel)
+      // Load engine decisions (async parallel) — L-3: parameterised, not template-literal
       const loadEngine = async (type) =>
-        (await db.all(`SELECT data FROM events WHERE type='${type}' ORDER BY id DESC LIMIT 5000`))
+        (await db.all("SELECT data FROM events WHERE type=? ORDER BY id DESC LIMIT 5000", type))
           .map(r => { try { return JSON.parse(r.data); } catch (_) { return null; } }).filter(Boolean);
 
       const [dA, dB, dC] = await Promise.all([
@@ -510,14 +512,14 @@ class ShadowMetaEngine {
       absorb(dB, "B");
       absorb(dC, "C");
 
-      // Convert accuracies → normalised weights
+      // Convert accuracies → normalised weights into newCache
       for (const [key, s] of Object.entries(acc)) {
         const accA = s.A.t > 0 ? s.A.c / s.A.t : 1/3;
         const accB = s.B.t > 0 ? s.B.c / s.B.t : 1/3;
         const accC = s.C.t > 0 ? s.C.c / s.C.t : 1/3;
         const tot  = accA + accB + accC;
         if (tot < 0.01) continue;
-        this._wCache[key] = {
+        newCache[key] = {
           A: parseFloat((accA / tot).toFixed(3)),
           B: parseFloat((accB / tot).toFixed(3)),
           C: parseFloat((accC / tot).toFixed(3)),
@@ -526,8 +528,13 @@ class ShadowMetaEngine {
           samplesC: s.C.t,
         };
       }
+
+      // Atomic assignment — only reached when all awaits succeed
+      this._wCache   = newCache;
+      this._wCacheTs = Date.now();
     } catch (err) {
       console.error("[ENGINE_D] Weight rebuild error:", err.message);
+      // _wCache and _wCacheTs are unchanged — old weights remain active until next successful rebuild
     }
   }
 
@@ -734,7 +741,7 @@ class ShadowLab {
     const getEngine = async (type) => {
       try {
         const rows = await db.all(
-          `SELECT data FROM events WHERE type='${type}' ORDER BY id DESC LIMIT 1000`
+          "SELECT data FROM events WHERE type=? ORDER BY id DESC LIMIT 1000", type
         );
         for (const r of rows) {
           try {
@@ -1003,7 +1010,7 @@ async function getShadowMemoryStats() {
                      "lab_comparison","shadow_gate_eval","shadow_gate_block","trade_close"];
     for (const t of types) {
       try {
-        counts[t] = (await db.get(`SELECT COUNT(*) AS n FROM events WHERE type='${t}'`))?.n ?? 0;
+        counts[t] = (await db.get("SELECT COUNT(*) AS n FROM events WHERE type=?", t))?.n ?? 0;
       } catch (_) { counts[t] = 0; }
     }
     const closedTrades = counts["trade_close"] || 0;
