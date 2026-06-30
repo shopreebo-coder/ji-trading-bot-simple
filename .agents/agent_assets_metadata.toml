@@ -6,3 +6,9 @@ id = "2oI8nGtph0-zaVZg3QGfK"
 uri = "file://PERSISTENCE_AUDIT_REPORT.md"
 type = "text"
 title = "PERSISTENCE_AUDIT_REPORT.md — FOREX ENGINE PRO v40.1"
+
+[[outputs]]
+id = "eCOynrzoHfZNsk7EhJoq_"
+uri = "file://FINAL_VERIFICATION_REPORT.md"
+type = "text"
+title = "FINAL_VERIFICATION_REPORT.md"
