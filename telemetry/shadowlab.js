@@ -882,6 +882,26 @@ const shadowLab = new ShadowLab();
 let _shadowMode = (process.env.SHADOW_MODE || "OBSERVE").toUpperCase();
 if (_shadowMode !== "GATE") _shadowMode = "OBSERVE"; // enforce valid values
 
+// ── Restore shadow mode from DB on startup ────────────────────────────────────
+// setShadowMode() logs every mode change as a shadow_mode_change event.
+// On Railway restart the env var resets to OBSERVE, but if an operator switched
+// to GATE via the API, we restore it from the last DB event so it survives deploys.
+(async function _restoreShadowMode() {
+  try {
+    const row = await db.get(
+      "SELECT data FROM events WHERE type='shadow_mode_change' ORDER BY id DESC LIMIT 1"
+    );
+    if (row) {
+      const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+      const restored = (d?.to || "").toUpperCase();
+      if ((restored === "GATE" || restored === "OBSERVE") && restored !== _shadowMode) {
+        _shadowMode = restored;
+        console.log(`[SHADOWLAB] Shadow mode restored from DB: ${_shadowMode}`);
+      }
+    }
+  } catch (_) {}
+})();
+
 function getShadowMode()  { return _shadowMode; }
 function setShadowMode(m) {
   const v = (m || "").toUpperCase();

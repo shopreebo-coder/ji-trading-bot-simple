@@ -436,10 +436,61 @@ class ShadowM {
 
   // ── trade_state_snapshot → update strategies ──────────────────────────────
   async _onSnapshot(event) {
-    const signalId = event.signalId;
-    if (!signalId) return;
-    const t = this._active.get(signalId);
-    if (!t) return;
+    let signalId = event.signalId;
+    let t;
+
+    if (!signalId) {
+      // Bot restarted — tradeSignalId lost from RAM. Match by symbol when only
+      // one position is open on that symbol (safe: bot limits to 1 per pair).
+      if (event.symbol) {
+        const candidates = [...this._active.values()].filter(x => x.symbol === event.symbol);
+        if (candidates.length === 1) {
+          t        = candidates[0];
+          signalId = t.signalId;
+        }
+      }
+      if (!t) return;
+    } else {
+      t = this._active.get(signalId);
+      if (!t) {
+        // signalId is non-null but not in _active.  Two possible causes:
+        //   1. Trade opened before Shadow M started (pre-PG-migration trade).
+        //   2. _restore() failed to load it from shadowm_trades.
+        // If we've never seen this signalId, create a minimal tracking entry from
+        // the snapshot so the trade is captured going forward.
+        if (!this._knownSids.has(signalId)) {
+          const ts = event.ts || new Date().toISOString();
+          t = {
+            signalId,
+            symbol:          event.symbol  ?? null,
+            side:            event.side    ?? null,
+            slPips:          0,
+            tpPips:          0,
+            atrEntry:        0,
+            entryTime:       ts,
+            exitTime:        null,
+            profitLive:      null,
+            mfe:             0,
+            mae:             0,
+            durationMin:     null,
+            profitGivenBack: null,
+            bestStrategy:    null,
+            bestProfit:      null,
+            profitSaved:     null,
+            strategyRanking: [],
+            tickCount:       0,
+            strategies:      _newStrategies(),
+          };
+          this._knownSids.add(signalId);
+          this._active.set(signalId, t);
+          await db.run(_UPSERT_SQL, _toRow(t));
+          console.log(`[SHADOW M] Late-start tracking: signalId=${signalId} symbol=${t.symbol} — reconstructed from snapshot`);
+          logEvent({ type: "shadowm_open", symbol: t.symbol, signalId, side: t.side, lateStart: true });
+        }
+        // If _knownSids already has it the trade was closed — skip.
+        return;
+      }
+    }
 
     const pips    = typeof event.pips        === "number" ? event.pips        : 0;
     const mfe     = typeof event.mfe         === "number" ? event.mfe         : t.mfe;
@@ -464,10 +515,25 @@ class ShadowM {
 
   // ── trade_close → finalize + rank ────────────────────────────────────────
   async _onClose(event) {
-    const signalId = event.signalId;
-    if (!signalId) return;
-    const t = this._active.get(signalId);
-    if (!t) return;
+    let signalId = event.signalId;
+    let t;
+
+    if (!signalId) {
+      // Bot restarted — tradeSignalId lost from RAM. Match by symbol when only
+      // one position is open on that symbol (safe: bot limits to 1 per pair).
+      if (event.symbol) {
+        const candidates = [...this._active.values()].filter(x => x.symbol === event.symbol);
+        if (candidates.length === 1) {
+          t        = candidates[0];
+          signalId = t.signalId;
+          console.log(`[SHADOW M] _onClose matched by symbol: signalId=${signalId} symbol=${event.symbol} — bot-restart recovery`);
+        }
+      }
+      if (!t) return;
+    } else {
+      t = this._active.get(signalId);
+      if (!t) return;
+    }
 
     const ts = event.ts || new Date().toISOString();
 

@@ -31,6 +31,51 @@ const live = {
   lastSeen:     null,
 };
 
+// ── Restore live state from DB on startup ─────────────────────────────────────
+// After Railway restart the live object starts empty.  Reconstruct daily trade
+// count and any positions that were open before the restart so the dashboard
+// panel is not blank until the bot logs its next stdout tick.
+(async function _restoreLiveState() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const [opens, closes, dailyRow] = await Promise.all([
+      db.all("SELECT data FROM events WHERE type='trade_open'  ORDER BY id DESC LIMIT 200"),
+      db.all("SELECT data FROM events WHERE type='trade_close' ORDER BY id DESC LIMIT 200"),
+      db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_open' AND substr(ts,1,10)=?", today),
+    ]);
+
+    if (dailyRow?.n > 0) {
+      live.dailyTrades = dailyRow.n;
+      console.log(`[SERVER] Restored dailyTrades=${live.dailyTrades} from DB (${today})`);
+    }
+
+    const closedSids = new Set();
+    for (const r of closes) {
+      try { const d = JSON.parse(r.data); if (d.signalId) closedSids.add(d.signalId); } catch (_) {}
+    }
+    for (const r of opens) {
+      try {
+        const d = JSON.parse(r.data);
+        if (!d.signalId || closedSids.has(d.signalId) || live.openTrades[d.symbol]) continue;
+        live.openTrades[d.symbol] = {
+          symbol:    d.symbol,
+          side:      d.side    || "?",
+          pips:      0,
+          peak:      0,
+          breakEven: false,
+          entryTime: d.ts ? new Date(d.ts).getTime() : Date.now(),
+        };
+      } catch (_) {}
+    }
+    const n = Object.keys(live.openTrades).length;
+    if (n > 0) {
+      console.log(`[SERVER] Restored ${n} open position(s) from DB: ${Object.keys(live.openTrades).join(", ")}`);
+    }
+  } catch (err) {
+    console.error("[SERVER] Live state restore error:", err.message);
+  }
+})();
+
 const sseClients = new Set();
 
 function broadcastSSE(msg) {
@@ -894,7 +939,7 @@ app.get("/api/confirmation-lag", async (req, res) => {
     conditions:       result,
     mostRestrictive:  result[0]                  || null,
     leastRestrictive: result[result.length - 1]  || null,
-    postEntryFailures: await queryEvents({ type: "post_entry_failure", date, limit: 500 }).length,
+    postEntryFailures: (await queryEvents({ type: "post_entry_failure", date, limit: 500 })).length,
   });
 });
 
@@ -2760,6 +2805,58 @@ app.get("/api/lab/shadow-d", async (req, res) => {
       agreeCount:    d.agreeCount, reason:      d.reason,
     })),
   });
+});
+
+// ── API: GET /api/healthz/persistence ─────────────────────────────────────────
+// Reports persistence health: event counts, Shadow M state, cursor, shadow mode.
+// Used to verify zero-data-loss guarantee after Railway restart/deploy.
+app.get("/api/healthz/persistence", async (req, res) => {
+  try {
+    const types = [
+      "trade_open", "trade_close", "trade_state_snapshot",
+      "shadowm_open", "shadowm_close", "shadowm_cursor",
+      "shadow_mode_change", "shadow_gate_eval", "shadow_gate_block",
+      "lab_comparison",
+    ];
+    const counts = {};
+    for (const t of types) {
+      try {
+        counts[t] = (await db.get("SELECT COUNT(*) AS n FROM events WHERE type=?", t))?.n ?? 0;
+      } catch (_) { counts[t] = 0; }
+    }
+
+    let lastCursor = null;
+    try {
+      const r = await db.get(
+        "SELECT data, ts FROM events WHERE type='shadowm_cursor' ORDER BY id DESC LIMIT 1"
+      );
+      if (r) lastCursor = { ts: r.ts, ...(typeof r.data === "string" ? JSON.parse(r.data) : r.data) };
+    } catch (_) {}
+
+    let lastModeChange = null;
+    try {
+      const r = await db.get(
+        "SELECT data, ts FROM events WHERE type='shadow_mode_change' ORDER BY id DESC LIMIT 1"
+      );
+      if (r) lastModeChange = { ts: r.ts, ...(typeof r.data === "string" ? JSON.parse(r.data) : r.data) };
+    } catch (_) {}
+
+    const smStats = await getShadowMStats();
+
+    res.json({
+      ok:             true,
+      dbBackend:      USE_PG ? "postgresql" : "sqlite",
+      shadowMode:     getShadowMode(),
+      eventCounts:    counts,
+      shadowM:        smStats,
+      lastCursor,
+      lastModeChange,
+      liveOpenTrades: Object.keys(live.openTrades),
+      liveDailyTrades: live.dailyTrades,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── root → dashboard ──────────────────────────────────────────────────────────
