@@ -2584,6 +2584,113 @@ app.get("/api/shadowm/dashboard", async (req, res) => {
   }
 });
 
+// ── GET /api/shadowm/diag ─────────────────────────────────────────────────────
+// Real-time diagnostic state — shows exactly where data is lost and why.
+// Hit this endpoint after deploy to see the full picture without digging logs.
+app.get("/api/shadowm/diag", async (req, res) => {
+  try {
+    const [smTotal, smOpen, smClosed, evtOpens, evtCloses, evtMaxId, cursors, recentOpens] =
+      await Promise.all([
+        db.get("SELECT COUNT(*) AS n FROM shadowm_trades"),
+        db.get("SELECT COUNT(*) AS n FROM shadowm_trades WHERE exit_time IS NULL"),
+        db.get("SELECT COUNT(*) AS n FROM shadowm_trades WHERE exit_time IS NOT NULL"),
+        db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_open'"),
+        db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_close'"),
+        db.get("SELECT MAX(id) AS id FROM events"),
+        db.all("SELECT id, data FROM events WHERE type='shadowm_cursor' ORDER BY id DESC LIMIT 5"),
+        db.all("SELECT id, ts, data FROM events WHERE type='trade_open' ORDER BY id DESC LIMIT 10"),
+      ]);
+
+    const parsedCursors = cursors.map(c => {
+      try {
+        const d = typeof c.data === "string" ? JSON.parse(c.data) : c.data;
+        return { eventsId: c.id, lastId: d.lastId, newOpens: d.newOpens, newSnaps: d.newSnaps, newCloses: d.newCloses };
+      } catch (_) { return { eventsId: c.id, error: "parse_failed" }; }
+    });
+
+    const parsedOpens = recentOpens.map(r => {
+      try {
+        const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+        const sid = d.signalId ?? null;
+        return {
+          eventsId:       r.id,
+          ts:             r.ts,
+          signalId:       sid,
+          symbol:         d.symbol ?? null,
+          side:           d.side ?? null,
+          nullSignalId:   sid === null,
+          inShadowM_trades: shadowM._knownSids.has(sid),
+          inActive:         shadowM._active.has(sid),
+          belowCursor:      r.id <= shadowM._lastId,
+        };
+      } catch (_) { return { eventsId: r.id, error: "parse_failed" }; }
+    });
+
+    const hiddenBelowCursor = parsedOpens.filter(o => o.belowCursor && !o.inShadowM_trades).length;
+    const nullSids          = parsedOpens.filter(o => o.nullSignalId).length;
+    const knownNotActive    = [...shadowM._knownSids].filter(sid => !shadowM._active.has(sid)).length;
+
+    res.json({
+      ok: true,
+      shadowM_process: {
+        lastId:         shadowM._lastId,
+        activeCount:    shadowM._active.size,
+        knownSidCount:  shadowM._knownSids.size,
+        pollCount:      shadowM._pollCount,
+        activeTrades:   [...shadowM._active.values()].map(t => ({
+          signalId:   t.signalId,
+          symbol:     t.symbol,
+          side:       t.side,
+          entryTime:  t.entryTime,
+          mfe:        t.mfe,
+          tickCount:  t.tickCount,
+        })),
+      },
+      db_shadowm_trades: {
+        total:  smTotal?.n  ?? 0,
+        open:   smOpen?.n   ?? 0,
+        closed: smClosed?.n ?? 0,
+      },
+      db_events: {
+        trade_open:  evtOpens?.n  ?? 0,
+        trade_close: evtCloses?.n ?? 0,
+        max_id:      evtMaxId?.id ?? 0,
+      },
+      cursors:    parsedCursors,
+      recentTradeOpenEvents: parsedOpens,
+      diagnosis: {
+        shadowM_sees_N_active:      shadowM._active.size,
+        exit_lab_sees_N_total:      smTotal?.n ?? 0,
+        events_have_N_trade_opens:  evtOpens?.n ?? 0,
+        in_recent_10_opens: {
+          null_signalId_count:          nullSids,
+          below_cursor_not_in_shadowM:  hiddenBelowCursor,
+          known_but_not_active:         knownNotActive,
+        },
+        explanation: [
+          smTotal?.n === 0
+            ? "shadowm_trades is EMPTY — either first run or table was reset"
+            : null,
+          evtOpens?.n === 0
+            ? "CRITICAL: events table has 0 trade_open rows — historical trades were on SQLite/ephemeral storage, not PostgreSQL"
+            : null,
+          parsedCursors.length > 0
+            ? `cursor exists (lastId=${parsedCursors[0].lastId}) — events with id≤${parsedCursors[0].lastId} are INVISIBLE to _poll() unless already in shadowm_trades`
+            : "no cursor — _poll() starts from id=0 (full historical replay)",
+          nullSids > 0
+            ? `${nullSids} of last 10 trade_opens have null signalId — those trades are permanently invisible to Shadow M`
+            : null,
+          hiddenBelowCursor > 0
+            ? `${hiddenBelowCursor} of last 10 trade_opens are BELOW cursor AND missing from shadowm_trades — PERMANENTLY LOST`
+            : null,
+        ].filter(Boolean),
+      },
+    });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // ── GET /api/lab/shadow-d ─────────────────────────────────────────────────────
 app.get("/api/lab/shadow-d", async (req, res) => {
   let rows = [];

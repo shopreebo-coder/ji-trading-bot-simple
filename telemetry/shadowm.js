@@ -253,6 +253,7 @@ class ShadowM {
     this._lastId    = 0;          // highest events.id polled so far
     this._knownSids = new Set();  // all signalIds ever opened — prevents duplicate open on replay
     this._polling   = false;      // guard against concurrent poll ticks
+    this._pollCount = 0;          // DIAG: total poll ticks since start
   }
 
   async start() {
@@ -301,6 +302,52 @@ class ShadowM {
       }
 
       console.log(`[SHADOW M] Restore: active=${this._active.size} knownSids=${this._knownSids.size} lastId=${this._lastId}`);
+
+      // ── DIAGNOSTIC AUDIT ─────────────────────────────────────────────────
+      try {
+        const smTotal  = await db.get("SELECT COUNT(*) AS n FROM shadowm_trades");
+        const smOpen   = await db.get("SELECT COUNT(*) AS n FROM shadowm_trades WHERE exit_time IS NULL");
+        const smClosed = await db.get("SELECT COUNT(*) AS n FROM shadowm_trades WHERE exit_time IS NOT NULL");
+        console.log(`[SHADOW M DIAG RESTORE] shadowm_trades: total=${smTotal?.n ?? 0} open=${smOpen?.n ?? 0} closed=${smClosed?.n ?? 0}`);
+
+        const evtOpens  = await db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_open'");
+        const evtCloses = await db.get("SELECT COUNT(*) AS n FROM events WHERE type='trade_close'");
+        const evtMaxId  = await db.get("SELECT MAX(id) AS id FROM events");
+        console.log(`[SHADOW M DIAG RESTORE] events table: trade_open=${evtOpens?.n ?? 0} trade_close=${evtCloses?.n ?? 0} max_id=${evtMaxId?.id ?? 0}`);
+
+        const cursors = await db.all(
+          "SELECT id, data FROM events WHERE type='shadowm_cursor' ORDER BY id DESC LIMIT 3"
+        );
+        if (cursors.length === 0) {
+          console.log("[SHADOW M DIAG RESTORE] shadowm_cursor: NONE — first deployment, _lastId=0, full historical replay will run");
+        } else {
+          for (const c of cursors) {
+            const cd = typeof c.data === "string" ? JSON.parse(c.data) : c.data;
+            console.log(`[SHADOW M DIAG RESTORE] shadowm_cursor events.id=${c.id} → lastId=${cd.lastId} (opens=${cd.newOpens ?? "?"} snaps=${cd.newSnaps ?? "?"} closes=${cd.newCloses ?? "?"})`);
+          }
+        }
+        console.log(`[SHADOW M DIAG RESTORE] Poll will start from id>${this._lastId}. Events with id≤${this._lastId} are invisible to _poll() unless already in shadowm_trades.`);
+
+        const sampleOpens = await db.all(
+          "SELECT id, data FROM events WHERE type='trade_open' ORDER BY id DESC LIMIT 5"
+        );
+        if (sampleOpens.length === 0) {
+          console.log("[SHADOW M DIAG RESTORE] trade_open sample: NONE — no trade_open events in events table at all");
+        }
+        for (const s of sampleOpens) {
+          const d = typeof s.data === "string" ? JSON.parse(s.data) : s.data;
+          const sid = d.signalId ?? null;
+          const status = sid === null
+            ? "NULL_SIGNALID(will_be_dropped_by_onOpen)"
+            : this._knownSids.has(sid)
+              ? "in_shadowm_trades"
+              : (s.id <= this._lastId ? "BELOW_CURSOR(invisible_to_poll)" : "NOT_YET_in_shadowm_trades");
+          console.log(`[SHADOW M DIAG RESTORE] trade_open: events.id=${s.id} signalId=${sid ?? "NULL"} symbol=${d.symbol ?? "?"} ts=${(d.ts || "?").slice(0, 16)} → ${status}`);
+        }
+      } catch (diagErr) {
+        console.error("[SHADOW M DIAG RESTORE] Diagnostic query failed:", diagErr.message);
+      }
+      // ── END DIAGNOSTIC AUDIT ─────────────────────────────────────────────
     } catch (err) {
       console.error("[SHADOW M] Restore error:", err.message);
     }
@@ -310,6 +357,10 @@ class ShadowM {
   async _poll() {
     if (this._polling) return;
     this._polling = true;
+    this._pollCount++;
+    if (this._pollCount <= 10 || this._pollCount % 60 === 0) {
+      console.log(`[SHADOW M DIAG] Poll#${this._pollCount} start: _lastId=${this._lastId} active=${this._active.size} known=${this._knownSids.size}`);
+    }
     try {
       const rows = await db.all(
         "SELECT id, type, data FROM events WHERE id > ? AND type IN ('trade_open','trade_state_snapshot','trade_close') ORDER BY id ASC LIMIT 500",
@@ -330,6 +381,8 @@ class ShadowM {
         console.log(`[SHADOW M DIAG] Poll done: +${newOpens} opens +${newSnaps} snaps +${newCloses} closes | lastId=${this._lastId} | active=${this._active.size}`);
         // Persist cursor so restart doesn't replay from scratch
         logEvent({ type: "shadowm_cursor", lastId: this._lastId, newOpens, newSnaps, newCloses });
+      } else if (this._pollCount <= 10) {
+        console.log(`[SHADOW M DIAG] Poll#${this._pollCount}: 0 new events with id>${this._lastId} | active=${this._active.size} known=${this._knownSids.size}`);
       }
     } finally {
       this._polling = false;
@@ -339,10 +392,14 @@ class ShadowM {
   // ── trade_open → start tracking ──────────────────────────────────────────
   async _onOpen(event) {
     const signalId = event.signalId;
-    console.log(`[SHADOW M DIAG] _onOpen called: signalId=${signalId} symbol=${event.symbol}`);
-    if (!signalId) return;
+    console.log(`[SHADOW M DIAG] _onOpen called: signalId=${signalId ?? "NULL"} symbol=${event.symbol} side=${event.side}`);
+    if (!signalId) {
+      console.error(`[SHADOW M DIAG] _onOpen DROPPED — signalId is null/undefined. Trade will never appear in Shadow M or Exit Lab. symbol=${event.symbol ?? "?"} ts=${event.ts ?? "?"} side=${event.side ?? "?"}`);
+      return;
+    }
     if (this._knownSids.has(signalId)) {
-      console.log(`[SHADOW M DIAG] _onOpen skipped (already known): ${signalId}`);
+      const inActive = this._active.has(signalId);
+      console.log(`[SHADOW M DIAG] _onOpen skipped (already known): signalId=${signalId} inActive=${inActive} — trade IS${inActive ? "" : " NOT"} in _active map`);
       return;
     }
 
