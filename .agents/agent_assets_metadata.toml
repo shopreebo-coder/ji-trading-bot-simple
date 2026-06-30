@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "2oI8nGtph0-zaVZg3QGfK"
+uri = "file://PERSISTENCE_AUDIT_REPORT.md"
+type = "text"
+title = "PERSISTENCE_AUDIT_REPORT.md — FOREX ENGINE PRO v40.1"
