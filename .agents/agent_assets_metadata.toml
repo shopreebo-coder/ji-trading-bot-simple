@@ -12,3 +12,9 @@ id = "eCOynrzoHfZNsk7EhJoq_"
 uri = "file://FINAL_VERIFICATION_REPORT.md"
 type = "text"
 title = "FINAL_VERIFICATION_REPORT.md"
+
+[[outputs]]
+id = "RdGG-dX9A5VBVjaD_9K8G"
+uri = "file://SHADOW_OS_ARCHITECTURE_V1.md"
+type = "text"
+title = "SHADOW_OS_ARCHITECTURE_V1.md"
