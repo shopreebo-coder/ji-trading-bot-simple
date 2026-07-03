@@ -18,3 +18,9 @@ id = "RdGG-dX9A5VBVjaD_9K8G"
 uri = "file://SHADOW_OS_ARCHITECTURE_V1.md"
 type = "text"
 title = "SHADOW_OS_ARCHITECTURE_V1.md"
+
+[[outputs]]
+id = "lUmUe5383jUKZ3mO7frjY"
+uri = "file://SHADOW_OS_V2.md"
+type = "text"
+title = "SHADOW OS v2 — Next-Generation Operating System for FOREX ENGINE PRO"
