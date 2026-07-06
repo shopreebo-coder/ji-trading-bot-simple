@@ -48,3 +48,15 @@ id = "h2li7Z6YzwQ5Og3yi4_gK"
 uri = "file://RISK_REGISTER.md"
 type = "text"
 title = "Risk Register — 30-Risk Catalog with Mitigations"
+
+[[outputs]]
+id = "ELA8i0ZxQFtIkHExe5FQh"
+uri = "file://docs/reports/SPRINT_0_REPORT.pdf"
+type = "pdf"
+title = "Sprint 0 Report — PDF (10 pages)"
+
+[[outputs]]
+id = "1DNKMkLtDg7tut0BMgx0Q"
+uri = "file://docs/reports/SPRINT_0_REPORT.md"
+type = "text"
+title = "Sprint 0 Report — Markdown"
