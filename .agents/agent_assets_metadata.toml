@@ -24,3 +24,27 @@ id = "lUmUe5383jUKZ3mO7frjY"
 uri = "file://SHADOW_OS_V2.md"
 type = "text"
 title = "SHADOW OS v2 — Next-Generation Operating System for FOREX ENGINE PRO"
+
+[[outputs]]
+id = "28nZmJxV3lwKn6SYnKjwL"
+uri = "file://IMPLEMENTATION_BLUEPRINT.md"
+type = "text"
+title = "Implementation Blueprint — Phase-by-Phase Migration Program"
+
+[[outputs]]
+id = "kiyR_A2mvCwPrkY0AQe6k"
+uri = "file://PROJECT_ROADMAP.md"
+type = "text"
+title = "Project Roadmap — 7-Sprint, 37-Day Plan"
+
+[[outputs]]
+id = "5WTwZnARmIuznZaXxedfI"
+uri = "file://MIGRATION_CHECKLIST.md"
+type = "text"
+title = "Migration Checklist — Step-by-Step Execution Guide"
+
+[[outputs]]
+id = "h2li7Z6YzwQ5Og3yi4_gK"
+uri = "file://RISK_REGISTER.md"
+type = "text"
+title = "Risk Register — 30-Risk Catalog with Mitigations"
