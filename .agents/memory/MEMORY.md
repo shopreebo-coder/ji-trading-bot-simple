@@ -1,3 +1,7 @@
 - [Shadow M architecture](shadowm-architecture.md) — event-driven exit lab; uses trade_state_snapshot (30s from live bot), no OANDA polling required
 - [GitHub push blocker](github-push.md) — GITHUB_PERSONAL_ACCESS_TOKEN returns 401; must regenerate at github.com/settings/tokens
 - [Railway persistence](railway-persistence.md) — must set DATA_DIR=/data + Volume at /data; /data is writable without Volume (silent data loss)
+- [psql-for-migrations](psql-for-migrations.md) — always use `psql -f` for multi-statement DDL; JS splitters silently drop statements
+- [db-adapter-run-quirk](db-adapter-run-quirk.md) — `db.run()` auto-appends `RETURNING id`; use `db.exec()` for tables with non-id PK
+- [pg-any-array-bug](pg-any-array-bug.md) — `ANY($1)` with a JS array param returns 0 rows in pg; fetch all rows, filter in JS
+- [node24-test-reporter](node24-test-reporter.md) — Node 24 test reporter flag is `--test-reporter=spec` not `--reporter=spec`
