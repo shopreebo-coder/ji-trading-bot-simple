@@ -34,6 +34,9 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `SHADOW_OS_V2.md` — Master design document (3000+ lines)
 - `IMPLEMENTATION_BLUEPRINT.md` — Phase specs and gate criteria
 - `SPRINT_0_REPORT.md` — Sprint 0 completion report
+- `telemetry/managers/TradeIntentManager.js` — Sprint 2 core implementation (~600L)
+- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM)
+- `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 
 ## Architecture decisions
 
@@ -53,8 +56,8 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 |--------|----------------------------------------|--------------|
 | 0      | Archive dead code, test framework, DB schema | ✅ COMPLETE |
 | 1      | RuntimeDomainManager                   | ✅ COMPLETE  |
-| 2      | Domain Adapters (TradeIntentManager)   | 🔜 NEXT      |
-| 3      | MemoryManager                          | Not started  |
+| 2      | Domain Adapters (TradeIntentManager)   | ✅ COMPLETE  |
+| 3      | MemoryManager                          | 🔜 NEXT      |
 | 4      | KnowledgeManager                       | Not started  |
 | 5      | RecoveryManager + ValidationManager    | Not started  |
 

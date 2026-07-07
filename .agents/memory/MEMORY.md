@@ -6,3 +6,5 @@
 - [pg-any-array-bug](pg-any-array-bug.md) — `ANY($1)` with a JS array param returns 0 rows in pg; fetch all rows, filter in JS
 - [node24-test-reporter](node24-test-reporter.md) — Node 24 test reporter flag is `--test-reporter=spec` not `--reporter=spec`
 - [cas-pool-deadlock](cas-pool-deadlock.md) — never call pool.connect() inside try{} while another client is held; read all DB data before returning in the else-branch
+- [TIM cancelIntent state machine](tim-cancel-approved.md) — cancelIntent accepts APPROVED; concurrent approve+cancel can both succeed (correct behavior, not a race bug)
+- [RDM takeSnapshot return shape](rdm-snapshot-shape.md) — returns { snapshotId, createdAt, domainCount, reason }, NOT { domains: [...] }
