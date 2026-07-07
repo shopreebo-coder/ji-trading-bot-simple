@@ -32,3 +32,9 @@ In any method that holds a pool connection inside a try/finally block, never cal
 **Why:** Node.js async function `finally` blocks run after the return expression resolves. With pool.max=N and N concurrent callers, all N hold their connections and all N try to acquire an N+1th connection — permanent deadlock. This does NOT appear in sequential tests; only concurrent load reveals it.
 
 **How to spot:** Tests pass individually/sequentially but hang silently when run concurrently (Promise.all with N ≥ pool.max operations). Look for any `this._pool.connect()` call that can execute while another client from the same pool is still checked out in the same call stack.
+
+## Recurrence (Sprint 3): `this._pool.query()` counts too
+
+The pattern recurred in a create-with-dedupe path: after `ROLLBACK` on a unique-constraint conflict, the duplicate lookup used `this._pool.query()` while the original client was still held. `pool.query()` internally does connect→query→release, so it is just as deadlock-prone as `pool.connect()`. Sequential and low-concurrency (< pool.max) tests all passed; only a stress test with 100 concurrent creates against pool.max=5 exposed it.
+
+**Durable rule:** while holding a pool client, ALL database access must go through that held client — audit for both `pool.connect()` AND `pool.query()`. A stress gate with concurrency ≥ pool.max on every conflict/fallback path is mandatory before declaring a manager done.

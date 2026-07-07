@@ -118,7 +118,7 @@ INVARIANT 6: Financial Intent Atomicity
 | Knowledge Layer | Persistent disk | Learned intelligence, never rebuilt |
 | Event Log | Audit journal | Immutable record, compliance only |
 | RuntimeDomainManager | Process scheduler | Owns/arbitrates runtime state |
-| MemoryManager | Memory allocator | TTL lifecycle, namespace isolation |
+| MemoryManager | Memory allocator | Append-first event memory + TTL cache |
 | KnowledgeManager | Filesystem | Versioned artifact storage |
 | RecoveryManager | Fault handler | Post-failure state reconstruction |
 | ValidationManager | Health monitor | Periodic integrity verification |
@@ -148,7 +148,10 @@ INVARIANT 6: Financial Intent Atomicity
 │  │  Durability: TTL (hours to days)                                    │   │
 │  │  Namespaces: observations, cooldowns, market_state, volatility,     │   │
 │  │              correlations, decision_history, confidence_decay       │   │
-│  │  Owner: MemoryManager (Sprint 3)                       ← PLANNED    │   │
+│  │  Owner: MemoryManager (Sprint 3)                       ← DONE       │   │
+│  │  NOTE: Sprint 3 split the layer — memory_events +                   │   │
+│  │  memory_event_history are permanent (append-first, never deleted); │   │
+│  │  memory_entries remains the TTL/KV working cache described above.  │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
@@ -219,13 +222,13 @@ Layer communication rules:
 │                                                                             │
 │  ┌────────────────────────┐   ┌────────────────────────┐                  │
 │  │  RuntimeDomainManager  │   │     MemoryManager       │                  │
-│  │  Sprint 1 ← DONE       │   │     Sprint 3 (planned)  │                  │
+│  │  Sprint 1 ← DONE       │   │     Sprint 3 ← DONE     │                  │
 │  │                        │   │                         │                  │
-│  │  createDomain()        │   │  set(ns, key, val, ttl) │                  │
-│  │  getDomain()           │   │  get(ns, key)           │                  │
-│  │  updateDomain()        │   │  delete(ns, key)        │                  │
-│  │  patchDomain()         │   │  gc()                   │                  │
-│  │  compareAndSwap()      │   │  listNamespace(ns)      │                  │
+│  │  createDomain()        │   │  createMemory()         │                  │
+│  │  getDomain()           │   │  appendMemory()         │                  │
+│  │  updateDomain()        │   │  searchMemory()/query*()│                  │
+│  │  patchDomain()         │   │  summarizeMemory()      │                  │
+│  │  compareAndSwap()      │   │  validateMemory(), kv*()│                  │
 │  │  takeSnapshot()        │   └────────────────────────┘                  │
 │  │  restoreFromSnapshot() │                                                │
 │  │  rollback()            │   ┌────────────────────────┐                  │
@@ -263,7 +266,7 @@ Layer communication rules:
 | Exit Lab | `telemetry/shadowlab.js` | exitLab | runtime_domains (direct, pre-v2), knowledge_artifacts | shadowm_trades | FROZEN |
 | Telemetry | `telemetry/index.js` | telemetry | `events` | — | FROZEN |
 | RuntimeDomainManager | `telemetry/managers/RuntimeDomainManager.js` | ALL | runtime_domains, runtime_domain_history, system_snapshots, consistency_log | runtime_domains, runtime_domain_history | ✅ SPRINT 1 |
-| MemoryManager | `telemetry/managers/MemoryManager.js` | — | memory_entries | memory_entries | SPRINT 3 |
+| MemoryManager | `telemetry/managers/MemoryManager.js` | — | memory_events, memory_event_history, memory_entries, consistency_log | memory_events, memory_event_history, memory_entries, trade_intents (ref check) | ✅ SPRINT 3 |
 | KnowledgeManager | `telemetry/managers/KnowledgeManager.js` | — | knowledge_artifacts | knowledge_artifacts | SPRINT 4 |
 | RecoveryManager | `telemetry/managers/RecoveryManager.js` | — | consistency_log | ALL | SPRINT 5 |
 | ValidationManager | `telemetry/managers/ValidationManager.js` | — | consistency_log | ALL | SPRINT 5 |
@@ -437,15 +440,47 @@ rdm.ping()                                    → { ok, latencyMs }
 rdm.getStats()                                → { domains, maxVersion, historyRows, snapshots, pool }
 ```
 
-### 6.2 MemoryManager (Sprint 3 — Planned)
+### 6.2 MemoryManager (Sprint 3 — ✅ COMPLETE)
 
-**Role:** Manages the `memory_entries` table. Provides TTL-based lifecycle, namespace isolation, GIN-indexed tag search, and automatic GC.
+**Role:** Owns the memory layer across **three tables**: `memory_events` (permanent append-first event memory), `memory_event_history` (append-only full-row audit snapshots), and `memory_entries` (KV/TTL working cache). The Sprint 3 design review upgraded the original "TTL-only" plan — a TTL cache cannot satisfy the Sacred Constraint, because expiry is deletion. Permanent memory and ephemeral cache are now physically separate tables.
+
+**Status machine:** `ACTIVE ⇄ ARCHIVED`, `ACTIVE/ARCHIVED → CORRUPTED` (validator quarantine), `CORRUPTED → ACTIVE` (restore after repair). Rows are never deleted.
 
 **Key contracts:**
-- `get()` returns null for expired entries (never throws)
-- `set()` with no TTL = session memory (expires when process ends via scheduler GC)
-- All operations on a namespace are isolated from other namespaces
-- GC runs every 60 minutes, logged to consistency_log
+- **Append-first:** `payload`, `event_type`, `occurred_at`, `runtime_domain`, `trade_intent_id`, `strategy_id`, `symbol`, `source`, `dedupe_key` are immutable forever. `appendMemory()` is the only way to add information (appends to the `context` JSONB array).
+- **Invariant:** `memory_event_history` row count === `version` for every memory, always. Every mutation is SELECT FOR UPDATE + UPDATE + history INSERT in one transaction.
+- **Idempotency:** `createMemory()` dedupes on `dedupe_key` (partial unique index + ON CONFLICT DO NOTHING); duplicates return the existing row with no history write.
+- **Validation:** `validateMemory()` — structural damage → ERROR + CORRUPTED quarantine; referential orphans and version gaps → WARN only. All findings go to `consistency_log` (via `rdm.logConsistency()` when RDM is injected, direct INSERT otherwise).
+- **Snapshots:** `summarizeMemory()` output feeds `system_snapshots.memory_summary` via `rdm.takeSnapshot(reason, { memorySummary })`.
+- **KV cache:** `kvSet/kvGet/kvGetAll/kvGc` on `memory_entries` — namespace-isolated, TTL-expiring. `kvGc()` cannot touch event memory by construction.
+
+```js
+// Event memory (permanent, append-first)
+mm.createMemory({event_type, payload, ...})     → { created, duplicate, row }
+mm.appendMemory(id, addendum, opts)             → { row }   // the ONLY way to add info
+mm.updateMemory(id, {importance|tags|reasoning|metadata}) → { row }
+mm.tagMemory(id, {add, remove})                 → { row }
+mm.archiveMemory(id, reason) / mm.restoreMemory(id, reason) → { row }
+mm.getMemory(id) / mm.getMemoryHistory(id)      → row / history[]
+
+// Query surface
+mm.searchMemory({event_type, runtime_domain, strategy_id, symbol,
+                 tagsAny, tagsAll, minImportance, text, since, until,
+                 status, order, limit, offset})  → rows[]
+mm.queryByDomain(domain, opts) / mm.queryByTrade(intentId, opts)
+mm.queryByTime(since, until, opts) / mm.queryByStrategy(strategyId, opts)
+mm.summarizeMemory({since})                     → { total, byEventType, byDomain,
+                                                    byStatus, topTags, importance,
+                                                    timeRange, historyRows, generatedAt }
+mm.validateMemory({markCorrupted})              → { ok, checked, issues[], corrupted[] }
+
+// KV cache (memory_entries — ephemeral working state)
+mm.kvSet(ns, key, value, {ttlSeconds}) / mm.kvGet(ns, key)
+mm.kvGetAll(ns) / mm.kvGc()                     → { removed }
+
+// Health
+mm.ping() / mm.getStats()
+```
 
 ### 6.3 KnowledgeManager (Sprint 4 — Planned)
 
@@ -665,9 +700,11 @@ RuntimeDomainManager.updateDomain('scheduler', {
 | shadowm.js (current) | ✅ direct | — | — | — | — | ✅ | — | — | — |
 | shadowlab.js (current) | ✅ direct | — | — | — | — | — | ✅ | — | — |
 | telemetry/index.js | — | — | — | — | ✅ | — | — | — | — |
-| MemoryManager (S3) | — | — | — | — | — | — | — | ✅ | — |
+| MemoryManager (S3) | — | — | — | ✅ | — | — | — | ✅ | — |
 | KnowledgeManager (S4) | — | — | — | — | — | — | ✅ | — | — |
 | RecoveryManager (S5) | — | — | ✅ | ✅ | — | — | — | — | — |
+
+> MemoryManager (Sprint 3) also owns two tables added in Migration 004 and not shown as columns above: `memory_events` and `memory_event_history` (writer: MemoryManager only; history is append-only, never deleted).
 
 ### 9.2 Domain ownership
 
@@ -973,11 +1010,11 @@ Pool connection dropped:
 | Integration tests | 1 | ✅ COMPLETE | — |
 | Simulation tests | 1 | ✅ COMPLETE | — |
 | Stress tests | 1 | ✅ COMPLETE | — |
-| TradeIntentManager | 2 | ⏳ PLANNED | — |
+| TradeIntentManager | 2 | ✅ COMPLETE | 169 tests |
 | LiveDomainAdapter | 2 | ⏳ PLANNED | — |
 | ShadowMAdapter | 2 | ⏳ PLANNED | — |
 | ShadowLabAdapter | 2 | ⏳ PLANNED | — |
-| MemoryManager | 3 | ⏳ PLANNED | — |
+| MemoryManager | 3 | ✅ COMPLETE | 101 tests |
 | KnowledgeManager | 4 | ⏳ PLANNED | — |
 | RecoveryManager | 5 | ⏳ PLANNED | — |
 | ValidationManager | 5 | ⏳ PLANNED | — |
@@ -991,7 +1028,7 @@ Pool connection dropped:
 | 0 | Foundation | DB schema, test framework, dead code archive | Idempotent migration |
 | 1 | Runtime Awakening | RuntimeDomainManager — complete domain ownership | Optimistic locking under concurrency |
 | 2 | Domain Wiring | Adapters — connect existing engines to RDM | Behavior regression in server.js, shadowm.js |
-| 3 | Memory OS | MemoryManager — TTL-based contextual memory | GC correctness, TTL edge cases |
+| 3 | Memory OS | MemoryManager — append-first permanent event memory + TTL cache | Append-first invariants, crash durability |
 | 4 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
 | 5 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
 | 6 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |

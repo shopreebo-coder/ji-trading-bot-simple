@@ -41,6 +41,8 @@ const EXPECTED_TABLES = [
   "trade_intents",
   "trade_intent_history",
   "memory_entries",
+  "memory_events",
+  "memory_event_history",
   "knowledge_artifacts",
   "event_idempotency",
   "consistency_log",
@@ -88,6 +90,7 @@ async function run() {
       "001_shadow_os_v2_schema.sql",
       "002_runtime_domain_history.sql",
       "003_trade_intent_v2.sql",
+      "004_memory_foundation.sql",
     ];
 
     for (const migFile of migrations) {
@@ -174,7 +177,7 @@ async function run() {
     if (!dataOk) throw new Error("CRITICAL: Data loss detected — rolling back is required!");
 
     console.log("\n[MIGRATION] ════════════════════════════════════════");
-    console.log("[MIGRATION] MIGRATIONS 001 + 002 + 003 COMPLETE — All checks passed.");
+    console.log("[MIGRATION] MIGRATIONS 001 + 002 + 003 + 004 COMPLETE — All checks passed.");
     console.log("[MIGRATION] ════════════════════════════════════════\n");
 
   } finally {

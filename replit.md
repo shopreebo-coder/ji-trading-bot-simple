@@ -35,8 +35,11 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `IMPLEMENTATION_BLUEPRINT.md` — Phase specs and gate criteria
 - `SPRINT_0_REPORT.md` — Sprint 0 completion report
 - `telemetry/managers/TradeIntentManager.js` — Sprint 2 core implementation (~600L)
-- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM)
+- `telemetry/managers/MemoryManager.js` — Sprint 3 core implementation (append-first memory layer)
+- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
+- `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
+- `CHANGELOG.md` — Sprint-by-sprint change log
 
 ## Architecture decisions
 
@@ -57,8 +60,8 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 0      | Archive dead code, test framework, DB schema | ✅ COMPLETE |
 | 1      | RuntimeDomainManager                   | ✅ COMPLETE  |
 | 2      | Domain Adapters (TradeIntentManager)   | ✅ COMPLETE  |
-| 3      | MemoryManager                          | 🔜 NEXT      |
-| 4      | KnowledgeManager                       | Not started  |
+| 3      | MemoryManager                          | ✅ COMPLETE  |
+| 4      | KnowledgeManager                       | 🔜 NEXT      |
 | 5      | RecoveryManager + ValidationManager    | Not started  |
 
 ## User preferences
@@ -85,4 +88,6 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - See `docs/reports/SPRINT_1_REPORT.md` (+ `.pdf`) for Sprint 1 findings and gate results
 - See `docs/architecture/MASTER_ARCHITECTURE.md` (+ `.pdf`) for the SHADOW OS v2 single source of truth
 - See `telemetry/managers/RuntimeDomainManager.js` for the Sprint 1 core implementation
+- See `docs/reports/SPRINT_3_REPORT.md` (+ `.pdf`) for Sprint 3 findings and gate results
 - Run all Sprint 1 tests: `node --test --test-reporter=spec telemetry/tests/unit/RuntimeDomainManager.test.js telemetry/tests/integration/rdm_integration.test.js telemetry/tests/simulation/rdm_simulation.test.js telemetry/tests/stress/rdm_stress.test.js`
+- Run all Sprint 3 tests: `node --test --test-reporter=spec telemetry/tests/unit/MemoryManager.test.js telemetry/tests/integration/mm_integration.test.js telemetry/tests/integration/mm_rdm_tim_integration.test.js telemetry/tests/simulation/mm_persistence.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mm_stress.test.js` (stress suite kills idle DB connections — never run it in the same process group as other suites)

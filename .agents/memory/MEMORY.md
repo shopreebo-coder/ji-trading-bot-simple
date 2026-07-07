@@ -8,3 +8,4 @@
 - [cas-pool-deadlock](cas-pool-deadlock.md) — never call pool.connect() inside try{} while another client is held; read all DB data before returning in the else-branch
 - [TIM cancelIntent state machine](tim-cancel-approved.md) — cancelIntent accepts APPROVED; concurrent approve+cancel can both succeed (correct behavior, not a race bug)
 - [RDM takeSnapshot return shape](rdm-snapshot-shape.md) — returns { snapshotId, createdAt, domainCount, reason }, NOT { domains: [...] }
+- [Destructive test suite isolation](destructive-test-isolation.md) — suites that kill idle DB backends must run alone with output to a file; combined runs die silently (exit -1, no output)

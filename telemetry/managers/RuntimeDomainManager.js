@@ -429,6 +429,7 @@ class RuntimeDomainManager {
    *
    * @param {string} [reason='manual']
    * @param {object} [options]
+   * @param {object} [options.memorySummary]  Output of MemoryManager.summarizeMemory() (Sprint 3)
    * @returns {{ snapshotId: number, createdAt: Date, domainCount: number, reason: string }}
    */
   async takeSnapshot(reason = "manual", options = {}) {
@@ -455,7 +456,7 @@ class RuntimeDomainManager {
       [
         reason,
         JSON.stringify(runtimeSummary),
-        JSON.stringify({ note: "MemoryManager not yet implemented (Sprint 3)" }),
+        JSON.stringify(options.memorySummary || { note: "no memory summary provided" }),
         JSON.stringify({ note: "KnowledgeManager not yet implemented (Sprint 4)" }),
         "OPERATIONAL",
       ]
