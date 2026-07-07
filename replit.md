@@ -52,11 +52,11 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | Sprint | Objective                              | Status       |
 |--------|----------------------------------------|--------------|
 | 0      | Archive dead code, test framework, DB schema | ✅ COMPLETE |
-| 1      | RuntimeDomainManager                   | 🔜 NEXT      |
-| 2      | TradeIntentManager                     | Not started  |
+| 1      | RuntimeDomainManager                   | ✅ COMPLETE  |
+| 2      | Domain Adapters (TradeIntentManager)   | 🔜 NEXT      |
 | 3      | MemoryManager                          | Not started  |
 | 4      | KnowledgeManager                       | Not started  |
-| 5      | EventBus + wiring                      | Not started  |
+| 5      | RecoveryManager + ValidationManager    | Not started  |
 
 ## User preferences
 
@@ -72,9 +72,14 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - **`ANY($1)` with a JS array parameter** returns 0 rows in pg — fetch all rows and filter in JS instead.
 - **`node --test --reporter=spec`** is wrong in Node 24. Use `--test-reporter=spec`.
 - **`git push` times out** from the agent. User must push from the Shell.
+- **CAS pool deadlock:** In a method that holds a pg pool client, never call another method that calls `pool.connect()` inside the same try/finally block — `finally { client.release() }` runs after `return` resolves, so both connections are held simultaneously. With pool.max=N and N concurrent callers, this deadlocks permanently. Fix: read all needed DB state using the already-held client, then release. This passes sequential tests but deadlocks under concurrent load.
 
 ## Pointers
 
 - See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
 - See `SHADOW_OS_V2.md` for the full v2 architecture design
-- See `SPRINT_0_REPORT.md` for Sprint 0 findings and gate results
+- See `docs/reports/SPRINT_0_REPORT.md` for Sprint 0 findings and gate results
+- See `docs/reports/SPRINT_1_REPORT.md` (+ `.pdf`) for Sprint 1 findings and gate results
+- See `docs/architecture/MASTER_ARCHITECTURE.md` (+ `.pdf`) for the SHADOW OS v2 single source of truth
+- See `telemetry/managers/RuntimeDomainManager.js` for the Sprint 1 core implementation
+- Run all Sprint 1 tests: `node --test --test-reporter=spec telemetry/tests/unit/RuntimeDomainManager.test.js telemetry/tests/integration/rdm_integration.test.js telemetry/tests/simulation/rdm_simulation.test.js telemetry/tests/stress/rdm_stress.test.js`

@@ -44,6 +44,7 @@ const EXPECTED_TABLES = [
   "event_idempotency",
   "consistency_log",
   "system_snapshots",
+  "runtime_domain_history",
 ];
 
 const EXPECTED_DOMAINS = [
@@ -82,25 +83,32 @@ async function run() {
     client = null;
 
     // ── Execute SQL via psql (most reliable multi-statement runner) ─
-    const sqlPath = path.join(__dirname, "001_shadow_os_v2_schema.sql");
-    console.log(`[MIGRATION] Running: psql -f ${path.basename(sqlPath)}`);
-    try {
-      const output = execSync(
-        `psql "${DATABASE_URL}" -f "${sqlPath}" --set ON_ERROR_STOP=1 2>&1`,
-        { encoding: "utf8", timeout: 60000 }
-      );
-      const lines = output.split("\n").filter(l => l.trim());
-      for (const line of lines) {
-        console.log(`[MIGRATION]   psql: ${line}`);
+    const migrations = [
+      "001_shadow_os_v2_schema.sql",
+      "002_runtime_domain_history.sql",
+    ];
+
+    for (const migFile of migrations) {
+      const sqlPath = path.join(__dirname, migFile);
+      console.log(`[MIGRATION] Running: psql -f ${migFile}`);
+      try {
+        const output = execSync(
+          `psql "${DATABASE_URL}" -f "${sqlPath}" --set ON_ERROR_STOP=1 2>&1`,
+          { encoding: "utf8", timeout: 60000 }
+        );
+        const lines = output.split("\n").filter(l => l.trim());
+        for (const line of lines) {
+          console.log(`[MIGRATION]   psql: ${line}`);
+        }
+        console.log(`[MIGRATION] ${migFile} complete.`);
+      } catch (err) {
+        const output = err.stdout || err.stderr || err.message || "";
+        console.error(`[MIGRATION] psql FAILED for ${migFile}:`);
+        for (const line of output.split("\n")) {
+          if (line.trim()) console.error(`[MIGRATION]   ${line}`);
+        }
+        throw new Error(`psql execution failed for ${migFile} — see output above`);
       }
-      console.log("[MIGRATION] psql execution complete.");
-    } catch (err) {
-      const output = err.stdout || err.stderr || err.message || "";
-      console.error("[MIGRATION] psql FAILED:");
-      for (const line of output.split("\n")) {
-        if (line.trim()) console.error(`[MIGRATION]   ${line}`);
-      }
-      throw new Error("psql execution failed — see output above");
     }
 
     // ── Reconnect for verification ─────────────────────────────────
@@ -164,7 +172,7 @@ async function run() {
     if (!dataOk) throw new Error("CRITICAL: Data loss detected — rolling back is required!");
 
     console.log("\n[MIGRATION] ════════════════════════════════════════");
-    console.log("[MIGRATION] MIGRATION 001 COMPLETE — All checks passed.");
+    console.log("[MIGRATION] MIGRATIONS 001 + 002 COMPLETE — All checks passed.");
     console.log("[MIGRATION] ════════════════════════════════════════\n");
 
   } finally {

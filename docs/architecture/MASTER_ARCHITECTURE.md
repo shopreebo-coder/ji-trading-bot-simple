@@ -1,0 +1,1005 @@
+# MASTER ARCHITECTURE — SHADOW OS v2
+## FOREX ENGINE PRO — Autonomous Trading Operating System
+
+**Classification:** Principal Architecture Document — Single Source of Truth  
+**Version:** 1.0  
+**Date:** 2026-07-06  
+**Authors:** Sprint 0 (Foundation) + Sprint 1 (Runtime Awakening)  
+**Status:** ACTIVE — Sprint 1 implemented, Sprints 2–5 specified
+
+---
+
+## Table of Contents
+
+1. [Purpose and Scope](#1-purpose-and-scope)
+2. [Core Design Philosophy](#2-core-design-philosophy)
+3. [Four-Layer Memory Hierarchy](#3-four-layer-memory-hierarchy)
+4. [Component Map](#4-component-map)
+5. [Runtime Domains (10 Domains)](#5-runtime-domains)
+6. [Manager Hierarchy](#6-manager-hierarchy)
+7. [Lifecycle Diagrams](#7-lifecycle-diagrams)
+8. [Data Flow Diagrams](#8-data-flow-diagrams)
+9. [Component Interaction Matrix](#9-component-interaction-matrix)
+10. [Database Schema](#10-database-schema)
+11. [API Contracts](#11-api-contracts)
+12. [Recovery Sequences](#12-recovery-sequences)
+13. [Failure Modes and Mitigations](#13-failure-modes-and-mitigations)
+14. [Implementation Status](#14-implementation-status)
+15. [Sprint Roadmap](#15-sprint-roadmap)
+
+---
+
+## 1. Purpose and Scope
+
+This document is the **single source of truth** for the SHADOW OS v2 architecture. Every implementation decision, API design, and database schema must be consistent with what is written here. When this document and the code disagree, this document wins — update the code.
+
+### 1.1 What SHADOW OS v2 Is
+
+SHADOW OS v2 is the operating system layer of FOREX ENGINE PRO. It is not a feature. It is the foundation on which every future capability is built. Its purpose:
+
+- **Own runtime state** — single, authoritative, version-controlled state store
+- **Protect accumulated knowledge** — learned intelligence is immutable, versioned, never deleted
+- **Mediate all resource access** — no engine module touches PostgreSQL directly
+- **Enable recovery** — the system returns to a valid state after any failure
+- **Accumulate intelligence** — the system becomes smarter over time without human intervention
+
+### 1.2 What SHADOW OS v2 Is Not
+
+- It is not a replacement for the live trading bot (`index.js`) — that is FROZEN
+- It is not a refactor of `server.js`, `shadowm.js`, or `shadowlab.js` — those are production files, modified only when a manager is ready to take ownership
+- It is not an event-driven rewrite — events remain in the `events` table, unchanged
+
+### 1.3 The Sacred Constraint
+
+```
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  SACRED CONSTRAINT — NEVER VIOLATED                                       ║
+║                                                                           ║
+║  No deployment, restart, or migration step may ever destroy the           ║
+║  accumulated trading knowledge of the system.                             ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## 2. Core Design Philosophy
+
+### 2.1 Six Architectural Invariants
+
+```
+INVARIANT 1: Single Source of Truth
+  For every piece of information, exactly one layer owns it.
+  Runtime Layer owns operational state.
+  Memory Layer owns contextual memory.
+  Knowledge Layer owns learned intelligence.
+  Event Log owns historical record.
+  Violation → data inconsistency, potential duplicate trades.
+
+INVARIANT 2: Manager Mediation
+  No engine module reads from or writes to PostgreSQL directly.
+  All DB access goes through the Manager Tier.
+  Violation → bypasses optimistic concurrency, validation, versioning.
+  Implementation note: Sprint 1 introduces RuntimeDomainManager.
+  Existing production files (server.js, shadowm.js, shadowlab.js) access DB
+  directly until their respective manager is implemented and tested.
+
+INVARIANT 3: Knowledge Immutability
+  Knowledge artifacts are never deleted; they are superseded.
+  Every training run produces a new version.
+  The lineage of how the system learned is always traceable.
+  Violation → cannot diagnose learning degradation or roll back safely.
+
+INVARIANT 4: Memory Expiry
+  Memory entries have a defined lifecycle. They expire naturally.
+  The system does not rely on memory entries being present.
+  Missing memory → safe default behavior, not a crash.
+  Violation → stale context treated as current, incorrect decisions.
+
+INVARIANT 5: Recovery Completeness
+  After any failure, the Recovery Manager runs all recovery phases
+  before trading resumes.
+  System status is HALTED until RecoveryManager reports READY or DEGRADED.
+  DEGRADED → trading paused, monitoring active.
+  Violation → trading on inconsistent state.
+
+INVARIANT 6: Financial Intent Atomicity
+  Every trade_open or trade_close is preceded by a committed trade_intent.
+  No OANDA call is made without a committed PENDING intent.
+  Violation → ghost trades, unreconcilable positions.
+```
+
+### 2.2 The OS Analogy
+
+| SHADOW OS v2 Component | OS Analogy | Responsibility |
+|------------------------|-----------|----------------|
+| Manager Tier | Kernel | Mediates all resource access |
+| Runtime Layer | CPU registers + RAM | Operational state, domain cursors |
+| Memory Layer | Virtual memory (paged) | Contextual memory with TTL |
+| Knowledge Layer | Persistent disk | Learned intelligence, never rebuilt |
+| Event Log | Audit journal | Immutable record, compliance only |
+| RuntimeDomainManager | Process scheduler | Owns/arbitrates runtime state |
+| MemoryManager | Memory allocator | TTL lifecycle, namespace isolation |
+| KnowledgeManager | Filesystem | Versioned artifact storage |
+| RecoveryManager | Fault handler | Post-failure state reconstruction |
+| ValidationManager | Health monitor | Periodic integrity verification |
+
+---
+
+## 3. Four-Layer Memory Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        SHADOW OS v2 — MEMORY HIERARCHY                     │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  RUNTIME LAYER                                                       │   │
+│  │  Fast · Versioned · Domain-partitioned · Optimistic locking         │   │
+│  │  Write latency: ~5ms     Read latency: ~2ms                         │   │
+│  │  Durability: survives restart (PostgreSQL)                          │   │
+│  │  Domains: live, shadowA, shadowB, shadowC, shadowD,                 │   │
+│  │           shadowM, exitLab, telemetry, scheduler, meta              │   │
+│  │  Owner: RuntimeDomainManager (Sprint 1)              ← IMPLEMENTED  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  MEMORY LAYER                                                        │   │
+│  │  TTL-based · Contextual · Self-expiring · GC-managed               │   │
+│  │  Write latency: ~5ms     Read latency: ~3ms                         │   │
+│  │  Durability: TTL (hours to days)                                    │   │
+│  │  Namespaces: observations, cooldowns, market_state, volatility,     │   │
+│  │              correlations, decision_history, confidence_decay       │   │
+│  │  Owner: MemoryManager (Sprint 3)                       ← PLANNED    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  KNOWLEDGE LAYER                                                     │   │
+│  │  Permanent · Versioned · Append-only · Checksum-verified            │   │
+│  │  Write latency: ~20ms    Read latency: ~10ms                        │   │
+│  │  Durability: forever (never deleted, only superseded)               │   │
+│  │  Artifacts: engineC/*, engineD/*, exitLab/*, market/*, system/*     │   │
+│  │  Owner: KnowledgeManager (Sprint 4)                    ← PLANNED    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  EVENT LOG                                                           │   │
+│  │  Immutable · Append-only · Audit-only                               │   │
+│  │  Write latency: ~5ms     Read latency: variable                     │   │
+│  │  Durability: forever                                                 │   │
+│  │  Purpose: compliance, analytics, replay — NOT recovery              │   │
+│  │  Owner: existing telemetry/index.js (unchanged)        ← FROZEN     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Layer communication rules:
+  Runtime  → Memory:    Runtime state may reference Memory keys (never embed values)
+  Runtime  → Knowledge: Runtime may reference Knowledge versions (never embed)
+  Memory   → Knowledge: PROHIBITED (Memory is transient; Knowledge is permanent)
+  Any      → Event Log: Write-only. Never read for recovery.
+  All access → through Manager Tier only.
+```
+
+---
+
+## 4. Component Map
+
+### 4.1 Trading Engines (existing, production-frozen)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TRADING ENGINES                                     │
+│                                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │  LIVE BOT    │  │  SHADOW A    │  │  SHADOW B    │  │  SHADOW C    │   │
+│  │  index.js    │  │  (in lab)    │  │  (in lab)    │  │  (in lab)    │   │
+│  │  FROZEN      │  │  Trend Eng.  │  │  Candle Eng. │  │  KNN Engine  │   │
+│  │  OANDA calls │  │  Frozen      │  │  Frozen      │  │  Adaptive    │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
+│         │                  └──────────────────┴──────────────────┘          │
+│         │                              shadowlab.js                         │
+│  ┌──────┴───────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │  SHADOW M    │  │  SHADOW D    │  │  EXIT LAB    │  │  TELEMETRY   │   │
+│  │  shadowm.js  │  │  (in lab)    │  │  (in lab)    │  │  index.js    │   │
+│  │  Trade Track │  │  Meta Engine │  │  Exit Strat. │  │  Event log   │   │
+│  │  Exit detect │  │  Weights     │  │  Optimizer   │  │  SSE stream  │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
+│         │                  └──────────────────┘                 │            │
+│  ┌──────┴───────────────────────────────────────────────────────┴───────┐   │
+│  │                        server.js (orchestrator)                      │   │
+│  │                    Express API · Bot lifecycle · Scheduler           │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Manager Tier (SHADOW OS v2, being built)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          MANAGER TIER                                       │
+│                                                                             │
+│  ┌────────────────────────┐   ┌────────────────────────┐                  │
+│  │  RuntimeDomainManager  │   │     MemoryManager       │                  │
+│  │  Sprint 1 ← DONE       │   │     Sprint 3 (planned)  │                  │
+│  │                        │   │                         │                  │
+│  │  createDomain()        │   │  set(ns, key, val, ttl) │                  │
+│  │  getDomain()           │   │  get(ns, key)           │                  │
+│  │  updateDomain()        │   │  delete(ns, key)        │                  │
+│  │  patchDomain()         │   │  gc()                   │                  │
+│  │  compareAndSwap()      │   │  listNamespace(ns)      │                  │
+│  │  takeSnapshot()        │   └────────────────────────┘                  │
+│  │  restoreFromSnapshot() │                                                │
+│  │  rollback()            │   ┌────────────────────────┐                  │
+│  │  getHistory()          │   │   KnowledgeManager      │                  │
+│  │  runConsistencyCheck() │   │   Sprint 4 (planned)    │                  │
+│  └────────────────────────┘   │                         │                  │
+│                                │  saveArtifact()         │                  │
+│  ┌────────────────────────┐   │  loadArtifact()         │                  │
+│  │    RecoveryManager     │   │  getHistory()           │                  │
+│  │    Sprint 5 (planned)  │   │  rollback()             │                  │
+│  │                        │   └────────────────────────┘                  │
+│  │  runRecovery()         │                                                │
+│  │  assessDamage()        │   ┌────────────────────────┐                  │
+│  │  repairDomain()        │   │   ValidationManager     │                  │
+│  │  generateReport()      │   │   Sprint 5 (planned)    │                  │
+│  └────────────────────────┘   │                         │                  │
+│                                │  runCheck()             │                  │
+│                                │  autoRepair()           │                  │
+│                                │  schedule(interval)     │                  │
+│                                └────────────────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 Full System Component Responsibilities
+
+| Component | File | Domain | Writes To | Reads From | Status |
+|-----------|------|--------|-----------|------------|--------|
+| Live Bot | `index.js` | — | `events` (via telemetry) | — | FROZEN |
+| Server | `telemetry/server.js` | live, scheduler, meta | `events`, runtime_domains (direct, pre-v2) | events | FROZEN |
+| Shadow A | `telemetry/shadowlab.js` | shadowA | runtime_domains (direct, pre-v2) | events | FROZEN |
+| Shadow B | `telemetry/shadowlab.js` | shadowB | runtime_domains (direct, pre-v2) | events | FROZEN |
+| Shadow C | `telemetry/shadowlab.js` | shadowC | runtime_domains (direct, pre-v2) | events, knowledge_artifacts | FROZEN |
+| Shadow D | `telemetry/shadowlab.js` | shadowD | runtime_domains (direct, pre-v2) | events, knowledge_artifacts | FROZEN |
+| Shadow M | `telemetry/shadowm.js` | shadowM | runtime_domains (direct, pre-v2), shadowm_trades, shadowm_timeline | events | FROZEN |
+| Exit Lab | `telemetry/shadowlab.js` | exitLab | runtime_domains (direct, pre-v2), knowledge_artifacts | shadowm_trades | FROZEN |
+| Telemetry | `telemetry/index.js` | telemetry | `events` | — | FROZEN |
+| RuntimeDomainManager | `telemetry/managers/RuntimeDomainManager.js` | ALL | runtime_domains, runtime_domain_history, system_snapshots, consistency_log | runtime_domains, runtime_domain_history | ✅ SPRINT 1 |
+| MemoryManager | `telemetry/managers/MemoryManager.js` | — | memory_entries | memory_entries | SPRINT 3 |
+| KnowledgeManager | `telemetry/managers/KnowledgeManager.js` | — | knowledge_artifacts | knowledge_artifacts | SPRINT 4 |
+| RecoveryManager | `telemetry/managers/RecoveryManager.js` | — | consistency_log | ALL | SPRINT 5 |
+| ValidationManager | `telemetry/managers/ValidationManager.js` | — | consistency_log | ALL | SPRINT 5 |
+
+---
+
+## 5. Runtime Domains
+
+The Runtime Layer is divided into 10 independent domains. Each domain is a single row in `runtime_domains`. Domains are independent — one domain's mutation does not lock another.
+
+### 5.1 Domain: `live`
+```
+Owner:         server.js (Sprint 2: LiveDomainAdapter)
+Write freq:    High — every trade open/close/snapshot
+Contents:
+  dailyTrades  INTEGER — trade opens today (resets at UTC midnight)
+  openTrades   OBJECT  — {symbol → {symbol, side, pips, peak, breakEven, entryTime, signalId}}
+  date         TEXT    — YYYY-MM-DD (UTC), when dailyTrades was last reset
+  sequence     INTEGER — monotonically incrementing mutation counter
+Critical:      Losing this domain = losing knowledge of open positions.
+               Must be snapshotted before every OANDA call.
+```
+
+### 5.2 Domain: `shadowA`
+```
+Owner:         shadowlab.js / Engine A (Trend Engine)
+Write freq:    Each ShadowLab cycle (~30s)
+Contents:
+  signalsSeen     INTEGER — lifetime count
+  signalsBlocked  INTEGER — lifetime count
+  lastEvalTs      TEXT    — ISO timestamp
+  frozen          BOOLEAN — always true (Engine A is frozen)
+```
+
+### 5.3 Domain: `shadowB`
+```
+Owner:         shadowlab.js / Engine B (Candle Engine)
+Write freq:    Each ShadowLab cycle (~30s)
+Contents:      same schema as shadowA
+  frozen          BOOLEAN — always true (Engine B is frozen)
+```
+
+### 5.4 Domain: `shadowC`
+```
+Owner:         shadowlab.js / Engine C (KNN Engine)
+Write freq:    After each training cycle
+Contents:
+  datasetVersion  INTEGER — version of knowledge artifact currently loaded
+  datasetSize     INTEGER — number of training examples
+  lastTrainTs     TEXT    — ISO timestamp of last dataset update
+  nearestK        INTEGER — current K parameter (default: 5)
+  accuracy        REAL    — rolling accuracy on recent predictions (0–1)
+```
+
+### 5.5 Domain: `shadowD`
+```
+Owner:         shadowlab.js / Engine D (Meta Engine)
+Write freq:    Every 100 closed trades
+Contents:
+  weightsVersion  INTEGER — version of knowledge artifact currently loaded
+  lastTrainTs     TEXT    — ISO timestamp
+  conditionCount  INTEGER — number of conditions tracked
+  topConditions   ARRAY   — top 5 performing condition names
+  confidence      REAL    — current model confidence (0–1)
+```
+
+### 5.6 Domain: `shadowM`
+```
+Owner:         shadowm.js (Trade Tracker / Exit Detector)
+Write freq:    After every poll that finds new events
+Contents:
+  lastId      INTEGER — highest events.id processed (cursor)
+  active      OBJECT  — signalId → tracking object (open trades only)
+  knownSids   ARRAY   — all known signalIds (open + closed)
+  pollCount   INTEGER — total polls this session
+  lastPollTs  TEXT    — ISO timestamp of last poll
+Critical:     lastId is the event cursor. Losing it = reprocessing trades = ghost positions.
+```
+
+### 5.7 Domain: `exitLab`
+```
+Owner:         shadowlab.js (Exit Lab / Exit Strategy Optimizer)
+Write freq:    Each ShadowLab cycle
+Contents:
+  strategiesLoaded        ARRAY  — names of exit strategies loaded
+  bestStrategy            TEXT   — current best-performing strategy
+  strategyVersions        OBJECT — strategy → knowledgeArtifactVersion
+  evaluationsThisSession  INTEGER
+```
+
+### 5.8 Domain: `telemetry`
+```
+Owner:         telemetry/index.js
+Write freq:    After each logEvent() batch (~30s)
+Contents:
+  lastEventId  INTEGER — highest events.id written this session
+  eventCount   INTEGER — total events written
+  errorCount   INTEGER — DB write errors this session
+  lastErrorTs  TEXT    — ISO timestamp of last error
+  dbBackend    TEXT    — 'postgresql' or 'sqlite'
+```
+
+### 5.9 Domain: `scheduler`
+```
+Owner:         server.js (scheduling coordinator)
+Write freq:    Each cycle boundary
+Contents:
+  nextCycleTs       TEXT    — ISO timestamp of next ShadowLab cycle
+  lastCycleTs       TEXT    — ISO timestamp of last completed cycle
+  cycleCount        INTEGER — total cycles this session
+  shadowLabInterval INTEGER — current cycle interval in ms (adaptive)
+  botPid            INTEGER — PID of running bot process (or null)
+```
+
+### 5.10 Domain: `meta`
+```
+Owner:         server.js (system metadata)
+Write freq:    On boot, on shutdown, on status change
+Contents:
+  systemVersion     TEXT — "v40.1"
+  schemaVersion     INTEGER — runtime_domains schema version
+  bootCount         INTEGER — cumulative across all sessions, never reset
+  uptimeStart       TEXT — ISO timestamp of this boot
+  lastCleanShutdown TEXT — ISO timestamp of last graceful shutdown
+  status            TEXT — 'HEALTHY' | 'DEGRADED' | 'HALTED'
+Critical:     bootCount must be incremented on every restart.
+              status=HALTED until RecoveryManager reports READY.
+```
+
+---
+
+## 6. Manager Hierarchy
+
+### 6.1 RuntimeDomainManager (Sprint 1 — IMPLEMENTED)
+
+**Role:** Single owner of all 10 runtime domains. Gateway between engines and the `runtime_domains` table. Enforces optimistic locking, records full version history, provides snapshot and rollback.
+
+**API:**
+```javascript
+// Lifecycle
+rdm.init()                                    → { ok, tables[] }
+rdm.shutdown()                                → void
+
+// Core CRUD
+rdm.createDomain(domain, value, opts)         → { created, row }
+rdm.getDomain(domain)                         → { domain, version, value, updated_at, schema_ver }
+rdm.listDomains()                             → [ row, ... ]
+rdm.updateDomain(domain, value, opts)         → row
+rdm.patchDomain(domain, patch, opts)          → row
+
+// Optimistic locking (preferred for concurrent engines)
+rdm.compareAndSwap(domain, expectedVer, val)  → { swapped, currentVersion, row }
+
+// Snapshots
+rdm.takeSnapshot(reason, opts)                → { snapshotId, createdAt, domainCount }
+rdm.getSnapshot(id)                           → snapshot row
+rdm.listSnapshots(limit)                      → [ snapshot, ... ]
+rdm.restoreFromSnapshot(id, domains, opts)    → { restored[], snapshotId }
+
+// Version history & rollback
+rdm.getHistory(domain, limit)                 → [ history_row, ... ]
+rdm.rollback(domain, targetVersion, opts)     → { domain, rolledBackTo, currentVersion }
+
+// Audit
+rdm.logConsistency(checkId, severity, desc, detail, opts) → { id, detectedAt }
+rdm.resolveConsistency(id, resolution, opts)  → { id, resolvedAt }
+rdm.runConsistencyCheck()                     → { checks, domains, issues, severity, detail[] }
+
+// Health
+rdm.ping()                                    → { ok, latencyMs }
+rdm.getStats()                                → { domains, maxVersion, historyRows, snapshots, pool }
+```
+
+### 6.2 MemoryManager (Sprint 3 — Planned)
+
+**Role:** Manages the `memory_entries` table. Provides TTL-based lifecycle, namespace isolation, GIN-indexed tag search, and automatic GC.
+
+**Key contracts:**
+- `get()` returns null for expired entries (never throws)
+- `set()` with no TTL = session memory (expires when process ends via scheduler GC)
+- All operations on a namespace are isolated from other namespaces
+- GC runs every 60 minutes, logged to consistency_log
+
+### 6.3 KnowledgeManager (Sprint 4 — Planned)
+
+**Role:** Manages the `knowledge_artifacts` table. Versioned storage for trained models, strategy performance statistics, and adaptive thresholds.
+
+**Key contracts:**
+- Save always creates a new version (never overwrites)
+- Load returns the single active artifact (superseded_at IS NULL)
+- Rollback marks the current as superseded and promotes the target version
+- Checksums validated on load (corrupted artifact = load prior version, log CRITICAL)
+
+### 6.4 RecoveryManager (Sprint 5 — Planned)
+
+**Role:** Runs all recovery phases after process restart or failure. Blocks trading until recovery completes. Uses consistency_log to record all decisions.
+
+**Nine recovery phases:**
+1. DB connectivity check
+2. Schema integrity check (all 10 tables present)
+3. Domain integrity check (all 10 domains present, valid JSON)
+4. Event cursor validation (shadowM.lastId vs events table MAX)
+5. Open position reconciliation (runtime.live vs events)
+6. Knowledge artifact integrity (checksums)
+7. Memory GC (clear expired entries)
+8. Snapshot creation (pre-trading baseline)
+9. Status update (meta.status = HEALTHY or DEGRADED)
+
+### 6.5 ValidationManager (Sprint 5 — Planned)
+
+**Role:** Runs periodic consistency checks every 5 minutes. Classifies issues by severity. Auto-repairs known patterns (INFO and WARN), logs CRITICAL issues for human review.
+
+---
+
+## 7. Lifecycle Diagrams
+
+### 7.1 Normal Startup Sequence
+
+```
+Process starts: node telemetry/server.js
+│
+├─ 1. require('./index') → db-adapter initialized, emitter created
+│
+├─ 2. require('./shadowlab') → ShadowLab engines loaded (no DB yet)
+│
+├─ 3. require('./shadowm') → ShadowM loaded (no DB yet)
+│
+├─ 4. restoreLiveState() ← reads events table for open positions
+│   └─ [FUTURE Sprint 2] RuntimeDomainManager.getDomain('live') replaces this
+│
+├─ 5. Express API starts on PORT
+│
+├─ 6. Bot process spawned: spawn('node', ['index.js'])
+│   └─ index.js: FROZEN. Reports trades via stdout. Never touches DB directly.
+│
+├─ 7. shadowM.start() ← begins polling events table every 2s
+│   └─ [FUTURE Sprint 2] Uses RuntimeDomainManager for shadowM domain state
+│
+├─ 8. shadowLab() cycle begins every 30s
+│   └─ [FUTURE Sprint 2] Uses RuntimeDomainManager for shadowA–D, exitLab domains
+│
+└─ SYSTEM OPERATIONAL
+
+[SHADOW OS v2 full startup — Sprint 5+]
+│
+├─ 1. RecoveryManager.runRecovery() ← all 9 phases
+│
+├─ 2. RuntimeDomainManager.init() ← validate tables
+│
+├─ 3. RuntimeDomainManager.getDomain('meta').bootCount++
+│
+├─ 4. RuntimeDomainManager.getDomain('meta').status = 'HEALTHY'
+│
+├─ 5. RuntimeDomainManager.takeSnapshot('boot')
+│
+└─ SYSTEM OPERATIONAL
+```
+
+### 7.2 Railway Restart Sequence
+
+```
+Railway SIGTERM received
+│
+├─ 1. server.js: graceful shutdown handler
+│   ├─ Stop accepting new OANDA trade signals
+│   ├─ [FUTURE Sprint 2] RuntimeDomainManager.updateDomain('meta',
+│   │   { status: 'HALTED', lastCleanShutdown: new Date().toISOString() })
+│   ├─ [FUTURE Sprint 2] RuntimeDomainManager.takeSnapshot('clean_shutdown')
+│   └─ Kill bot process (SIGTERM → SIGKILL after 10s)
+│
+├─ 2. Process exits cleanly
+│
+└─ [Railway restarts container]
+
+Post-restart:
+├─ 1. [FUTURE Sprint 5] RecoveryManager.runRecovery()
+│   ├─ Phase 4: validate event cursor (shadowM.lastId)
+│   ├─ Phase 5: reconcile open positions (live.openTrades vs events)
+│   ├─ Phase 8: take 'post_recovery' snapshot
+│   └─ Phase 9: meta.status = 'HEALTHY'
+│
+└─ Normal startup continues
+```
+
+### 7.3 Power Failure / Mid-Transaction Recovery
+
+```
+Power failure during RuntimeDomainManager.updateDomain():
+│
+├─ PostgreSQL: transaction is NOT committed → automatic rollback
+│   (domain retains its prior version — data is safe)
+│
+├─ runtime_domain_history: no orphan row (history written in same transaction)
+│
+└─ On next startup:
+    ├─ RecoveryManager reads last known domain state from runtime_domains
+    ├─ Detects discrepancy vs events table (if any)
+    ├─ Logs to consistency_log
+    └─ Repairs or flags for human review
+
+Key property: PostgreSQL transactional integrity means a power failure
+never corrupts the domain store. The worst case is "stale by one update".
+```
+
+---
+
+## 8. Data Flow Diagrams
+
+### 8.1 Trade Open Flow (Current — pre-SHADOW OS v2)
+
+```
+OANDA market movement
+        │
+        ▼
+index.js (FROZEN)
+  shadowGate() → evaluates conditions → OPEN signal
+        │
+        ▼
+stdout: "Trade -> EUR_USD BUY"
+        │
+        ▼
+server.js: handleBotLine()
+  live.openTrades[symbol] = { ... }    ← IN-MEMORY ONLY
+  broadcastSSE(trade_opened)
+        │
+        ▼
+telemetry/index.js: logEvent({ type: 'trade_open', ... })
+  INSERT INTO events ...               ← PERSISTED
+```
+
+### 8.2 Trade Open Flow (SHADOW OS v2 — Sprint 2+)
+
+```
+OANDA market movement
+        │
+        ▼
+index.js (FROZEN — unchanged)
+  shadowGate() → OPEN signal → stdout
+        │
+        ▼
+server.js: handleBotLine()
+        │
+        ▼
+TradeIntentManager (Sprint 2)
+  trade_intents INSERT (PENDING)       ← Intent committed BEFORE any action
+        │
+        ▼
+OANDA API call
+        │
+        ▼
+RuntimeDomainManager.compareAndSwap('live', currentVersion, {
+  ...live, openTrades: { ...live.openTrades, [symbol]: {...} }
+})                                     ← Atomic version-checked write
+        │
+        ▼
+TradeIntentManager: intent status = CONFIRMED
+        │
+        ▼
+telemetry/index.js: logEvent({ type: 'trade_open', ... })  ← Event log
+```
+
+### 8.3 ShadowLab Cycle Flow (Sprint 2+)
+
+```
+Scheduler: 30s interval
+        │
+        ▼
+RuntimeDomainManager.getDomain('scheduler')
+  → reads lastCycleTs, cycleCount
+        │
+        ▼
+ShadowLab cycle:
+  Engine A (frozen) → signals evaluated
+  Engine B (frozen) → confirms
+  Engine C (KNN)    → KnowledgeManager.loadArtifact('engineC/dataset')
+  Engine D (Meta)   → KnowledgeManager.loadArtifact('engineD/weights')
+  Exit Lab          → evaluates open positions
+        │
+        ▼
+For each domain state change:
+  RuntimeDomainManager.compareAndSwap(domain, version, newValue)
+        │
+        ▼
+RuntimeDomainManager.updateDomain('scheduler', {
+  lastCycleTs: now, cycleCount: cycleCount + 1, ...
+})
+```
+
+---
+
+## 9. Component Interaction Matrix
+
+### 9.1 Who writes to what (Sprint 1 baseline)
+
+| Writer → | runtime_domains | runtime_domain_history | system_snapshots | consistency_log | events | shadowm_trades | knowledge_artifacts | memory_entries | trade_intents |
+|----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| RuntimeDomainManager | ✅ | ✅ | ✅ | ✅ | — | — | — | — | — |
+| server.js (current) | ✅ direct | — | — | — | — | — | — | — | — |
+| shadowm.js (current) | ✅ direct | — | — | — | — | ✅ | — | — | — |
+| shadowlab.js (current) | ✅ direct | — | — | — | — | — | ✅ | — | — |
+| telemetry/index.js | — | — | — | — | ✅ | — | — | — | — |
+| MemoryManager (S3) | — | — | — | — | — | — | — | ✅ | — |
+| KnowledgeManager (S4) | — | — | — | — | — | — | ✅ | — | — |
+| RecoveryManager (S5) | — | — | ✅ | ✅ | — | — | — | — | — |
+
+### 9.2 Domain ownership
+
+| Domain | Current Writer | SHADOW OS v2 Writer (target) |
+|--------|---------------|-------------------------------|
+| live | server.js (in-memory + direct DB) | RuntimeDomainManager via LiveDomainAdapter (S2) |
+| shadowA | shadowlab.js (direct) | RuntimeDomainManager via ShadowLabAdapter (S2) |
+| shadowB | shadowlab.js (direct) | RuntimeDomainManager via ShadowLabAdapter (S2) |
+| shadowC | shadowlab.js (direct) | RuntimeDomainManager via ShadowLabAdapter (S2) |
+| shadowD | shadowlab.js (direct) | RuntimeDomainManager via ShadowLabAdapter (S2) |
+| shadowM | shadowm.js (direct) | RuntimeDomainManager via ShadowMAdapter (S2) |
+| exitLab | shadowlab.js (direct) | RuntimeDomainManager via ShadowLabAdapter (S2) |
+| telemetry | telemetry/index.js (direct) | RuntimeDomainManager via TelemetryAdapter (S2) |
+| scheduler | server.js (direct) | RuntimeDomainManager via SchedulerAdapter (S2) |
+| meta | server.js (direct) | RuntimeDomainManager via MetaAdapter (S2) |
+
+---
+
+## 10. Database Schema
+
+### 10.1 Complete Schema (Sprints 0 + 1)
+
+```sql
+-- ── Sprint 0: Foundation ─────────────────────────────────────────────────
+
+-- Existing (unchanged)
+CREATE TABLE events (
+  id     BIGSERIAL PRIMARY KEY,
+  ts     TEXT      NOT NULL,
+  bot_id TEXT,
+  type   TEXT      NOT NULL,
+  symbol TEXT,
+  data   JSONB
+);
+
+CREATE TABLE shadowm_trades (
+  id            BIGSERIAL PRIMARY KEY,
+  signal_id     TEXT      UNIQUE NOT NULL,
+  symbol        TEXT, side TEXT, entry_time TEXT, exit_time TEXT,
+  best_strategy TEXT, profit_live DOUBLE PRECISION, profit_saved DOUBLE PRECISION,
+  mfe DOUBLE PRECISION, mae DOUBLE PRECISION, data JSONB
+);
+
+CREATE TABLE shadowm_timeline (
+  id BIGSERIAL PRIMARY KEY, signal_id TEXT NOT NULL, ts TEXT NOT NULL,
+  pips DOUBLE PRECISION, mfe DOUBLE PRECISION, mae DOUBLE PRECISION, minutes DOUBLE PRECISION
+);
+
+-- SHADOW OS v2 new tables (Sprint 0)
+CREATE TABLE runtime_domains (
+  domain      TEXT        PRIMARY KEY,
+  version     BIGINT      NOT NULL DEFAULT 0,
+  value       JSONB       NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  schema_ver  INTEGER     NOT NULL DEFAULT 1
+);
+
+CREATE TABLE trade_intents (
+  id BIGSERIAL PRIMARY KEY, signal_id TEXT NOT NULL,
+  intent_type TEXT NOT NULL CHECK (intent_type IN ('OPEN','CLOSE','MODIFY')),
+  status TEXT NOT NULL DEFAULT 'PENDING'
+    CHECK (status IN ('PENDING','CONFIRMED','FAILED','RECONCILED')),
+  oanda_order_id TEXT, symbol TEXT NOT NULL, side TEXT,
+  payload JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  confirmed_at TIMESTAMPTZ, failure_reason TEXT,
+  UNIQUE (signal_id, intent_type)
+);
+
+CREATE TABLE memory_entries (
+  id BIGSERIAL PRIMARY KEY, namespace TEXT NOT NULL, key TEXT NOT NULL,
+  value JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ,
+  access_count BIGINT NOT NULL DEFAULT 0, tags TEXT[] NOT NULL DEFAULT '{}',
+  UNIQUE (namespace, key)
+);
+
+CREATE TABLE knowledge_artifacts (
+  id BIGSERIAL PRIMARY KEY, domain TEXT NOT NULL, artifact TEXT NOT NULL,
+  version BIGINT NOT NULL, value JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), superseded_at TIMESTAMPTZ,
+  checksum TEXT NOT NULL, byte_size INTEGER, training_events INTEGER,
+  confidence DOUBLE PRECISION, migration_from BIGINT REFERENCES knowledge_artifacts(id),
+  notes TEXT
+);
+
+CREATE TABLE event_idempotency (
+  key TEXT PRIMARY KEY, event_id BIGINT REFERENCES events(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE consistency_log (
+  id BIGSERIAL PRIMARY KEY, check_id TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('INFO','WARN','ERROR','CRITICAL')),
+  domain TEXT, description TEXT NOT NULL, detail JSONB,
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), resolved_at TIMESTAMPTZ,
+  resolution TEXT, auto_repaired BOOLEAN NOT NULL DEFAULT FALSE, repair_detail JSONB
+);
+
+CREATE TABLE system_snapshots (
+  id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  trigger_type TEXT NOT NULL, runtime_summary JSONB NOT NULL,
+  memory_summary JSONB NOT NULL, knowledge_summary JSONB NOT NULL,
+  system_status TEXT NOT NULL
+);
+
+-- ── Sprint 1: Runtime Awakening ──────────────────────────────────────────
+
+CREATE TABLE runtime_domain_history (
+  id          BIGSERIAL   PRIMARY KEY,
+  domain      TEXT        NOT NULL,
+  version     BIGINT      NOT NULL,
+  value       JSONB       NOT NULL,
+  changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  changed_by  TEXT        NOT NULL DEFAULT 'system',
+  change_op   TEXT        NOT NULL
+              CHECK (change_op IN ('CREATE','UPDATE','PATCH','CAS','RESTORE','ROLLBACK','SNAPSHOT')),
+  snapshot_id BIGINT      REFERENCES system_snapshots(id) ON DELETE SET NULL,
+  notes       TEXT
+);
+```
+
+### 10.2 Index Inventory (by table)
+
+| Table | Index | Type | Purpose |
+|-------|-------|------|---------|
+| events | idx_events_type | BTREE | type filter |
+| events | idx_events_ts | BTREE DESC | time-range |
+| events | idx_events_type_id | BTREE | type+cursor |
+| shadowm_trades | idx_smt_signal_id | BTREE | signal lookup |
+| shadowm_trades | idx_smt_exit_time | BTREE | time-range |
+| shadowm_timeline | idx_smt_signal | BTREE | signal lookup |
+| trade_intents | idx_ti_pending | BTREE (partial) | PENDING status |
+| memory_entries | idx_mem_ns | BTREE | namespace |
+| memory_entries | idx_mem_expires | BTREE (partial) | GC queries |
+| memory_entries | idx_mem_tags | GIN | tag search |
+| knowledge_artifacts | idx_ka_active | UNIQUE (partial) | active artifact |
+| knowledge_artifacts | idx_ka_history | BTREE | version history |
+| knowledge_artifacts | idx_ka_checksum | UNIQUE | dedup |
+| event_idempotency | idx_eidem_created | BTREE | TTL cleanup |
+| consistency_log | idx_clog_open | BTREE (partial) | open issues |
+| consistency_log | idx_clog_sev | BTREE | severity+time |
+| consistency_log | idx_clog_chk | BTREE | check_id+time |
+| system_snapshots | idx_snap_created | BTREE DESC | recent snapshots |
+| runtime_domain_history | idx_rdh_domain_ver | BTREE | domain+version |
+| runtime_domain_history | idx_rdh_changed_at | BTREE DESC | time-range |
+| runtime_domain_history | idx_rdh_snapshot | BTREE (partial) | snapshot lookup |
+
+---
+
+## 11. API Contracts
+
+### 11.1 RuntimeDomainManager Error Contracts
+
+All public methods:
+- Throw `Error` with a descriptive message on unexpected DB failures
+- `compareAndSwap` does NOT throw on version mismatch — it returns `{ swapped: false }`
+- `createDomain` does NOT throw if domain exists — returns `{ created: false, row: existing }`
+- `getDomain` does NOT throw if domain not found — returns `null`
+- Every error message starts with `RuntimeDomainManager.<methodName>:`
+
+### 11.2 Optimistic Locking Protocol
+
+```
+Engine wants to update domain 'shadowM':
+
+1. row = await rdm.getDomain('shadowM')
+   // row.version = 42
+
+2. newValue = { ...row.value, lastId: newEventId }
+
+3. result = await rdm.compareAndSwap('shadowM', 42, newValue)
+
+4a. result.swapped === true → success, proceed
+4b. result.swapped === false →
+      current = await rdm.getDomain('shadowM')
+      // re-read, re-apply changes, retry
+      // Max retries: 3 (configurable)
+      // After 3 failures: log WARN to consistency_log, use updateDomain() instead
+```
+
+### 11.3 Snapshot Contract
+
+Snapshots are full system state captures. They are NOT a backup of domain values — they store checksums in `runtime_summary`. The actual domain values are reconstructed from `runtime_domain_history` using the `snapshot_id` FK.
+
+This means: a snapshot without associated history records cannot be restored. The `takeSnapshot()` method writes both the snapshot row AND the history records in separate transactions. A partial failure (snapshot written, history not written) will be detected by `restoreFromSnapshot()` and throw.
+
+### 11.4 History Retention Policy
+
+| Condition | Retention |
+|-----------|-----------|
+| snapshot_id IS NOT NULL | Forever (linked to snapshot) |
+| change_op = 'CREATE' | Forever (domain provenance) |
+| change_op = 'ROLLBACK' | Forever (audit of corrections) |
+| Others, age > 90 days | Eligible for GC (future ValidationManager job) |
+
+---
+
+## 12. Recovery Sequences
+
+### 12.1 Normal Recovery (clean restart)
+
+```
+Phase 1: DB Connectivity
+  → pool.query('SELECT 1') with 10s timeout
+  → FAIL: HALT, retry every 30s (5 attempts), then alert
+
+Phase 2: Schema Integrity
+  → Check all 11 tables exist in information_schema.tables
+  → FAIL: HALT if runtime_domain_history or runtime_domains missing
+  → WARN: If optional tables missing (memory_entries, etc.) — log CRITICAL
+
+Phase 3: Domain Integrity
+  → All 10 domains present with valid JSON values
+  → FAIL: Run createDomain() with DEFAULT_DOMAINS values for missing ones
+  → Log each repair as consistency_log WARN
+
+Phase 4: Event Cursor Validation
+  → SELECT MAX(id) FROM events vs shadowM.lastId
+  → If MAX > lastId: ShadowM needs to catch up (not a problem)
+  → If lastId > MAX+buffer: corruption detected → WARN
+
+Phase 5: Open Position Reconciliation
+  → Rebuild live.openTrades from events (opens minus closes)
+  → Compare to runtime_domains 'live' value
+  → Discrepancy → use events-derived value (events are source of truth for positions)
+  → Log discrepancy to consistency_log
+
+Phase 6: Knowledge Integrity
+  → For each active knowledge_artifact: verify checksum
+  → Checksum mismatch → CRITICAL → rollback to prior version
+
+Phase 7: Memory GC
+  → DELETE FROM memory_entries WHERE expires_at < NOW()
+
+Phase 8: Baseline Snapshot
+  → RuntimeDomainManager.takeSnapshot('post_recovery')
+
+Phase 9: Status Update
+  → meta.status = 'HEALTHY' (all phases OK) or 'DEGRADED' (some issues)
+  → bootCount++
+  → uptimeStart = NOW()
+```
+
+### 12.2 Corruption Recovery
+
+```
+Corruption detected in domain 'shadowM':
+  - value is not a valid JSON object
+  - version has jumped unexpectedly
+  - critical field missing
+
+Step 1: Log to consistency_log (CRITICAL)
+Step 2: Search runtime_domain_history for most recent valid state
+Step 3: RuntimeDomainManager.rollback('shadowM', lastValidVersion)
+Step 4: Verify rollback succeeded (getDomain + schema check)
+Step 5: Log resolution to consistency_log
+Step 6: Continue recovery
+```
+
+### 12.3 Database Reconnect
+
+```
+Pool connection dropped:
+  → pg Pool auto-reconnects on next query
+  → If connection fails 3 times in 10s:
+       → Log CRITICAL to consistency_log (if DB available) or to stderr
+       → Stop accepting new trade signals
+       → Keep alive (don't exit — Railway will restart if exit code non-zero)
+  → On reconnect:
+       → Run Phase 3 (domain integrity check only — fast path)
+       → Resume operations
+```
+
+---
+
+## 13. Failure Modes and Mitigations
+
+| Failure | Detection | Mitigation | Severity |
+|---------|-----------|------------|----------|
+| Domain value corrupted | runConsistencyCheck() / startup Phase 3 | Rollback to last history entry | CRITICAL |
+| Version jump (skipped versions) | Consistency check Phase 3 | Log + investigate; may indicate multiple writers | WARN |
+| Snapshot missing history | restoreFromSnapshot() throws | Log CRITICAL; use prior snapshot | CRITICAL |
+| DB unavailable at startup | Phase 1 timeout | Retry 5×, then HALT | CRITICAL |
+| Mid-transaction failure | PostgreSQL rollback | Domain retains prior version; retry on next cycle | INFO |
+| CAS conflict (concurrent write) | swapped=false | Retry with fresh getDomain(); max 3 retries | WARN |
+| history table missing | Phase 2 | HALT; require migration to run | CRITICAL |
+| bootCount not incrementing | meta domain check | Repair via updateDomain; log WARN | WARN |
+| Event cursor inconsistency | Phase 4 | Use events table MAX as authoritative | WARN |
+| knowledge_artifact checksum mismatch | Phase 6 | Rollback artifact; log CRITICAL | CRITICAL |
+
+---
+
+## 14. Implementation Status
+
+| Component | Sprint | Status | Tests |
+|-----------|--------|--------|-------|
+| DB Schema (10 tables) | 0 | ✅ COMPLETE | 19 tests passing |
+| Dead code archive | 0 | ✅ COMPLETE | n/a |
+| Test framework | 0 | ✅ COMPLETE | operational |
+| runtime_domain_history table | 1 | ✅ COMPLETE | — |
+| RuntimeDomainManager | 1 | ✅ COMPLETE | — |
+| Unit tests | 1 | ✅ COMPLETE | — |
+| Integration tests | 1 | ✅ COMPLETE | — |
+| Simulation tests | 1 | ✅ COMPLETE | — |
+| Stress tests | 1 | ✅ COMPLETE | — |
+| TradeIntentManager | 2 | ⏳ PLANNED | — |
+| LiveDomainAdapter | 2 | ⏳ PLANNED | — |
+| ShadowMAdapter | 2 | ⏳ PLANNED | — |
+| ShadowLabAdapter | 2 | ⏳ PLANNED | — |
+| MemoryManager | 3 | ⏳ PLANNED | — |
+| KnowledgeManager | 4 | ⏳ PLANNED | — |
+| RecoveryManager | 5 | ⏳ PLANNED | — |
+| ValidationManager | 5 | ⏳ PLANNED | — |
+
+---
+
+## 15. Sprint Roadmap
+
+| Sprint | Name | Core Deliverable | Key Risk |
+|--------|------|-----------------|----------|
+| 0 | Foundation | DB schema, test framework, dead code archive | Idempotent migration |
+| 1 | Runtime Awakening | RuntimeDomainManager — complete domain ownership | Optimistic locking under concurrency |
+| 2 | Domain Wiring | Adapters — connect existing engines to RDM | Behavior regression in server.js, shadowm.js |
+| 3 | Memory OS | MemoryManager — TTL-based contextual memory | GC correctness, TTL edge cases |
+| 4 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
+| 5 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
+| 6 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
+
+**Design horizon:** 5 years of continuous operation, 100,000+ closed trades, 10+ concurrent engines.
+
+---
+
+*MASTER_ARCHITECTURE.md — FOREX ENGINE PRO — SHADOW OS v2*  
+*Single Source of Truth — Generated Sprint 1 — 2026-07-06*  
+*Next review: Sprint 2 (Domain Wiring)*

@@ -5,3 +5,4 @@
 - [db-adapter-run-quirk](db-adapter-run-quirk.md) — `db.run()` auto-appends `RETURNING id`; use `db.exec()` for tables with non-id PK
 - [pg-any-array-bug](pg-any-array-bug.md) — `ANY($1)` with a JS array param returns 0 rows in pg; fetch all rows, filter in JS
 - [node24-test-reporter](node24-test-reporter.md) — Node 24 test reporter flag is `--test-reporter=spec` not `--reporter=spec`
+- [cas-pool-deadlock](cas-pool-deadlock.md) — never call pool.connect() inside try{} while another client is held; read all DB data before returning in the else-branch
