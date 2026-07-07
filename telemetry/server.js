@@ -16,6 +16,16 @@ const { db, emitter, logEvent, getLastId, backupDatabase, getDbStats, DATA_DIR, 
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
 const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = require("./shadowm");
 
+// ── SHADOW OS v2 — Sprint 4: live memory integration (flag-gated) ─────────────
+// Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
+// Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
+const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
+const { LiveMemoryIntegration } = require("./managers");
+const memoryIntegration = new LiveMemoryIntegration({
+  enabled:  SHADOW_OS_MEMORY_ENABLED,
+  calledBy: "server.js",
+});
+
 const PORT = process.env.PORT || 3001;
 const app  = express();
 
@@ -76,8 +86,23 @@ async function restoreLiveState() {
   }
 }
 
-// Run at startup
-restoreLiveState();
+// Run at startup — Sprint 4: memory-layer recovery runs AFTER event replay
+// completes so the drift comparison sees the fully-built live object.
+// OBSERVE-ONLY this sprint: recovery never mutates `live` (blueprint §1.2).
+restoreLiveState()
+  .then(async () => {
+    if (!SHADOW_OS_MEMORY_ENABLED) return;
+    const ini = await memoryIntegration.init();
+    if (!ini.ok) {
+      console.error(`[MEMORY-INTEGRATION] Disabled (trading unaffected): ${ini.error}`);
+      return;
+    }
+    await memoryIntegration.recoverOnStartup({ liveState: live });
+    memoryIntegration.startPeriodicPersistence(
+      parseInt(process.env.SHADOW_OS_PERSIST_MS || "300000")
+    );
+  })
+  .catch(err => console.error("[MEMORY-INTEGRATION] Startup hook error (trading unaffected):", err.message));
 
 const sseClients = new Set();
 
@@ -152,6 +177,7 @@ function handleBotLine(raw) {
     live.openTrades[sym] = { symbol: sym, side: side.toLowerCase(), pips: 0, peak: 0, breakEven: false, entryTime: Date.now() };
     broadcastSSE({ source: "live", type: "trade_opened", symbol: sym, side: side.toLowerCase() });
     console.log(`[SHADOW M DIAG] handleBotLine detected trade_open: ${sym} ${side} | server PID=${process.pid}`);
+    memoryIntegration.recordTradeOpen({ symbol: sym, side }); // Sprint 4 — best-effort, never throws
     return;
   }
 
@@ -188,6 +214,10 @@ function parseExitBlock(lines) {
   if (e.symbol) {
     delete live.openTrades[e.symbol];
     broadcastSSE({ source: "live", type: "trade_closed", symbol: e.symbol, reason: e.reason, profit: parseFloat(e.profit || 0) });
+    memoryIntegration.recordTradeClose({ // Sprint 4 — best-effort, never throws
+      symbol: e.symbol, reason: e.reason, profit: e.profit,
+      peak: e.peak, minutes: e.minutes, breakEven: e.breakEven,
+    });
   }
 }
 
@@ -197,8 +227,11 @@ const MAX_DAILY_TRADES_ENV = parseInt(process.env.MAX_DAILY_TRADES || "50");
 const _RESTART_DELAYS = [5000, 15000, 30000, 60000];
 let _restartCount     = 0;
 let _botStartedAt     = 0;    // timestamp when current bot process was spawned
+let _botProc          = null; // Sprint 4: bot child ref so graceful shutdown can kill it first
+let _serverShuttingDown = false; // Sprint 4: stops the restart loop during shutdown
 
 function _scheduleRestart(exitCode) {
+  if (_serverShuttingDown) return; // Sprint 4: never respawn the bot during shutdown
   live.botStatus = "stopped";
   broadcastSSE({ source: "live", type: "bot_status", status: "stopped" });
 
@@ -225,7 +258,7 @@ function _scheduleRestart(exitCode) {
       maxDailyTrades: MAX_DAILY_TRADES_ENV,
       resumeAt:       midnight.toISOString(),
     });
-    setTimeout(startBot, delayMs);
+    setTimeout(() => { if (!_serverShuttingDown) startBot(); }, delayMs);
     return;
   }
 
@@ -242,7 +275,8 @@ function _scheduleRestart(exitCode) {
   } else {
     console.log(`[SERVER] Bot exited (${exitCode}), restart in ${delay / 1000}s`);
   }
-  setTimeout(startBot, delay);
+  memoryIntegration.recordBotRestart({ exitCode, restartCount: _restartCount, delayMs: delay }); // Sprint 4 — best-effort
+  setTimeout(() => { if (!_serverShuttingDown) startBot(); }, delay);
 }
 
 // ── spawn bot ─────────────────────────────────────────────────────────────────
@@ -255,6 +289,7 @@ function startBot() {
     env: process.env,
     stdio: ["inherit", "pipe", "pipe"],
   });
+  _botProc = bot; // Sprint 4: module-scope ref for graceful shutdown
 
   function onData(chunk) {
     lineBuffer += chunk.toString();
@@ -2982,6 +3017,43 @@ app.get("/api/healthz/persistence", async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+// ── API: GET /api/memory-integration/status — Sprint 4 monitoring ─────────────
+app.get("/api/memory-integration/status", (req, res) => {
+  try {
+    res.json({ ok: true, flagEnabled: SHADOW_OS_MEMORY_ENABLED, ...memoryIntegration.getStatus() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── SHADOW OS v2 — Sprint 4: graceful shutdown ────────────────────────────────
+// Railway sends SIGTERM on redeploy. Pre-Sprint-4 the process died instantly
+// (safe — event replay rebuilds state); with the memory flag ON we now flush
+// pending memory + take a final snapshot, under a HARD 5s exit deadline so a
+// redeploy can never hang. With SHADOW_OS_MEMORY=off no handlers are added and
+// the pre-Sprint-4 instant-death behavior is fully preserved.
+let _shutdownStarted = false;
+async function gracefulExit(signal) {
+  if (_shutdownStarted) return;
+  _shutdownStarted     = true;
+  _serverShuttingDown  = true;
+  console.log(`[SERVER] ${signal} received — graceful shutdown (hard exit deadline 5s)`);
+  const hardExit = setTimeout(() => process.exit(0), 5000);
+  if (typeof hardExit.unref === "function") hardExit.unref();
+  try {
+    if (_botProc) { try { _botProc.kill("SIGTERM"); } catch (_) {} }
+    await memoryIntegration.gracefulShutdown({ timeoutMs: 4000, reason: signal });
+  } catch (err) {
+    console.error("[SERVER] Graceful shutdown error:", err.message);
+  } finally {
+    process.exit(0);
+  }
+}
+if (SHADOW_OS_MEMORY_ENABLED) {
+  process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+  process.on("SIGINT",  () => gracefulExit("SIGINT"));
+}
 
 // ── root → dashboard ──────────────────────────────────────────────────────────
 app.get("/", async (req, res) => {
