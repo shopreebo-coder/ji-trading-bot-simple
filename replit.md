@@ -36,7 +36,9 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `SPRINT_0_REPORT.md` — Sprint 0 completion report
 - `telemetry/managers/TradeIntentManager.js` — Sprint 2 core implementation (~600L)
 - `telemetry/managers/MemoryManager.js` — Sprint 3 core implementation (append-first memory layer)
-- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM)
+- `telemetry/managers/LiveMemoryIntegration.js` — Sprint 4: wires RDM+TIM+MM into server.js (recovery, hooks, shutdown)
+- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM + LMI)
+- `telemetry/tests/drivers/` — cross-process test drivers (spawned as separate OS processes; never spawn server.js)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
 - `CHANGELOG.md` — Sprint-by-sprint change log
@@ -45,7 +47,7 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 
 - **Contract-first DB schema:** All schema changes go through `telemetry/migrations/` SQL files run via `psql -f`. Never use a JS SQL splitter for multi-statement DDL — it fails silently.
 - **db-adapter quirk:** `db.run()` auto-appends `RETURNING id` to INSERT statements. For tables whose PK is not `id` (e.g. `runtime_domains` with PK=`domain`), use `db.exec()` instead.
-- **FROZEN entrypoint:** `index.js` and its production start chain (`node telemetry/server.js` via railway.json) must never be modified. All SHADOW OS v2 work is additive.
+- **FROZEN entrypoint:** `index.js` must never be modified. `telemetry/server.js` was FROZEN through Sprint 3; as of Sprint 4 it carries additive, flag-gated memory hooks (`SHADOW_OS_MEMORY`, default on; `off` = zero behavior change, no signal handlers). Every hook is best-effort try/catch — memory failure can never block trading.
 - **Sacred constraint:** No deployment, restart, or migration step may ever destroy the accumulated trading knowledge of the system.
 - **Test runner flag:** Node 24 uses `--test-reporter=spec` (not `--reporter=spec`).
 
@@ -61,8 +63,9 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 1      | RuntimeDomainManager                   | ✅ COMPLETE  |
 | 2      | Domain Adapters (TradeIntentManager)   | ✅ COMPLETE  |
 | 3      | MemoryManager                          | ✅ COMPLETE  |
-| 4      | KnowledgeManager                       | 🔜 NEXT      |
-| 5      | RecoveryManager + ValidationManager    | Not started  |
+| 4      | Live Memory Integration (LMI → server.js) | ✅ COMPLETE |
+| 5      | KnowledgeManager                       | Not started  |
+| 6      | RecoveryManager + ValidationManager    | Not started  |
 
 ## User preferences
 
@@ -78,6 +81,8 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - **`ANY($1)` with a JS array parameter** returns 0 rows in pg — fetch all rows and filter in JS instead.
 - **`node --test --reporter=spec`** is wrong in Node 24. Use `--test-reporter=spec`.
 - **`git push` times out** from the agent. User must push from the Shell.
+- **Multi-file `node --test` runs need `--test-concurrency=1`** — files run concurrently by default, and `mm_persistence` uses `pg_terminate_backend`, which kills other suites' connections mid-test.
+- **`smoke.test.js` hangs the process after all tests pass** (db-adapter pool never closes — pre-existing since Sprint 0). A file-level timeout with `pass N / fail 0` is the expected outcome.
 - **CAS pool deadlock:** In a method that holds a pg pool client, never call another method that calls `pool.connect()` inside the same try/finally block — `finally { client.release() }` runs after `return` resolves, so both connections are held simultaneously. With pool.max=N and N concurrent callers, this deadlocks permanently. Fix: read all needed DB state using the already-held client, then release. This passes sequential tests but deadlocks under concurrent load.
 
 ## Pointers
@@ -90,4 +95,6 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - See `telemetry/managers/RuntimeDomainManager.js` for the Sprint 1 core implementation
 - See `docs/reports/SPRINT_3_REPORT.md` (+ `.pdf`) for Sprint 3 findings and gate results
 - Run all Sprint 1 tests: `node --test --test-reporter=spec telemetry/tests/unit/RuntimeDomainManager.test.js telemetry/tests/integration/rdm_integration.test.js telemetry/tests/simulation/rdm_simulation.test.js telemetry/tests/stress/rdm_stress.test.js`
-- Run all Sprint 3 tests: `node --test --test-reporter=spec telemetry/tests/unit/MemoryManager.test.js telemetry/tests/integration/mm_integration.test.js telemetry/tests/integration/mm_rdm_tim_integration.test.js telemetry/tests/simulation/mm_persistence.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mm_stress.test.js` (stress suite kills idle DB connections — never run it in the same process group as other suites)
+- Run all Sprint 3 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/MemoryManager.test.js telemetry/tests/integration/mm_integration.test.js telemetry/tests/integration/mm_rdm_tim_integration.test.js telemetry/tests/simulation/mm_persistence.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mm_stress.test.js` (stress suite kills idle DB connections — never run it in the same process group as other suites)
+- See `docs/reports/SPRINT_4_REPORT.md` (+ `.pdf`) for Sprint 4 findings and gate results
+- Run Sprint 4 tests: `node --test --test-reporter=spec telemetry/tests/integration/mi_integration.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mi_process.test.js` (spawns extra OS processes for lock/crash scenarios)

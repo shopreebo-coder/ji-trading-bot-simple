@@ -257,7 +257,7 @@ Layer communication rules:
 | Component | File | Domain | Writes To | Reads From | Status |
 |-----------|------|--------|-----------|------------|--------|
 | Live Bot | `index.js` | — | `events` (via telemetry) | — | FROZEN |
-| Server | `telemetry/server.js` | live, scheduler, meta | `events`, runtime_domains (direct, pre-v2) | events | FROZEN |
+| Server | `telemetry/server.js` | live, scheduler, meta | `events`, runtime_domains (direct, pre-v2) | events | INTEGRATED (Sprint 4 — flag-gated memory hooks; `index.js` remains FROZEN) |
 | Shadow A | `telemetry/shadowlab.js` | shadowA | runtime_domains (direct, pre-v2) | events | FROZEN |
 | Shadow B | `telemetry/shadowlab.js` | shadowB | runtime_domains (direct, pre-v2) | events | FROZEN |
 | Shadow C | `telemetry/shadowlab.js` | shadowC | runtime_domains (direct, pre-v2) | events, knowledge_artifacts | FROZEN |
@@ -482,7 +482,37 @@ mm.kvGetAll(ns) / mm.kvGc()                     → { removed }
 mm.ping() / mm.getStats()
 ```
 
-### 6.3 KnowledgeManager (Sprint 4 — Planned)
+### 6.2b LiveMemoryIntegration (Sprint 4 — ✅ COMPLETE)
+
+**Role:** The bridge between the manager tier (RDM + TIM + MM) and the running Live Engine (`telemetry/server.js`). Owns startup recovery, trade lifecycle memory hooks, periodic persistence, and graceful shutdown. Flag-gated by `SHADOW_OS_MEMORY` (default ON; `off` = zero behavior change).
+
+**Key contracts:**
+- **Never blocks trading** — every hook is best-effort try/catch; a memory failure degrades to no-op, it never throws into the trading path
+- **Duplicate-startup protection** — pg session-scoped advisory lock (`LOCK_CLASS=21320`, `LOCK_OBJ=20307`) on a dedicated client; a second process degrades to observe-only; SIGKILL frees the lock automatically
+- **Snapshot walk-back** — recovery loads the newest snapshot that passes checksum + history validation (up to `SNAPSHOT_WALKBACK_LIMIT=20` candidates); invalid snapshots are skipped and logged, NEVER deleted
+- **Idempotency** — every write carries a `dedupe_key` (per-boot for recovery/shutdown/restart events, per-minute-bucket for trade events); restarts and retries can never double-write
+- **Drift detection** — compares the replay-built `live` state against the v2 `live` domain and logs divergence to `consistency_log` (observe-only in Sprint 4; the v2 store does not yet drive trading)
+- **Bounded shutdown** — flush in-flight writes (allSettled + timeout) → SYSTEM_SHUTDOWN event → final snapshot → lock release, all under the server's hard 5s exit deadline
+
+**Public API:**
+```js
+const lmi = new LiveMemoryIntegration({ calledBy, connectionString | _pool, enabled });
+await lmi.init()                                  → { ok } (degrades to no-op on failure)
+await lmi.recoverOnStartup({ liveState })         → { recovered, lockAcquired, snapshotId,
+                                                      domains, openIntents, memoryTotal,
+                                                      quarantined, drift, durationMs, bootId }
+await lmi.recordTradeOpen({ symbol, side, ... })  → idempotent TRADE_OPENED event
+await lmi.recordTradeClose({ symbol, reason, profit, ... }) → idempotent TRADE_CLOSED event
+await lmi.recordBotRestart({ exitCode, restartCount })      → idempotent BOT_RESTART event
+lmi.startPeriodicPersistence(intervalMs)          → periodic snapshot + memory summary
+await lmi.gracefulShutdown({ timeoutMs, reason }) → { ok, steps: { flushed, finalEvent,
+                                                      finalSnapshot, lockReleased } }
+lmi.getStatus()                                   → counters, bootId, lock state
+```
+
+**server.js hook points (all flag-gated):** startup after `restoreLiveState()`; trade open (openM stdout branch); trade close (exit-block parser); bot restart loop; SIGTERM/SIGINT graceful exit (bot killed first, 4s memory budget, hard 5s unref'd exit); `GET /api/memory-integration/status`.
+
+### 6.3 KnowledgeManager (Sprint 5 — Planned)
 
 **Role:** Manages the `knowledge_artifacts` table. Versioned storage for trained models, strategy performance statistics, and adaptive thresholds.
 
@@ -1015,9 +1045,10 @@ Pool connection dropped:
 | ShadowMAdapter | 2 | ⏳ PLANNED | — |
 | ShadowLabAdapter | 2 | ⏳ PLANNED | — |
 | MemoryManager | 3 | ✅ COMPLETE | 101 tests |
-| KnowledgeManager | 4 | ⏳ PLANNED | — |
-| RecoveryManager | 5 | ⏳ PLANNED | — |
-| ValidationManager | 5 | ⏳ PLANNED | — |
+| LiveMemoryIntegration (server.js wiring) | 4 | ✅ COMPLETE | 21 tests |
+| KnowledgeManager | 5 | ⏳ PLANNED | — |
+| RecoveryManager | 6 | ⏳ PLANNED | — |
+| ValidationManager | 6 | ⏳ PLANNED | — |
 
 ---
 
@@ -1029,9 +1060,10 @@ Pool connection dropped:
 | 1 | Runtime Awakening | RuntimeDomainManager — complete domain ownership | Optimistic locking under concurrency |
 | 2 | Domain Wiring | Adapters — connect existing engines to RDM | Behavior regression in server.js, shadowm.js |
 | 3 | Memory OS | MemoryManager — append-first permanent event memory + TTL cache | Append-first invariants, crash durability |
-| 4 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
-| 5 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
-| 6 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
+| 4 | Live Memory Integration ✅ | LiveMemoryIntegration — wire RDM+TIM+MM into server.js (recovery, hooks, shutdown) | Blocking the trading path (mitigated: flag-gated, best-effort) |
+| 5 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
+| 6 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
+| 7 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
 
 **Design horizon:** 5 years of continuous operation, 100,000+ closed trades, 10+ concurrent engines.
 

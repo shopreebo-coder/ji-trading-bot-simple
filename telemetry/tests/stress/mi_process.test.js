@@ -178,22 +178,25 @@ describe("MI cross-process — power loss (SIGKILL)", () => {
     const ini = await next.init();
     assert.equal(ini.ok, true);
 
-    let rep = null;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      rep = await next.recoverOnStartup({ liveState: { dailyTrades: 0, openTrades: {} } });
-      if (rep.lockAcquired) break;
-      await new Promise(r => setTimeout(r, 500));
+    try {
+      let rep = null;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        rep = await next.recoverOnStartup({ liveState: { dailyTrades: 0, openTrades: {} } });
+        if (rep.lockAcquired) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      assert.ok(rep.lockAcquired, `lock never freed after SIGKILL: ${rep.reason}`);
+      assert.equal(rep.recovered, true, rep.reason);
+      assert.ok(rep.durationMs < 10000, `post-crash recovery took ${rep.durationMs}ms`);
+
+      // The driver awaited its first write before READY — it must be durable
+      const { rows } = await pool.query(
+        `SELECT COUNT(*) AS n FROM memory_events WHERE source = 'mi_driver_crash' AND event_type = 'TRADE_OPENED'`
+      );
+      assert.ok(Number(rows[0].n) >= 1, "at least the awaited pre-kill write persisted");
+    } finally {
+      // ALWAYS release pool + lock client, or the test file hangs on exit
+      await next.gracefulShutdown({ reason: "post-crash-done" });
     }
-    assert.ok(rep.lockAcquired, `lock never freed after SIGKILL: ${rep.reason}`);
-    assert.equal(rep.recovered, true, rep.reason);
-    assert.ok(rep.durationMs < 10000, `post-crash recovery took ${rep.durationMs}ms`);
-
-    // Writes that landed before the kill are present and intact
-    const { rows } = await pool.query(
-      `SELECT COUNT(*) AS n FROM memory_events WHERE source = 'mi_driver_crash' AND event_type = 'TRADE_OPENED'`
-    );
-    assert.ok(Number(rows[0].n) >= 1, "at least some pre-kill writes persisted");
-
-    await next.gracefulShutdown({ reason: "post-crash-done" });
   });
 });

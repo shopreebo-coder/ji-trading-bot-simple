@@ -9,3 +9,4 @@
 - [TIM cancelIntent state machine](tim-cancel-approved.md) — cancelIntent accepts APPROVED; concurrent approve+cancel can both succeed (correct behavior, not a race bug)
 - [RDM takeSnapshot return shape](rdm-snapshot-shape.md) — returns { snapshotId, createdAt, domainCount, reason }, NOT { domains: [...] }
 - [Destructive test suite isolation](destructive-test-isolation.md) — suites that kill idle DB backends must run alone with output to a file; combined runs die silently (exit -1, no output)
+- [Cross-process test drivers](cross-process-test-drivers.md) — drivers must await first durable write before READY, be reaped in finally; grouped node:test runs need --test-concurrency=1

@@ -23,8 +23,11 @@ const { LiveMemoryIntegration } = require("../../managers");
     if (!acquired) await new Promise(r => setTimeout(r, 500));
   }
   if (!acquired) { console.log("NOLOCK"); process.exit(3); }
-  // Fire a burst of writes and DO NOT await them all — power loss mid-flight.
-  for (let i = 0; i < 25; i++) {
+  // Guarantee at least ONE write is durable before signaling READY, then fire
+  // the rest un-awaited — SIGKILL lands while those are still mid-flight.
+  const first = await lmi.recordTradeOpen({ symbol: "MI_CRASH_0", side: "BUY" });
+  if (!first.ok) { console.log("FATAL first write failed: " + (first.error || first.reason)); process.exit(4); }
+  for (let i = 1; i < 25; i++) {
     lmi.recordTradeOpen({ symbol: `MI_CRASH_${i}`, side: "BUY" });
   }
   console.log("READY");

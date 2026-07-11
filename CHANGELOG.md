@@ -6,6 +6,53 @@ additive.
 
 ---
 
+## Sprint 4 — Live Memory Integration (2026-07-11)
+
+### Added
+- **LiveMemoryIntegration** (`telemetry/managers/LiveMemoryIntegration.js`):
+  wires the Sprint 1–3 manager tier (RDM + TIM + MM) into the running Live
+  Engine. Startup recovery pipeline: memory validation (quarantine, never
+  delete) → latest VALID snapshot with checksum walk-back (skips corrupt
+  snapshots, never deletes them) → domain/intent/memory recovery report →
+  drift detection vs the replay-built live state (observe-only, logged to
+  `consistency_log`) → dedupe-keyed SYSTEM_RECOVERY event → post_recovery
+  snapshot.
+- **Duplicate-startup protection**: pg session-scoped advisory lock on a
+  dedicated client. A second process degrades to observe-only mode; SIGKILL
+  frees the lock automatically (verified by cross-process tests).
+- **Trade lifecycle hooks**: `recordTradeOpen` / `recordTradeClose` /
+  `recordBotRestart` — all idempotent via `dedupe_key`, all best-effort
+  (memory failure can NEVER block trading).
+- **Periodic persistence** (`SHADOW_OS_PERSIST_MS`, default 5 min) and
+  **bounded graceful shutdown**: flush in-flight writes (allSettled +
+  timeout) → SYSTEM_SHUTDOWN event → final snapshot → lock release.
+- **server.js integration** (first modification ever — additive, flag-gated
+  by `SHADOW_OS_MEMORY`, default ON; `off` = zero behavior change including
+  no signal handlers): startup hook after `restoreLiveState()`, trade
+  open/close stdout-branch hooks, bot-restart-loop hook, SIGTERM/SIGINT
+  graceful shutdown with a hard 5s exit deadline (Railway redeploys can
+  never hang), `GET /api/memory-integration/status` monitoring endpoint.
+- **Test suites** (21 new tests, all passing): integration (18 — recovery
+  lifecycle, snapshot validation/tamper/walk-back, quarantine, drift,
+  idempotency, 2 000-event large history, shutdown flush, redeploy
+  simulation) and cross-process stress (3 — two-OS-process duplicate
+  startup, concurrent recovery race, SIGKILL power loss) plus 3 drivers in
+  `telemetry/tests/drivers/`.
+
+### Changed
+- `telemetry/server.js` — first and only production-brain modification of
+  the migration; every hook is flag-gated and try/catch-wrapped.
+  `index.js` remains FROZEN, untouched.
+- `telemetry/managers/index.js` — barrel now exports LiveMemoryIntegration
+  (+ LOCK_CLASS/LOCK_OBJ/OPEN_INTENT_STATUSES/SNAPSHOT_WALKBACK_LIMIT).
+
+### Verification
+- 417/417 tests passing (396 baseline + 21 new). Zero regressions.
+- Sacred Constraint: corrupt snapshots and memories are quarantined/skipped,
+  never deleted; recovery is strictly read-then-append.
+
+---
+
 ## Sprint 3 — Memory Foundation (2026-07-07)
 
 ### Added
