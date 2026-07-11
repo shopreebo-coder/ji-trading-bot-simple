@@ -41,11 +41,12 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/tests/drivers/` — cross-process test drivers (spawned as separate OS processes; never spawn server.js)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
+- `telemetry/migrations/autoMigrate.js` — Sprint 4.1 startup auto-migration (`ensureSchema`) — pg-native, idempotent, no `psql` dependency
 - `CHANGELOG.md` — Sprint-by-sprint change log
 
 ## Architecture decisions
 
-- **Contract-first DB schema:** All schema changes go through `telemetry/migrations/` SQL files run via `psql -f`. Never use a JS SQL splitter for multi-statement DDL — it fails silently.
+- **Contract-first DB schema:** All schema changes go through `telemetry/migrations/` SQL files. Manual runs use `psql -f` (`run.js`). At startup on Postgres they auto-apply idempotently via `telemetry/migrations/autoMigrate.js` (`ensureSchema`), which sends each whole file to `pool.query()` (pg simple protocol) so Postgres parses multi-statement DDL incl. `DO $$` blocks. Never use a JS SQL splitter for multi-statement DDL — it fails silently.
 - **db-adapter quirk:** `db.run()` auto-appends `RETURNING id` to INSERT statements. For tables whose PK is not `id` (e.g. `runtime_domains` with PK=`domain`), use `db.exec()` instead.
 - **FROZEN entrypoint:** `index.js` must never be modified. `telemetry/server.js` was FROZEN through Sprint 3; as of Sprint 4 it carries additive, flag-gated memory hooks (`SHADOW_OS_MEMORY`, default on; `off` = zero behavior change, no signal handlers). Every hook is best-effort try/catch — memory failure can never block trading.
 - **Sacred constraint:** No deployment, restart, or migration step may ever destroy the accumulated trading knowledge of the system.
@@ -64,6 +65,7 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 2      | Domain Adapters (TradeIntentManager)   | ✅ COMPLETE  |
 | 3      | MemoryManager                          | ✅ COMPLETE  |
 | 4      | Live Memory Integration (LMI → server.js) | ✅ COMPLETE |
+| 4.1    | Production PostgreSQL persistence (auto-migrate on startup) | ✅ COMPLETE |
 | 5      | KnowledgeManager                       | Not started  |
 | 6      | RecoveryManager + ValidationManager    | Not started  |
 
@@ -76,6 +78,8 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 ## Gotchas
 
 - **Never use a JS regex-based SQL splitter for multi-statement DDL** — use `psql -f` via `execSync` instead. JS splitters silently drop statements.
+- **Startup migrations (Railway, where `psql` may be absent):** run each whole `.sql` file through `pool.query(fileContents)` (node-postgres simple protocol). Postgres parses statement boundaries — including `DO $$ … $$;` blocks — as one implicit transaction per file. This is NOT a JS splitter and is the safe pg-native path used by `autoMigrate.js`.
+- **`events` table has two definers:** `telemetry/index.js` `_initSchema` (`data TEXT`) and migration `001` (`data JSONB`). Whichever `CREATE TABLE IF NOT EXISTS` runs first wins; on a fresh boot `_initSchema` wins, so prod `events.data` is TEXT. Harmless today (no JSONB operators used on it) — reconcile the two before adding any.
 - **`db.run()` adds `RETURNING id`** — breaks on tables with non-id primary keys.
 - **`git mv` is blocked** in the Replit main agent. Use plain `mv` + let git detect the rename.
 - **`ANY($1)` with a JS array parameter** returns 0 rows in pg — fetch all rows and filter in JS instead.
@@ -98,3 +102,5 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - Run all Sprint 3 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/MemoryManager.test.js telemetry/tests/integration/mm_integration.test.js telemetry/tests/integration/mm_rdm_tim_integration.test.js telemetry/tests/simulation/mm_persistence.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mm_stress.test.js` (stress suite kills idle DB connections — never run it in the same process group as other suites)
 - See `docs/reports/SPRINT_4_REPORT.md` (+ `.pdf`) for Sprint 4 findings and gate results
 - Run Sprint 4 tests: `node --test --test-reporter=spec telemetry/tests/integration/mi_integration.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mi_process.test.js` (spawns extra OS processes for lock/crash scenarios)
+- See `docs/reports/SPRINT_4_1_REPORT.md` (+ `.pdf`) for Sprint 4.1 (production PostgreSQL persistence) findings and gate results
+- Run Sprint 4.1 test: `node --test --test-reporter=spec telemetry/tests/integration/autoMigrate.test.js`

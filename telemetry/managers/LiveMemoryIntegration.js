@@ -41,6 +41,7 @@ const { Client, Pool } = require("pg");
 const { RuntimeDomainManager } = require("./RuntimeDomainManager");
 const { TradeIntentManager }   = require("./TradeIntentManager");
 const { MemoryManager }        = require("./MemoryManager");
+const { ensureSchema }         = require("../migrations/autoMigrate");
 
 // Advisory lock identity (classid, objid) — constant across all deployments.
 // 21320 = 0x5348 ("SH"), 20307 = 0x4F53 ("OS") → "SHOS".
@@ -99,6 +100,7 @@ class LiveMemoryIntegration {
     };
     this._lastRecovery = null;
     this._lastError    = null;
+    this._schema       = null;   // Sprint 4.1: last ensureSchema() summary
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -127,6 +129,18 @@ class LiveMemoryIntegration {
           connectionTimeoutMillis: 10000,
         });
         this._ownPool = true;
+      }
+
+      // Sprint 4.1: on a self-owned pool (real server startup — tests inject
+      // _pool and skip this), auto-create the full SHADOW OS v2 schema before
+      // any manager queries it. This makes a freshly-attached Railway
+      // PostgreSQL service fully usable on first boot. A failure here
+      // propagates to the catch below and degrades to no-op — never blocks
+      // trading (sacred constraint).
+      if (this._ownPool) {
+        this._schema = await ensureSchema(this._pool, {
+          log: (m) => console.log(`[MEMORY-INTEGRATION] migrate: ${m}`),
+        });
       }
 
       this.rdm = new RuntimeDomainManager({ _pool: this._pool, calledBy: this._calledBy });
@@ -647,6 +661,11 @@ class LiveMemoryIntegration {
         durationMs: this._lastRecovery.durationMs,
       } : null,
       lastError: this._lastError,
+      schema: this._schema ? {
+        ok:      this._schema.ok,
+        applied: this._schema.applied,
+        skipped: this._schema.skipped,
+      } : null,
     };
   }
 }

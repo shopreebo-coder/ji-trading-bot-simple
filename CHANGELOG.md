@@ -6,6 +6,38 @@ additive.
 
 ---
 
+## Sprint 4.1 — Production PostgreSQL Persistence (2026-07-11)
+
+### Added
+- **Startup auto-migration** (`telemetry/migrations/autoMigrate.js`):
+  `ensureSchema(pool)` creates the full SHADOW OS v2 schema on boot,
+  idempotently, with no `psql` dependency. Each migration file is executed as a
+  single `pool.query(fileContents)` (pg simple protocol — parses multi-statement
+  DDL including `DO $$ ... $$;` blocks, one implicit transaction per file). A
+  `schema_migrations` table tracks applied files; a session advisory lock
+  `(21320, 40911)` serializes concurrent migrators during redeploy overlap.
+- **Verification suite** (`telemetry/tests/integration/autoMigrate.test.js`,
+  4 tests): schema creation, idempotency (second run applies nothing), and
+  data-safety (a sentinel row survives a simulated redeploy).
+
+### Changed
+- **LiveMemoryIntegration.init()** now runs `ensureSchema` after pool creation
+  and before manager construction, gated on `_ownPool` (real startup runs it;
+  tests injecting `_pool` skip it). Failure degrades to no-op — never blocks
+  trading. `getStatus()` now includes the migration summary.
+- **`/api/healthz/persistence`** now reports `persistence: true`, a `storage`
+  descriptor, and the `memoryIntegration` status so PostgreSQL is confirmed
+  active end-to-end.
+
+### Why
+- Railway production had no PostgreSQL service and no `DATABASE_URL`, so every
+  deploy wiped all accumulated trading knowledge. After the operator attaches a
+  Railway PostgreSQL service and redeploys, the schema is auto-created and all
+  trading history, memory, snapshots and recovery data persist across deploys.
+  No filesystem/volume solution was used; SQLite remains dev-only fallback.
+
+---
+
 ## Sprint 4 — Live Memory Integration (2026-07-11)
 
 ### Added

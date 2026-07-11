@@ -3005,6 +3005,15 @@ app.get("/api/healthz/persistence", async (req, res) => {
     res.json({
       ok:             true,
       dbBackend:      USE_PG ? "postgresql" : "sqlite",
+      persistence:    USE_PG,
+      storage: {
+        backend:    USE_PG ? "postgresql" : "sqlite",
+        persistent: USE_PG,
+        note: USE_PG
+          ? "✓ PostgreSQL active — trading history, memory, snapshots & recovery persist across Railway deploys"
+          : "⚠ SQLite (local dev only) — EPHEMERAL on Railway. Add a PostgreSQL service so DATABASE_URL is set.",
+      },
+      memoryIntegration: memoryIntegration.getStatus(),
       shadowMode:     getShadowMode(),
       eventCounts:    counts,
       shadowM:        smStats,

@@ -613,6 +613,33 @@ Post-restart:
 └─ Normal startup continues
 ```
 
+### 7.2b Startup Schema Auto-Migration (Sprint 4.1)
+
+```
+Boot on PostgreSQL (DATABASE_URL set — Railway managed):
+│
+├─ LiveMemoryIntegration.init()
+│   ├─ create shared pg Pool
+│   ├─ ensureSchema(pool)   ← Sprint 4.1
+│   │   ├─ pg_advisory_lock(21320, 40911)  (serialize redeploy overlap)
+│   │   ├─ CREATE TABLE IF NOT EXISTS schema_migrations
+│   │   ├─ for each 001..004 not yet applied:
+│   │   │   ├─ pool.query(<entire file>)  (simple protocol; one implicit txn;
+│   │   │   │   parses DO $$..$$ blocks; NO psql binary; NO JS splitter)
+│   │   │   └─ INSERT filename INTO schema_migrations
+│   │   └─ pg_advisory_unlock(...)
+│   └─ construct + init RDM / TIM / MM  (schema now guaranteed to exist)
+│
+└─ Idempotent + data-safe: all DDL is IF NOT EXISTS / ADD COLUMN IF NOT EXISTS /
+   ON CONFLICT DO NOTHING. No DROP / TRUNCATE / DELETE. A failure degrades the
+   memory layer to no-op and NEVER blocks trading.
+
+Fresh Railway PostgreSQL service → first boot creates the full v2 schema
+automatically → all trading history, memory, snapshots and recovery data
+persist across every subsequent deploy. SQLite remains a local-dev-only
+fallback; no filesystem/volume persistence is used.
+```
+
 ### 7.3 Power Failure / Mid-Transaction Recovery
 
 ```
