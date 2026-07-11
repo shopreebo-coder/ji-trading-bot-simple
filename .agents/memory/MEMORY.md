@@ -10,3 +10,4 @@
 - [RDM takeSnapshot return shape](rdm-snapshot-shape.md) — returns { snapshotId, createdAt, domainCount, reason }, NOT { domains: [...] }
 - [Destructive test suite isolation](destructive-test-isolation.md) — suites that kill idle DB backends must run alone with output to a file; combined runs die silently (exit -1, no output)
 - [Cross-process test drivers](cross-process-test-drivers.md) — drivers must await first durable write before READY, be reaped in finally; grouped node:test runs need --test-concurrency=1
+- [ShadowLab numeric/boolean coercion](shadowlab-numeric-coercion.md) — nullable research fields must stay NULL; guard null/"" before Number() (Number(null)===0), keep engine abstention tri-state.

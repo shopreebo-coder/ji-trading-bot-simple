@@ -20,10 +20,23 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
+});
+
+// ── SHADOW OS v2 — Sprint 5: Shadow LAB research layer (flag-gated) ────────────
+// Research-only measurement layer over the append-only event stream. The flag
+// defaults OFF: when off the reconciler NEVER starts, so there is ZERO change to
+// live trading (complete no-op). The read-only research endpoints below are
+// always registered (purely additive) and report `researchEnabled` so callers
+// know whether the tables are being actively populated. The manager instance is
+// cheap to construct (no side effects, no timers until start()).
+const SHADOW_LAB_RESEARCH_ENABLED = (process.env.SHADOW_LAB_RESEARCH || "off").toLowerCase() === "on";
+const shadowLabResearch = new ShadowLabManager({
+  db,
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
 const PORT = process.env.PORT || 3001;
@@ -3036,6 +3049,45 @@ app.get("/api/memory-integration/status", (req, res) => {
   }
 });
 
+// ── SHADOW OS v2 — Sprint 5: Shadow LAB research (read-only, additive) ─────────
+// All three endpoints are pure reads over the research tables and NEVER touch
+// live trading. They are safe regardless of the flag — when research is OFF the
+// tables simply reflect the last reconciled state; `researchEnabled` tells the
+// caller whether the reconciler is actively populating them.
+
+// GET /api/lab/expectancy?scope=ALL — live expectancy aggregates for a scope.
+app.get("/api/lab/expectancy", async (req, res) => {
+  try {
+    const scope = (req.query.scope && String(req.query.scope)) || "ALL";
+    const expectancy = await shadowLabResearch.getExpectancy(scope);
+    res.json({ ok: true, researchEnabled: SHADOW_LAB_RESEARCH_ENABLED, expectancy });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/lab/research/summary — counts + ALL expectancy + per-engine behaviour.
+app.get("/api/lab/research/summary", async (req, res) => {
+  try {
+    const summary = await shadowLabResearch.getResearchSummary();
+    res.json({ ok: true, researchEnabled: SHADOW_LAB_RESEARCH_ENABLED, ...summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/lab/research/timeseries?scope=ALL&limit=500 — persisted expectancy series.
+app.get("/api/lab/research/timeseries", async (req, res) => {
+  try {
+    const scope = (req.query.scope && String(req.query.scope)) || "ALL";
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 500, 1), 5000);
+    const series = await shadowLabResearch.getTimeseries(scope, limit);
+    res.json({ ok: true, researchEnabled: SHADOW_LAB_RESEARCH_ENABLED, scope, count: series.length, series });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── SHADOW OS v2 — Sprint 4: graceful shutdown ────────────────────────────────
 // Railway sends SIGTERM on redeploy. Pre-Sprint-4 the process died instantly
 // (safe — event replay rebuilds state); with the memory flag ON we now flush
@@ -3075,4 +3127,9 @@ app.listen(PORT, () => {
   startBot();
   shadowLab.start();
   shadowM.start().catch(err => console.error("[SERVER] shadowM.start:", err.message));
+  // Sprint 5: research reconciler — only when explicitly enabled (default OFF = no-op).
+  if (SHADOW_LAB_RESEARCH_ENABLED) {
+    console.log("[SERVER] SHADOW_LAB_RESEARCH=on — starting research reconciler (read-only)");
+    shadowLabResearch.start().catch(err => console.error("[SERVER] shadowLabResearch.start:", err.message));
+  }
 });

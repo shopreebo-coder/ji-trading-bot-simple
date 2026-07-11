@@ -512,7 +512,37 @@ lmi.getStatus()                                   → counters, bootId, lock sta
 
 **server.js hook points (all flag-gated):** startup after `restoreLiveState()`; trade open (openM stdout branch); trade close (exit-block parser); bot restart loop; SIGTERM/SIGINT graceful exit (bot killed first, 4s memory budget, hard 5s unref'd exit); `GET /api/memory-integration/status`.
 
-### 6.3 KnowledgeManager (Sprint 5 — Planned)
+### 6.2c ShadowLabManager (Sprint 5 — Shadow LAB Foundation — ✅ COMPLETE)
+
+**Role:** A **research-only measurement layer**. It reconciles the append-only `events` stream into structured, fully-provenanced research tables and computes trade **expectancy** over them — answering *"what is the system actually learning?"* — with **zero** effect on live trading. Flag-gated by `SHADOW_LAB_RESEARCH` (default **OFF**; off = the reconciler never starts and behaviour is unchanged).
+
+**Key contracts:**
+- **Never touches live trading** — `index.js` (Engine A/B/C/D decisions) is untouched; the layer is a downstream reader of `events` only. Every projection/persist/snapshot is best-effort try/catch and degrades to no-op on failure.
+- **Additive / append-first / idempotent / reversible** — all DDL is `CREATE TABLE IF NOT EXISTS`; every insert is `ON CONFLICT (dedupe_key) DO NOTHING`. No `DROP`/`DELETE`/`TRUNCATE`. Turning the flag off (and redeploying) fully reverts behaviour; the append-only research tables remain.
+- **Full provenance** — every research row carries the triple `run_id` + `build_id` + `config_hash` plus a `dedupe_key`. `config_hash` is deterministic (SHA-256 over a canonical sorted-key JSON of the decision-relevant config surface + version), so every measurement is reproducible from the exact code + configuration that produced it.
+- **Cursor-based & resumable** — a persisted cursor (an append-only `events` row of type `shadowlab_research_cursor`) lets the reconciler resume after a restart and replay from scratch if needed.
+- **`events.data` agnostic** — a single `parseData` helper handles the column as BOTH `TEXT` and `JSONB` (production is `TEXT`).
+- **Abstention preserved** — engine "no decision" is stored as `would_trade IS NULL` (never coerced to `false`); a missing winrate is `NULL` (never coerced to `0`).
+- **Confidence auto-computed** — `confidence_level` is derived from `resolved_trades` (LOW <30, MEDIUM 30–100, HIGH >100), keeping snapshots self-consistent with their `(config_hash, scope, resolved_trades)` dedupe identity.
+
+**Projections:** `trade_open → shadow_signals`, `lab_shadow_a/b/c/d → shadow_engine_evals`, `trade_close → shadow_outcomes`; expectancy time series → `shadow_expectancy_snapshots`.
+
+**Public API:**
+```js
+const lab = new ShadowLabManager({ db, env, enabled });
+await lab.reconcileOnce()                → { scanned, inserted, cursor }  (idempotent, best-effort)
+await lab.reconcileAll()                 → drains the backlog in batches
+await lab.recoverCursor()                → resumes the persisted cursor after restart
+lab.start(intervalMs) / lab.stop()       → flag-gated polling (timer unref'd)
+lab.computeExpectancy(scope)             → { resolvedTrades, wins, losses, breakevens,
+                                             expectancyPips, profitFactor, confidenceLevel, ... }
+await lab.snapshotExpectancy(scope)      → idempotent time-series append
+lab.getExpectancy / getResearchSummary / getTimeseries → read APIs for the endpoints
+```
+
+**server.js surface (all read-only, additive):** `GET /api/lab/expectancy`, `GET /api/lab/research/summary`, `GET /api/lab/research/timeseries` — each reports `researchEnabled`. The reconciler start is gated on `SHADOW_LAB_RESEARCH` inside `app.listen`.
+
+### 6.3 KnowledgeManager (Later Sprint — Planned)
 
 **Role:** Manages the `knowledge_artifacts` table. Versioned storage for trained models, strategy performance statistics, and adaptive thresholds.
 
@@ -522,7 +552,7 @@ lmi.getStatus()                                   → counters, bootId, lock sta
 - Rollback marks the current as superseded and promotes the target version
 - Checksums validated on load (corrupted artifact = load prior version, log CRITICAL)
 
-### 6.4 RecoveryManager (Sprint 5 — Planned)
+### 6.4 RecoveryManager (Later Sprint — Planned)
 
 **Role:** Runs all recovery phases after process restart or failure. Blocks trading until recovery completes. Uses consistency_log to record all decisions.
 
@@ -537,7 +567,7 @@ lmi.getStatus()                                   → counters, bootId, lock sta
 8. Snapshot creation (pre-trading baseline)
 9. Status update (meta.status = HEALTHY or DEGRADED)
 
-### 6.5 ValidationManager (Sprint 5 — Planned)
+### 6.5 ValidationManager (Later Sprint — Planned)
 
 **Role:** Runs periodic consistency checks every 5 minutes. Classifies issues by severity. Auto-repairs known patterns (INFO and WARN), logs CRITICAL issues for human review.
 
@@ -1073,9 +1103,11 @@ Pool connection dropped:
 | ShadowLabAdapter | 2 | ⏳ PLANNED | — |
 | MemoryManager | 3 | ✅ COMPLETE | 101 tests |
 | LiveMemoryIntegration (server.js wiring) | 4 | ✅ COMPLETE | 21 tests |
-| KnowledgeManager | 5 | ⏳ PLANNED | — |
-| RecoveryManager | 6 | ⏳ PLANNED | — |
-| ValidationManager | 6 | ⏳ PLANNED | — |
+| Startup schema auto-migration (autoMigrate) | 4.1 | ✅ COMPLETE | 4 tests |
+| ShadowLabManager (Shadow LAB Foundation — research layer) | 5 | ✅ COMPLETE | 23 tests |
+| KnowledgeManager | 6 | ⏳ PLANNED | — |
+| RecoveryManager | 7 | ⏳ PLANNED | — |
+| ValidationManager | 7 | ⏳ PLANNED | — |
 
 ---
 
@@ -1088,9 +1120,10 @@ Pool connection dropped:
 | 2 | Domain Wiring | Adapters — connect existing engines to RDM | Behavior regression in server.js, shadowm.js |
 | 3 | Memory OS | MemoryManager — append-first permanent event memory + TTL cache | Append-first invariants, crash durability |
 | 4 | Live Memory Integration ✅ | LiveMemoryIntegration — wire RDM+TIM+MM into server.js (recovery, hooks, shutdown) | Blocking the trading path (mitigated: flag-gated, best-effort) |
-| 5 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
-| 6 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
-| 7 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
+| 5 | Shadow LAB Foundation ✅ | ShadowLabManager — research-only measurement layer (event→research reconciler + expectancy), flag-gated `SHADOW_LAB_RESEARCH` off=no-op | Coupling to / regression in live trading (mitigated: read-only, additive, `index.js` untouched) |
+| 6 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
+| 7 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
+| 8 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
 
 **Design horizon:** 5 years of continuous operation, 100,000+ closed trades, 10+ concurrent engines.
 

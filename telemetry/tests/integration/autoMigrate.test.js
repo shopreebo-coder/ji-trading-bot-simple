@@ -28,6 +28,9 @@ const EXPECTED_TABLES = [
   "memory_entries", "memory_events", "memory_event_history",
   "knowledge_artifacts", "event_idempotency", "consistency_log",
   "system_snapshots", "schema_migrations",
+  // Sprint 5 — Shadow LAB Foundation (research-only measurement layer)
+  "shadow_signals", "shadow_engine_evals", "shadow_outcomes",
+  "shadow_expectancy_snapshots",
 ];
 
 const SENTINEL_TYPE = "__automigrate_test__";

@@ -37,7 +37,10 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/managers/TradeIntentManager.js` — Sprint 2 core implementation (~600L)
 - `telemetry/managers/MemoryManager.js` — Sprint 3 core implementation (append-first memory layer)
 - `telemetry/managers/LiveMemoryIntegration.js` — Sprint 4: wires RDM+TIM+MM into server.js (recovery, hooks, shutdown)
-- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM + LMI)
+- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM + LMI + ShadowLab research layer)
+- `telemetry/managers/ShadowLabManager.js` — Sprint 5 research-only measurement layer (event→research reconciler + expectancy)
+- `telemetry/managers/shadowLabProvenance.js` — Sprint 5 provenance (config_hash, build_id, run_id, confidence tiers)
+- `telemetry/migrations/005_shadowlab_foundation.sql` — Sprint 5 schema migration (4 research tables: shadow_signals, shadow_engine_evals, shadow_outcomes, shadow_expectancy_snapshots)
 - `telemetry/tests/drivers/` — cross-process test drivers (spawned as separate OS processes; never spawn server.js)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
@@ -66,8 +69,9 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 3      | MemoryManager                          | ✅ COMPLETE  |
 | 4      | Live Memory Integration (LMI → server.js) | ✅ COMPLETE |
 | 4.1    | Production PostgreSQL persistence (auto-migrate on startup) | ✅ COMPLETE |
-| 5      | KnowledgeManager                       | Not started  |
-| 6      | RecoveryManager + ValidationManager    | Not started  |
+| 5      | Shadow LAB Foundation (research-only measurement layer) | ✅ COMPLETE |
+| 6      | KnowledgeManager                       | Not started  |
+| 7      | RecoveryManager + ValidationManager    | Not started  |
 
 ## User preferences
 
@@ -87,6 +91,7 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - **`git push` times out** from the agent. User must push from the Shell.
 - **Multi-file `node --test` runs need `--test-concurrency=1`** — files run concurrently by default, and `mm_persistence` uses `pg_terminate_backend`, which kills other suites' connections mid-test.
 - **`smoke.test.js` hangs the process after all tests pass** (db-adapter pool never closes — pre-existing since Sprint 0). A file-level timeout with `pass N / fail 0` is the expected outcome.
+- **`Number(null) === 0` coercion trap:** a numeric coercion helper that does `Number(x)` turns `null`/`undefined`/`""` into a real `0`, silently fabricating data (e.g. an abstaining engine's "no winrate" becomes a `0` winrate). Guard for null/undefined/"" and return `null` first; keep boolean coercion tri-state (`true`/`false`/`null`) so engine abstention (`would_trade IS NULL`) is never coerced to `false`.
 - **CAS pool deadlock:** In a method that holds a pg pool client, never call another method that calls `pool.connect()` inside the same try/finally block — `finally { client.release() }` runs after `return` resolves, so both connections are held simultaneously. With pool.max=N and N concurrent callers, this deadlocks permanently. Fix: read all needed DB state using the already-held client, then release. This passes sequential tests but deadlocks under concurrent load.
 
 ## Pointers
@@ -104,3 +109,6 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - Run Sprint 4 tests: `node --test --test-reporter=spec telemetry/tests/integration/mi_integration.test.js` then separately `node --test --test-reporter=spec telemetry/tests/stress/mi_process.test.js` (spawns extra OS processes for lock/crash scenarios)
 - See `docs/reports/SPRINT_4_1_REPORT.md` (+ `.pdf`) for Sprint 4.1 (production PostgreSQL persistence) findings and gate results
 - Run Sprint 4.1 test: `node --test --test-reporter=spec telemetry/tests/integration/autoMigrate.test.js`
+- See `docs/reports/SPRINT_5_REPORT.md` (+ `.pdf`) for Sprint 5 (Shadow LAB Foundation) findings and gate results
+- Run Sprint 5 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/shadowLabProvenance.test.js telemetry/tests/integration/shadowLabManager.test.js telemetry/tests/integration/shadowLabExpectancy.test.js`
+- Sprint 5 flag: `SHADOW_LAB_RESEARCH` (default OFF) gates the research reconciler. Read-only endpoints: `/api/lab/expectancy`, `/api/lab/research/summary`, `/api/lab/research/timeseries` (always registered; report `researchEnabled`)

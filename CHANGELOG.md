@@ -6,6 +6,52 @@ additive.
 
 ---
 
+## Sprint 5 — Shadow LAB Foundation (2026-07-11)
+
+### Added
+- **Research schema** (`telemetry/migrations/005_shadowlab_foundation.sql`): four
+  new tables — `shadow_signals`, `shadow_engine_evals`, `shadow_outcomes`,
+  `shadow_expectancy_snapshots` — all `CREATE TABLE IF NOT EXISTS`, each carrying
+  the provenance triple (`run_id`, `build_id`, `config_hash`) plus a `dedupe_key`
+  and supporting indexes. Registered in `autoMigrate.js` so it auto-applies
+  idempotently on startup. No `DROP`/`DELETE`/`TRUNCATE`.
+- **Provenance module** (`telemetry/managers/shadowLabProvenance.js`):
+  deterministic `configHash` (SHA-256 over canonical sorted-key JSON of the
+  decision-relevant config surface + version), reproducible `resolveBuildId`
+  (`<version>+<git-sha|unknown>`), per-process `runId`, `confidenceLevel` tiers
+  (LOW <30, MEDIUM 30–100, HIGH >100), and `createProvenance().stamp()`.
+- **Reconciler + expectancy** (`telemetry/managers/ShadowLabManager.js`): a
+  cursor-based, idempotent, best-effort projector of the append-only `events`
+  stream into the research tables (`trade_open → shadow_signals`,
+  `lab_shadow_a/b/c/d → shadow_engine_evals`, `trade_close → shadow_outcomes`),
+  plus `computeExpectancy`/`snapshotExpectancy`/`getExpectancy`/
+  `getResearchSummary`/`getTimeseries`. Idempotent via `ON CONFLICT (dedupe_key)
+  DO NOTHING`; resumable cursor persisted as an append-only `events` row.
+- **Three read-only endpoints** (`telemetry/server.js`): `/api/lab/expectancy`,
+  `/api/lab/research/summary`, `/api/lab/research/timeseries`, each reporting
+  `researchEnabled`.
+- **Verification suites** (23 new tests): `shadowLabProvenance.test.js` (9),
+  `shadowLabManager.test.js` (7), `shadowLabExpectancy.test.js` (7). All green,
+  plus the 4 Sprint 4.1 `autoMigrate` regression tests (27/27 total).
+
+### Changed
+- **`telemetry/managers/index.js`** barrel now exports the Shadow LAB research
+  layer (`ShadowLabManager` + provenance helpers).
+- **`telemetry/server.js`** gains the flag `SHADOW_LAB_RESEARCH` (default **off**);
+  when off, the reconciler never starts and behaviour is unchanged. The three
+  research endpoints are always registered and read-only.
+- **`autoMigrate.test.js`** expected-tables set extended with the four new tables.
+
+### Why
+- Establishes a research-only measurement layer that reconciles the event stream
+  into structured, fully-provenanced tables and computes trade expectancy —
+  answering *"what is the system actually learning?"* — with **zero** changes to
+  live trading. `index.js` (live Engine A/B/C/D decisions) is untouched (empty
+  git diff); the whole layer is additive, append-first, idempotent, reversible,
+  and gated behind a default-off flag.
+
+---
+
 ## Sprint 4.1 — Production PostgreSQL Persistence (2026-07-11)
 
 ### Added
