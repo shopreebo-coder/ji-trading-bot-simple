@@ -60,3 +60,15 @@ id = "1DNKMkLtDg7tut0BMgx0Q"
 uri = "file://docs/reports/SPRINT_0_REPORT.md"
 type = "text"
 title = "Sprint 0 Report — Markdown"
+
+[[outputs]]
+id = "3WEcNYjqOxUY2cAX4Bv4b"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v1.md"
+type = "text"
+title = "Architecture Audit v1 (Markdown)"
+
+[[outputs]]
+id = "UNq1rcNKwmuivpUuJ19F0"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v1.pdf"
+type = "pdf"
+title = "Architecture Audit v1 (PDF)"
