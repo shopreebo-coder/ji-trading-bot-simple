@@ -37,10 +37,14 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/managers/TradeIntentManager.js` — Sprint 2 core implementation (~600L)
 - `telemetry/managers/MemoryManager.js` — Sprint 3 core implementation (append-first memory layer)
 - `telemetry/managers/LiveMemoryIntegration.js` — Sprint 4: wires RDM+TIM+MM into server.js (recovery, hooks, shutdown)
-- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM + LMI + ShadowLab research layer)
+- `telemetry/managers/index.js` — Manager tier barrel export (RDM + TIM + MM + LMI + ShadowLab research layer + Knowledge layer)
 - `telemetry/managers/ShadowLabManager.js` — Sprint 5 research-only measurement layer (event→research reconciler + expectancy)
 - `telemetry/managers/shadowLabProvenance.js` — Sprint 5 provenance (config_hash, build_id, run_id, confidence tiers)
 - `telemetry/migrations/005_shadowlab_foundation.sql` — Sprint 5 schema migration (4 research tables: shadow_signals, shadow_engine_evals, shadow_outcomes, shadow_expectancy_snapshots)
+- `telemetry/managers/KnowledgeManager.js` — Sprint 6 read-only knowledge layer (7 SQL-aggregation builders over shadow_* → versioned artifacts + manifest snapshots)
+- `telemetry/managers/KnowledgeRepository.js` — Sprint 6 immutable versioned store (content-addressed CAS upsert + supersede chain + manifest snapshot + read APIs)
+- `telemetry/managers/knowledgeProvenance.js` — Sprint 6 content-ONLY checksum (canonical key-sorted JSON) + provenance triple + confidence score
+- `telemetry/migrations/006_knowledge_foundation.sql` — Sprint 6 schema migration (provenance cols on knowledge_artifacts + new knowledge_snapshots manifest table)
 - `telemetry/tests/drivers/` — cross-process test drivers (spawned as separate OS processes; never spawn server.js)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
@@ -70,7 +74,7 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 4      | Live Memory Integration (LMI → server.js) | ✅ COMPLETE |
 | 4.1    | Production PostgreSQL persistence (auto-migrate on startup) | ✅ COMPLETE |
 | 5      | Shadow LAB Foundation (research-only measurement layer) | ✅ COMPLETE |
-| 6      | KnowledgeManager                       | Not started  |
+| 6      | KnowledgeManager (read-only knowledge layer) | ✅ COMPLETE |
 | 7      | RecoveryManager + ValidationManager    | Not started  |
 
 ## User preferences
@@ -93,6 +97,8 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - **`smoke.test.js` hangs the process after all tests pass** (db-adapter pool never closes — pre-existing since Sprint 0). A file-level timeout with `pass N / fail 0` is the expected outcome.
 - **`Number(null) === 0` coercion trap:** a numeric coercion helper that does `Number(x)` turns `null`/`undefined`/`""` into a real `0`, silently fabricating data (e.g. an abstaining engine's "no winrate" becomes a `0` winrate). Guard for null/undefined/"" and return `null` first; keep boolean coercion tri-state (`true`/`false`/`null`) so engine abstention (`would_trade IS NULL`) is never coerced to `false`.
 - **CAS pool deadlock:** In a method that holds a pg pool client, never call another method that calls `pool.connect()` inside the same try/finally block — `finally { client.release() }` runs after `return` resolves, so both connections are held simultaneously. With pool.max=N and N concurrent callers, this deadlocks permanently. Fix: read all needed DB state using the already-held client, then release. This passes sequential tests but deadlocks under concurrent load.
+- **Knowledge artifact checksum is CONTENT-ONLY** (Sprint 6, locked invariant): provenance (`run_id`/`build_id`/`config_hash`) lives in dedicated `knowledge_artifacts` columns, NEVER inside `value`. A builder that embeds ANY provenance-coupled field in its content churns a spurious new artifact version on every restart (new `run_id`). Two builders were fixed for this during Sprint 6 (config/history embedded `config_hash`+`isCurrent`). Recovery test proves: different run/build/config rebuilding identical research → 0 changed, original provenance retained.
+- **`ShadowLabManager.reconcileAll()` appends an expectancy snapshot whenever trades resolve** — so adding a resolved signal legitimately bumps the `expectancy/history` knowledge artifact. Do NOT assert "unchanged research artifact" after resolving a trade; idempotency is only guaranteed for genuinely unchanged content.
 
 ## Pointers
 
@@ -112,3 +118,6 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - See `docs/reports/SPRINT_5_REPORT.md` (+ `.pdf`) for Sprint 5 (Shadow LAB Foundation) findings and gate results
 - Run Sprint 5 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/shadowLabProvenance.test.js telemetry/tests/integration/shadowLabManager.test.js telemetry/tests/integration/shadowLabExpectancy.test.js`
 - Sprint 5 flag: `SHADOW_LAB_RESEARCH` (default OFF) gates the research reconciler. Read-only endpoints: `/api/lab/expectancy`, `/api/lab/research/summary`, `/api/lab/research/timeseries` (always registered; report `researchEnabled`)
+- See `docs/reports/SPRINT_6_REPORT.md` (+ `.pdf`) for Sprint 6 (Knowledge Manager Foundation) findings and gate results
+- Run Sprint 6 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/knowledgeProvenance.test.js telemetry/tests/integration/knowledgeMigration.test.js telemetry/tests/integration/knowledgeManager.test.js telemetry/tests/integration/knowledgeRecovery.test.js telemetry/tests/integration/knowledgeFeatureFlag.test.js`
+- Sprint 6 flag: `KNOWLEDGE_LAYER` (default OFF) gates the knowledge builder (unref'd 15-min poll). Read-only endpoints: `/api/knowledge/status`, `/api/knowledge/artifacts`, `/api/knowledge/artifacts/:domain/:artifact` (`?version=`/`?history=1`), `/api/knowledge/snapshots`, `/api/knowledge/export` (always registered; report `knowledgeEnabled`)

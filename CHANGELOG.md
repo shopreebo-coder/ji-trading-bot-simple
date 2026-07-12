@@ -6,6 +6,60 @@ additive.
 
 ---
 
+## Sprint 6 — Knowledge Manager Foundation (2026-07-12)
+
+### Added
+- **Knowledge schema** (`telemetry/migrations/006_knowledge_foundation.sql`):
+  additive provenance + source-window columns (`run_id`, `build_id`,
+  `config_hash`, `source_window_from/to`) on `knowledge_artifacts` (defined in
+  `001`, 0 rows before this producer) via `ADD COLUMN IF NOT EXISTS`, plus a new
+  append-first `knowledge_snapshots` manifest table keyed
+  `dedupe_key = manifest_checksum`. Registered in `autoMigrate.js`. No
+  `DROP`/`DELETE`/`TRUNCATE`.
+- **Content-only checksum module** (`telemetry/managers/knowledgeProvenance.js`):
+  `checksumValue` (SHA-256 over canonical, recursively key-sorted JSON of the
+  artifact **content only** — provenance excluded), `canonicalJson`,
+  `confidenceScore`/`confidenceLevel`, and `createProvenance().provenanceNote()`.
+- **Immutable versioned store** (`telemetry/managers/KnowledgeRepository.js`):
+  `upsertVersion` is a compare-and-set — unchanged content is a true no-op,
+  changed content inserts a new version and supersedes the prior active row
+  (`superseded_at` + `migration_from` chain) in one PG transaction;
+  `insertSnapshot` records a dedupe-keyed manifest; plus `getActive`/`getVersion`/
+  `getHistory`/`listActive`/`exportActive`/`statistics`/`listSnapshots`.
+- **Knowledge builder** (`telemetry/managers/KnowledgeManager.js`): seven pure
+  SQL aggregations over the `shadow_*` research tables → `expectancy/history`,
+  `engines/statistics`, `patterns/validated`, `market/fingerprints`,
+  `config/history`, `confidence/history`, `experiments/metadata`. `snapshotAll()`
+  builds all seven, CAS-upserts each, then records the manifest. Lifecycle
+  `start()` (unref'd 15-min poll) / `stop()`; construction is side-effect-free.
+  Read APIs `getStatistics`/`getArtifact`/`listArtifacts`/`listSnapshots`/
+  `exportAll`. Null-safe helpers honour the `Number(null) === 0` trap.
+- **Five read-only endpoints** (`telemetry/server.js`): `/api/knowledge/status`,
+  `/api/knowledge/artifacts`, `/api/knowledge/artifacts/:domain/:artifact`
+  (`?version=` / `?history=1`), `/api/knowledge/snapshots`,
+  `/api/knowledge/export` — always registered, each reports `knowledgeEnabled`.
+- **Barrel export** (`telemetry/managers/index.js`): `KnowledgeManager`,
+  `KnowledgeRepository`, `KNOWLEDGE_ARTIFACTS`.
+- **Tests (27)**: `knowledgeProvenance` (7), `knowledgeMigration` (7),
+  `knowledgeManager` (7), `knowledgeRecovery` (3), `knowledgeFeatureFlag` (3).
+
+### Flag
+- `KNOWLEDGE_LAYER` (default **off**): off = the builder never starts (complete
+  no-op); on = the 15-min builder runs. Knowledge NEVER influences live/shadow/
+  risk decisions — it reads only `shadow_*` research and writes only `knowledge_*`.
+
+### Invariant (locked)
+- **Artifact checksums are content-only.** Provenance lives in dedicated columns,
+  never inside `value`. A restart (new `run_id`) rebuilding identical research
+  mints **no** new version — knowledge accumulates, never churns. Proven by the
+  recovery suite (different provenance → 0 changed, original provenance retained).
+
+### Unchanged (constraints)
+- `index.js` untouched (git diff empty). All DDL `IF NOT EXISTS`; CAS upsert +
+  manifest dedupe are idempotent. Additive-only, reversible.
+
+---
+
 ## Sprint 5 — Shadow LAB Foundation (2026-07-11)
 
 ### Added

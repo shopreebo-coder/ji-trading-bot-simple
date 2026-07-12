@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -35,6 +35,19 @@ const memoryIntegration = new LiveMemoryIntegration({
 // cheap to construct (no side effects, no timers until start()).
 const SHADOW_LAB_RESEARCH_ENABLED = (process.env.SHADOW_LAB_RESEARCH || "off").toLowerCase() === "on";
 const shadowLabResearch = new ShadowLabManager({
+  db,
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+
+// ── SHADOW OS v2 — Sprint 6: Knowledge Layer (READ-ONLY, flag-gated) ───────────
+// Organizes MEASURED Shadow LAB research into versioned, immutable,
+// provenance-stamped knowledge artifacts. Reads ONLY the shadow_* research tables
+// and writes ONLY its own knowledge_* tables — it NEVER influences live, shadow,
+// or risk decisions. The flag defaults OFF: when off the builder NEVER starts, so
+// there is ZERO change to the process (complete no-op). The read-only endpoints
+// below are always registered (purely additive) and report `knowledgeEnabled`.
+const KNOWLEDGE_LAYER_ENABLED = (process.env.KNOWLEDGE_LAYER || "off").toLowerCase() === "on";
+const knowledge = new KnowledgeManager({
   db,
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
@@ -3088,6 +3101,75 @@ app.get("/api/lab/research/timeseries", async (req, res) => {
   }
 });
 
+// ── SHADOW OS v2 — Sprint 6: Knowledge Layer (read-only, additive) ─────────────
+// Pure reads over the knowledge_* tables. Knowledge is DERIVED research — it
+// NEVER feeds back into live/shadow/risk decisions. `knowledgeEnabled` reports
+// whether the background builder is actively refreshing the artifacts.
+
+// GET /api/knowledge/status — store statistics + last build + provenance.
+app.get("/api/knowledge/status", async (req, res) => {
+  try {
+    const stats = await knowledge.getStatistics();
+    res.json({ ok: true, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, ...stats });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/knowledge/artifacts — the active knowledge set (metadata only).
+app.get("/api/knowledge/artifacts", async (req, res) => {
+  try {
+    const artifacts = await knowledge.listArtifacts();
+    res.json({ ok: true, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, count: artifacts.length, artifacts });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/knowledge/artifacts/:domain/:artifact[?version=N|?history=1] — one artifact.
+app.get("/api/knowledge/artifacts/:domain/:artifact", async (req, res) => {
+  try {
+    const { domain, artifact } = req.params;
+    const opts = {};
+    if (req.query.history) opts.history = true;
+    else if (req.query.version) {
+      const v = parseInt(req.query.version, 10);
+      if (!Number.isInteger(v) || v < 1) {
+        return res.status(400).json({ ok: false, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, error: "invalid version" });
+      }
+      opts.version = v;
+    }
+    const result = await knowledge.getArtifact(domain, artifact, opts);
+    if (result == null) {
+      return res.status(404).json({ ok: false, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, error: "not found" });
+    }
+    res.json({ ok: true, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, domain, artifact, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/knowledge/snapshots?limit=50 — recent manifest snapshots (newest first).
+app.get("/api/knowledge/snapshots", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 1000);
+    const snapshots = await knowledge.listSnapshots(limit);
+    res.json({ ok: true, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, count: snapshots.length, snapshots });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/knowledge/export — full read-only bundle of the active knowledge set.
+app.get("/api/knowledge/export", async (req, res) => {
+  try {
+    const bundle = await knowledge.exportAll();
+    res.json({ ok: true, knowledgeEnabled: KNOWLEDGE_LAYER_ENABLED, ...bundle });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── SHADOW OS v2 — Sprint 4: graceful shutdown ────────────────────────────────
 // Railway sends SIGTERM on redeploy. Pre-Sprint-4 the process died instantly
 // (safe — event replay rebuilds state); with the memory flag ON we now flush
@@ -3131,5 +3213,10 @@ app.listen(PORT, () => {
   if (SHADOW_LAB_RESEARCH_ENABLED) {
     console.log("[SERVER] SHADOW_LAB_RESEARCH=on — starting research reconciler (read-only)");
     shadowLabResearch.start().catch(err => console.error("[SERVER] shadowLabResearch.start:", err.message));
+  }
+  // Sprint 6: knowledge layer — only when explicitly enabled (default OFF = no-op).
+  if (KNOWLEDGE_LAYER_ENABLED) {
+    console.log("[SERVER] KNOWLEDGE_LAYER=on — starting knowledge builder (read-only)");
+    knowledge.start().catch(err => console.error("[SERVER] knowledge.start:", err.message));
   }
 });

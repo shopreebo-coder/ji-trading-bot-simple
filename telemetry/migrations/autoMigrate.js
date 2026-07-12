@@ -38,6 +38,7 @@ const MIGRATIONS = [
   "003_trade_intent_v2.sql",
   "004_memory_foundation.sql",
   "005_shadowlab_foundation.sql",
+  "006_knowledge_foundation.sql",
 ];
 
 // Advisory-lock key — deliberately DISTINCT from LiveMemoryIntegration's

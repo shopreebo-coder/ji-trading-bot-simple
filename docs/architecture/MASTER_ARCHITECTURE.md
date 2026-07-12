@@ -542,15 +542,30 @@ lab.getExpectancy / getResearchSummary / getTimeseries → read APIs for the end
 
 **server.js surface (all read-only, additive):** `GET /api/lab/expectancy`, `GET /api/lab/research/summary`, `GET /api/lab/research/timeseries` — each reports `researchEnabled`. The reconciler start is gated on `SHADOW_LAB_RESEARCH` inside `app.listen`.
 
-### 6.3 KnowledgeManager (Later Sprint — Planned)
+### 6.3 KnowledgeManager (Sprint 6 — Knowledge Manager Foundation — ✅ COMPLETE)
 
-**Role:** Manages the `knowledge_artifacts` table. Versioned storage for trained models, strategy performance statistics, and adaptive thresholds.
+**Role:** A **read-only knowledge layer**. It organizes the **measured** Shadow LAB research (the `shadow_*` tables) into **versioned, immutable, content-addressed, fully-provenanced** knowledge artifacts — answering *"what does the system now know, and how confident is it?"* — with **zero** effect on live, shadow, or risk decisions. Flag-gated by `KNOWLEDGE_LAYER` (default **OFF**; off = the builder never starts and behaviour is unchanged).
 
 **Key contracts:**
-- Save always creates a new version (never overwrites)
-- Load returns the single active artifact (superseded_at IS NULL)
-- Rollback marks the current as superseded and promotes the target version
-- Checksums validated on load (corrupted artifact = load prior version, log CRITICAL)
+- **Never influences trading** — reads ONLY `shadow_*` research (+ the `events` they derive from) and writes ONLY the `knowledge_*` tables. No feedback path into live/shadow/risk. `index.js` untouched.
+- **Content-addressed (load-bearing invariant)** — an artifact's checksum is computed over its built **content ONLY**; provenance (`run_id`/`build_id`/`config_hash`) lives in dedicated columns, never inside `value`. A restart/redeploy (new `run_id`) rebuilding identical research mints **no** new version — knowledge accumulates, never churns. Any provenance leak into content is a bug.
+- **Versioned & immutable** — `upsertVersion` is a compare-and-set: unchanged content is a true no-op; changed content inserts a new version, supersedes the prior active row (`superseded_at`), and records a `migration_from` chain — all in one PG transaction. Exactly one active row per `(domain, artifact)`.
+- **Additive / append-first / idempotent / reversible** — all DDL is `IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`; the manifest snapshot dedupes on `manifest_checksum`. No `DROP`/`DELETE`/`TRUNCATE`. Turning the flag off (and redeploying) fully reverts behaviour; the append-first knowledge tables remain.
+- **Abstention-aware** — null-safe helpers honour the `Number(null) === 0` trap; an abstaining engine's "no winrate" stays `null`, never a fabricated `0`.
+
+**Seven artifacts (each a pure SQL aggregation over `shadow_*`):** `expectancy/history`, `engines/statistics`, `patterns/validated`, `market/fingerprints`, `config/history`, `confidence/history`, `experiments/metadata`.
+
+**Public API:**
+```js
+const km = new KnowledgeManager({ db, env });   // construction is side-effect-free (no timer, no writes)
+await km.snapshotAll()          → { ok, changed, results, snapshot }  (build 7 → CAS-upsert → manifest)
+km.start() / km.stop()          → flag-gated unref'd 15-min poll (never keeps the process alive)
+km.getStatistics()              → store stats + last build + provenance
+km.getArtifact(domain, artifact, { version?, history? })
+km.listArtifacts() / km.listSnapshots(limit) / km.exportAll()
+```
+
+**server.js surface (all read-only, additive):** `GET /api/knowledge/status`, `/api/knowledge/artifacts`, `/api/knowledge/artifacts/:domain/:artifact` (`?version=` / `?history=1`), `/api/knowledge/snapshots`, `/api/knowledge/export` — each reports `knowledgeEnabled`. The builder start is gated on `KNOWLEDGE_LAYER` inside `app.listen`.
 
 ### 6.4 RecoveryManager (Later Sprint — Planned)
 
@@ -1105,7 +1120,7 @@ Pool connection dropped:
 | LiveMemoryIntegration (server.js wiring) | 4 | ✅ COMPLETE | 21 tests |
 | Startup schema auto-migration (autoMigrate) | 4.1 | ✅ COMPLETE | 4 tests |
 | ShadowLabManager (Shadow LAB Foundation — research layer) | 5 | ✅ COMPLETE | 23 tests |
-| KnowledgeManager | 6 | ⏳ PLANNED | — |
+| KnowledgeManager (Knowledge Manager Foundation — read-only knowledge layer) | 6 | ✅ COMPLETE | 27 tests |
 | RecoveryManager | 7 | ⏳ PLANNED | — |
 | ValidationManager | 7 | ⏳ PLANNED | — |
 
@@ -1121,7 +1136,7 @@ Pool connection dropped:
 | 3 | Memory OS | MemoryManager — append-first permanent event memory + TTL cache | Append-first invariants, crash durability |
 | 4 | Live Memory Integration ✅ | LiveMemoryIntegration — wire RDM+TIM+MM into server.js (recovery, hooks, shutdown) | Blocking the trading path (mitigated: flag-gated, best-effort) |
 | 5 | Shadow LAB Foundation ✅ | ShadowLabManager — research-only measurement layer (event→research reconciler + expectancy), flag-gated `SHADOW_LAB_RESEARCH` off=no-op | Coupling to / regression in live trading (mitigated: read-only, additive, `index.js` untouched) |
-| 6 | Knowledge OS | KnowledgeManager — learned intelligence persistence | Checksum integrity, large artifact storage |
+| 6 | Knowledge OS ✅ | KnowledgeManager — read-only knowledge layer (research→versioned, content-addressed artifacts), flag-gated `KNOWLEDGE_LAYER` off=no-op | Checksum integrity / version churn (mitigated: content-only checksums, read-only, `index.js` untouched) |
 | 7 | Recovery OS | RecoveryManager + ValidationManager | Complex state repair logic |
 | 8 | Intelligence | Incremental training, startup < 50ms at scale | Knowledge artifact size growth |
 

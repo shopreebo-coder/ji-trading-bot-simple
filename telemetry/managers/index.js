@@ -8,9 +8,9 @@
  * Sprint 3: MemoryManager          (✅ implemented)
  * Sprint 4: LiveMemoryIntegration  (✅ implemented — live-engine integration layer)
  * Sprint 5: ShadowLabManager       (✅ implemented — research-only measurement layer)
- * Sprint 6: KnowledgeManager       (planned)
- * Sprint 6: RecoveryManager        (planned)
- * Sprint 6: ValidationManager      (planned)
+ * Sprint 6: KnowledgeManager       (✅ implemented — read-only knowledge layer)
+ * Sprint 7: RecoveryManager        (planned)
+ * Sprint 7: ValidationManager      (planned)
  */
 
 const { RuntimeDomainManager, DEFAULT_DOMAINS, REQUIRED_TABLES } = require("./RuntimeDomainManager");
@@ -19,6 +19,7 @@ const { MemoryManager, VALID_STATUSES, VALID_CHANGE_OPS, MUTABLE_FIELDS, IMMUTAB
 const { LiveMemoryIntegration, LOCK_CLASS, LOCK_OBJ, OPEN_INTENT_STATUSES, SNAPSHOT_WALKBACK_LIMIT } = require("./LiveMemoryIntegration");
 const { ShadowLabManager, SOURCE_EVENT_TYPES, ENGINE_BY_TYPE, CURSOR_TYPE } = require("./ShadowLabManager");
 const { createProvenance, confidenceLevel, configHash, CONFIDENCE_THRESHOLDS, SYSTEM_VERSION } = require("./shadowLabProvenance");
+const { KnowledgeManager, KnowledgeRepository, ARTIFACTS: KNOWLEDGE_ARTIFACTS } = require("./KnowledgeManager");
 
 module.exports = {
   RuntimeDomainManager,
@@ -48,4 +49,8 @@ module.exports = {
   configHash,
   CONFIDENCE_THRESHOLDS,
   SYSTEM_VERSION,
+  // Sprint 6 — Knowledge layer (read-only)
+  KnowledgeManager,
+  KnowledgeRepository,
+  KNOWLEDGE_ARTIFACTS,
 };
