@@ -43,12 +43,30 @@ const {
   confidenceToScore,
   scoreToTier,
   rankIntelligence,
+  RANKING_CRITERIA,
   computeConsensus,
 } = require("./selected/ranking");
 const { discoverEngines, loadCustomPlugins, parseJson } = require("./selected/enginePlugins");
 
 const DEFAULT_RING = 200;
 const DEFAULT_POLL_MS = 15 * 60 * 1000; // 15 min, matches the Knowledge Layer cadence
+
+/**
+ * DecisionContext contract version. DecisionContext is the canonical event object
+ * of the platform; downstream consumers (Decision Intelligence, Confidence
+ * Engine, Adaptive Risk Engine, Meta Learning) branch on this. Bump ONLY on a
+ * breaking shape change — additive fields do not require a bump.
+ */
+const SCHEMA_VERSION = 1;
+
+/** Recursively freeze an object graph (used to make the EvidenceTrace immutable). */
+function deepFreeze(o) {
+  if (o && typeof o === "object" && !Object.isFrozen(o)) {
+    Object.freeze(o);
+    for (const k of Object.keys(o)) deepFreeze(o[k]);
+  }
+  return o;
+}
 
 /** Milliseconds since epoch for a timestamp-ish value, or null. */
 function tsMs(t) {
@@ -288,7 +306,7 @@ class SelectedEngineManager {
         expectancy: numOrNull(pick(expectancy.all, "expectancyPips", "expectancy_pips")),
         trainingEvents: numOrNull(pick(expectancy.all, "resolvedTrades", "resolved_trades")) ?? 0,
         version: null,
-        freshness: tsMs(generated),
+        freshness: null, // DETERMINISM: never feed wall-clock (`generated`) into a ranking key
         detail: expectancy.all,
       });
     }
@@ -343,6 +361,92 @@ class SelectedEngineManager {
 
     const selectedReason = this._buildReason(consensus, ranked, confidence);
 
+    // ── EvidenceTrace ──────────────────────────────────────────────────────────
+    // An IMMUTABLE, REPRODUCIBLE record of exactly why the intelligence was ranked
+    // in this order. Its checksum is deterministic: it deliberately EXCLUDES all
+    // wall-clock (`generated`) and freshness-ms values, so identical inputs ⇒
+    // identical trace ⇒ identical traceChecksum across rebuilds and processes.
+    const marketFingerprint = {
+      setupId: signal.fingerprint || null,
+      trendBucket: signal.trend_bucket || null,
+      volatilityBucket: signal.volatility_bucket || null,
+      spreadBucket: signal.spread_bucket || null,
+    };
+    const traceRecords = ranked.map((r, idx) => ({
+      rank: idx + 1,
+      source: r.source,
+      kind: r.kind,
+      confidence: numOrNull(r.confidence),
+      expectancy: numOrNull(r.expectancy),
+      trainingEvents: numOrNull(r.trainingEvents),
+      version: numOrNull(r.version),
+    }));
+    const traceArtifacts = [];
+    for (const [domain, arts] of Object.entries(knowledge.domains)) {
+      for (const a of arts) {
+        traceArtifacts.push({
+          source: `knowledge:${domain}/${a.artifact}`,
+          id: a.id ?? null,
+          version: numOrNull(a.version),
+          checksum: a.checksum || null,
+          confidence: numOrNull(a.confidence),
+          trainingEvents: numOrNull(a.trainingEvents),
+        });
+      }
+    }
+    // NOTE: deepFreeze below is recursive, so every structure placed in the trace
+    // basis becomes immutable. COPY anything shared with the rest of the context
+    // (consensus arrays are also exposed as ctx.consensusDetail; marketFingerprint
+    // and artifactVersions are reused in explainability) so freezing the trace can
+    // never freeze — and thus never make strict-mode-throw — those live references.
+    const traceBasis = {
+      signalId: sid,
+      evalIds: [...evalIds],
+      engineIds: engines.map((d) => d.engineId),
+      consensus: {
+        consensus: consensus.consensus,
+        agreeing: [...consensus.agreeing],
+        dissenting: [...consensus.dissenting],
+        abstaining: [...consensus.abstaining],
+        decided: consensus.decided,
+      },
+      marketFingerprint: { ...marketFingerprint },
+      rankingCriteria: RANKING_CRITERIA, // already deep-frozen module constant; embedded verbatim
+      records: traceRecords,
+      artifacts: traceArtifacts,
+      artifactVersions: { ...artifactVersions },
+      snapshotChecksum,
+    };
+    const traceChecksum = checksumValue(traceBasis);
+    const evidenceTrace = deepFreeze({ ...traceBasis, contextId: id, checksum: traceChecksum });
+
+    // ── Explainability ─────────────────────────────────────────────────────────
+    // One stable, read-only surface exposing everything a downstream consumer
+    // needs to explain a decision: selected sources, the selection reason, the
+    // confidence chain, the knowledge versions in play, and an evidence summary
+    // (pointer to the reproducible EvidenceTrace above).
+    const explainability = {
+      selectedSources,
+      selectionReason: selectedReason,
+      confidenceChain: {
+        average: confidence.average,
+        tier: confidence.tier,
+        perEngine: confidence.perEngine,
+      },
+      knowledgeVersions: {
+        max: knowledgeVersion,
+        snapshot: snapshotVersion,
+        artifacts: artifactVersions,
+      },
+      evidenceSummary: {
+        traceChecksum,
+        topSources: ranked.slice(0, 3).map((r) => r.source),
+        engineIds: engines.map((d) => d.engineId),
+        consensus: consensus.consensus,
+        marketFingerprint,
+      },
+    };
+
     const liveSignal = {
       signalId: sid,
       symbol,
@@ -390,6 +494,7 @@ class SelectedEngineManager {
     };
 
     const ctx = {
+      schemaVersion: SCHEMA_VERSION,
       id,
       timestamp: signal.created_at || generated,
       symbol,
@@ -407,7 +512,9 @@ class SelectedEngineManager {
       consensus: consensus.consensus,
       consensusDetail: consensus,
       selectedReason,
+      explainability,
       ranking: ranked,
+      evidenceTrace,
       metadata,
     };
 
@@ -446,6 +553,7 @@ class SelectedEngineManager {
 
   _emptyContext(generated, signalId) {
     return {
+      schemaVersion: SCHEMA_VERSION,
       id: null,
       timestamp: generated,
       symbol: null,
@@ -462,7 +570,9 @@ class SelectedEngineManager {
       consensus: "NO_DATA",
       consensusDetail: { votesFor: 0, votesAgainst: 0, abstain: 0, decided: 0, agreeing: [], dissenting: [], abstaining: [] },
       selectedReason: signalId ? `no signal recorded for id ${signalId}` : "no signals recorded yet",
+      explainability: null,
       ranking: [],
+      evidenceTrace: null,
       metadata: { generated, note: "no signal" },
     };
   }

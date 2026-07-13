@@ -20,6 +20,7 @@ const {
   confidenceToScore,
   scoreToTier,
   rankIntelligence,
+  RANKING_CRITERIA,
   computeConsensus,
   cmpDescNullsLast,
 } = require("../../managers/selected/ranking");
@@ -85,6 +86,19 @@ test("rankIntelligence orders by the full key chain (not win rate)", () => {
   assert.ok(idxB < idxA, "fresher (200 > 100) breaks the tie once conf/exp/events/version match");
   // input array not mutated
   assert.equal(records[0].source, "low-conf");
+});
+
+test("RANKING_CRITERIA is a frozen, ordered spec that never includes win rate", () => {
+  assert.ok(Object.isFrozen(RANKING_CRITERIA), "top-level array frozen");
+  const keys = RANKING_CRITERIA.map((c) => c.key);
+  assert.deepEqual(
+    keys,
+    ["confidence", "expectancy", "trainingEvents", "version", "freshness", "inputOrder"],
+    "criteria order matches the rankIntelligence key chain"
+  );
+  assert.ok(!keys.includes("winrate") && !keys.includes("winRate"), "win rate is NEVER a ranking key");
+  assert.ok(RANKING_CRITERIA.every((c) => Object.isFrozen(c)), "each criterion frozen");
+  assert.throws(() => { RANKING_CRITERIA.push({ key: "x" }); }, "cannot mutate the criteria");
 });
 
 test("computeConsensus: unanimous TRADE", () => {

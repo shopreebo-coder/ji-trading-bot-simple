@@ -65,6 +65,40 @@ writes to any table** — reads only. `index.js` and the trading paths are untou
   on-demand reads without `start()`, and `start()`/`stop()` idempotent lifecycle.
 - All 21 pass; full `pnpm run typecheck` clean.
 
+### Hardening — Pre-Push Review (2026-07-13)
+Additive-only hardening to make the Selected Engine the permanent orchestration
+layer. No trading path touched; still never trades / never writes / never
+influences the Live Bot. `pnpm run typecheck` clean, 25/25 tests pass (+4 new).
+
+- **Determinism fix (BUG):** the `expectancy:ALL` ranking record fed
+  `freshness: tsMs(generated)` — wall-clock — into a ranking key. Changed to
+  `freshness: null`. All other ranking freshness values are DB row `created_at`
+  (stable per row), so ranking is now fully reproducible across restarts.
+- **`RANKING_CRITERIA`** (`selected/ranking.js`): exported deep-frozen, ordered
+  spec of the ranking key chain (Confidence → Expectancy → TrainingEvents →
+  Version → Freshness → InputOrder). Win rate is deliberately absent. Embedded
+  verbatim in every EvidenceTrace so downstream consumers can audit the ordering.
+- **`schemaVersion: 1`** added to DecisionContext — an explicit contract version
+  for the canonical event object (bump only on a breaking shape change).
+- **EvidenceTrace** — an **immutable, reproducible** record on each
+  DecisionContext: `{signalId, evalIds, engineIds, consensus summary,
+  marketFingerprint, rankingCriteria (verbatim), records (ranked, EXCLUDING
+  wall-clock freshness), artifacts, artifactVersions, snapshotChecksum,
+  contextId, checksum}`. `checksum` is SHA-256 via `checksumValue` over
+  `canonicalJson` (key-sorted, array-order-preserving) — identical inputs ⇒
+  identical trace checksum across processes/restarts. Deep-frozen: tampering
+  throws in strict mode. Shared structures (consensus arrays, marketFingerprint,
+  artifactVersions) are COPIED into the basis so freezing the trace never freezes
+  the live context references.
+- **explainability** block — one stable read-only surface for decision rationale:
+  `{selectedSources, selectionReason, confidenceChain, knowledgeVersions,
+  evidenceSummary}` (evidenceSummary pins the trace checksum).
+- `_emptyContext` updated for shape parity (`schemaVersion`, `evidenceTrace:null`,
+  `explainability:null`).
+- **Tests:** `RANKING_CRITERIA` shape/frozen unit test; integration coverage for
+  `schemaVersion`, EvidenceTrace completeness/immutability/reproducibility, and
+  explainability.
+
 ---
 
 ## Sprint 6 — Knowledge Manager Foundation (2026-07-12)

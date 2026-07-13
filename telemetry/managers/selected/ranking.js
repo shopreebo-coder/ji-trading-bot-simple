@@ -91,10 +91,27 @@ function cmpDescNullsLast(a, b) {
 }
 
 /**
+ * The canonical, ordered ranking key chain used by rankIntelligence — exported
+ * (deep-frozen) so it can be embedded verbatim in an EvidenceTrace and audited
+ * by downstream consumers. Order IS significant. Win rate is deliberately absent
+ * (it is never a ranking key). Keep this in lock-step with rankIntelligence.
+ * @type {ReadonlyArray<{key:string, direction:string, nulls:string}>}
+ */
+const RANKING_CRITERIA = Object.freeze([
+  Object.freeze({ key: "confidence", direction: "desc", nulls: "last" }),
+  Object.freeze({ key: "expectancy", direction: "desc", nulls: "last" }),
+  Object.freeze({ key: "trainingEvents", direction: "desc", nulls: "last" }),
+  Object.freeze({ key: "version", direction: "desc", nulls: "last" }),
+  Object.freeze({ key: "freshness", direction: "desc", nulls: "last" }),
+  Object.freeze({ key: "inputOrder", direction: "asc", nulls: "last" }),
+]);
+
+/**
  * The Selected Engine ranking key order. Each record is normalised to:
  *   { source, kind, confidence, expectancy, trainingEvents, version, freshness, detail }
  * Sorted best-first by confidence → expectancy → trainingEvents → version →
- * freshness. Returns a NEW array; input is not mutated. Ties keep input order.
+ * freshness (see RANKING_CRITERIA). Returns a NEW array; input is not mutated.
+ * Ties keep input order.
  * @param {Array<object>} records
  * @returns {Array<object>}
  */
@@ -191,6 +208,7 @@ module.exports = {
   confidenceToScore,
   scoreToTier,
   rankIntelligence,
+  RANKING_CRITERIA,
   computeConsensus,
   cmpDescNullsLast,
 };

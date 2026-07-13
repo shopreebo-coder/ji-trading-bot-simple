@@ -148,6 +148,58 @@ test("SelectedEngineManager orchestrates read-only intelligence", { skip: !IS_PG
     assert.equal(a.id, b.id, "identical inputs ⇒ identical id (no wall-clock in the basis)");
   });
 
+  await t.test("DecisionContext carries a stable schemaVersion", async () => {
+    const ctx = await mgr.buildDecisionContext({ signalId: SID });
+    assert.equal(ctx.schemaVersion, 1, "DecisionContext contract is version 1");
+    const empty = await mgr.buildDecisionContext({ signalId: `${NS}-does-not-exist` });
+    assert.equal(empty.schemaVersion, 1, "empty context reports the same contract version");
+    assert.equal(empty.evidenceTrace, null, "empty context has no evidence trace");
+    assert.equal(empty.explainability, null, "empty context has no explainability block");
+  });
+
+  await t.test("EvidenceTrace is complete, immutable, and reproducible", async () => {
+    const ctx = await mgr.buildDecisionContext({ signalId: SID });
+    const tr = ctx.evidenceTrace;
+    assert.ok(tr, "evidence trace present");
+    // required fields
+    for (const k of [
+      "signalId", "evalIds", "engineIds", "consensus", "marketFingerprint",
+      "rankingCriteria", "records", "artifacts", "artifactVersions",
+      "snapshotChecksum", "contextId", "checksum",
+    ]) {
+      assert.ok(k in tr, `evidence trace exposes ${k}`);
+    }
+    assert.match(tr.checksum, /^[0-9a-f]{64}$/, "trace checksum is a sha256");
+    assert.equal(tr.contextId, ctx.id, "trace pins the context id it explains");
+    assert.deepEqual(
+      tr.rankingCriteria.map((c) => c.key),
+      ["confidence", "expectancy", "trainingEvents", "version", "freshness", "inputOrder"],
+      "trace embeds the ranking criteria verbatim"
+    );
+    // records carry no wall-clock/freshness (determinism guarantee)
+    assert.ok(tr.records.every((r) => !("freshness" in r)), "trace records exclude freshness (wall-clock)");
+    assert.ok(tr.records.length > 0 && tr.records[0].rank === 1, "records are 1-indexed by rank");
+    // deep-frozen — any mutation throws in strict mode
+    assert.ok(Object.isFrozen(tr), "trace is frozen");
+    assert.throws(() => { tr.checksum = "tampered"; }, "cannot tamper the trace checksum");
+    assert.throws(() => { tr.records.push({}); }, "cannot append to frozen records");
+    // reproducible: identical inputs ⇒ identical trace checksum
+    const again = await mgr.buildDecisionContext({ signalId: SID });
+    assert.equal(again.evidenceTrace.checksum, tr.checksum, "same inputs ⇒ identical trace checksum");
+  });
+
+  await t.test("explainability surfaces the full decision rationale", async () => {
+    const ctx = await mgr.buildDecisionContext({ signalId: SID });
+    const ex = ctx.explainability;
+    assert.ok(ex, "explainability block present");
+    assert.ok(Array.isArray(ex.selectedSources) && ex.selectedSources.length > 0, "selectedSources listed");
+    assert.equal(typeof ex.selectionReason, "string", "human-readable selection reason");
+    assert.ok(ex.confidenceChain && "average" in ex.confidenceChain && "tier" in ex.confidenceChain, "confidence chain present");
+    assert.ok(ex.knowledgeVersions && "artifacts" in ex.knowledgeVersions, "knowledge versions present");
+    assert.equal(ex.evidenceSummary.traceChecksum, ctx.evidenceTrace.checksum, "evidence summary points at the trace");
+    assert.ok(ex.evidenceSummary.engineIds.includes("E"), "evidence summary lists discovered engines");
+  });
+
   await t.test("ring buffer serves getLatest / getContext / listContexts", async () => {
     const ctx = await mgr.buildDecisionContext({ signalId: SID });
     assert.equal(mgr.getContext(ctx.id).id, ctx.id, "getContext(id) returns the stored context");
