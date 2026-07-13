@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","EXPORT"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -2761,6 +2761,109 @@ function SnowballLabTab({ data }){
   );
 }
 
+// ── KNOWLEDGE tab ────────────────────────────────────────────────────────────
+function knFmtBytes(n){
+  n = Number(n||0);
+  if(n < 1024) return n+" B";
+  if(n < 1048576) return (n/1024).toFixed(1)+" KB";
+  return (n/1048576).toFixed(2)+" MB";
+}
+function knFmtTs(t){
+  if(!t) return "—";
+  try { return new Date(t).toISOString().replace("T"," ").slice(0,19)+"Z"; } catch(e){ return String(t); }
+}
+function KnowledgeStat({ label, value, color }){
+  return (
+    <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:"12px 16px",minWidth:120}}>
+      <div style={{fontSize:11,color:"#8b949e",marginBottom:4}}>{label}</div>
+      <div style={{fontSize:22,fontWeight:700,color:color||"#e6edf3"}}>{value}</div>
+    </div>
+  );
+}
+function KnowledgeTab({ data }){
+  if(!data) return <div className="content"><div style={{color:"#8b949e"}}>Ładowanie…</div></div>;
+  const status = data.status||{};
+  const artifactsResp = data.artifacts||{};
+  const enabled = status.knowledgeEnabled ?? artifactsResp.knowledgeEnabled;
+  const a = status.artifacts||{};
+  const snaps = status.snapshots||{};
+  const byDomain = status.byDomain||[];
+  const list = artifactsResp.artifacts||[];
+  return (
+    <div className="content">
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:700,color:"#79c0ff",marginBottom:4}}>🧠 KNOWLEDGE LAYER</div>
+        <div style={{fontSize:12,color:"#484f58"}}>
+          Wersjonowane, niezmienne artefakty wiedzy budowane z warstwy badawczej Shadow LAB · read-only · LIVE BOT unaffected
+        </div>
+      </div>
+
+      <div style={{
+        display:"inline-block",padding:"6px 14px",borderRadius:6,marginBottom:16,fontSize:12,fontWeight:600,
+        background: enabled ? "#12261a" : "#2d2212",
+        color: enabled ? "#3fb950" : "#d29922",
+        border:`1px solid ${enabled ? "#238636" : "#9e6a03"}`,
+      }}>
+        {enabled ? "● KNOWLEDGE_LAYER = ON — builder odświeża artefakty (~15 min)" : "○ KNOWLEDGE_LAYER = OFF — pokazane artefakty to ostatni zapisany stan"}
+      </div>
+
+      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        <KnowledgeStat label="Artefakty (aktywne)" value={a.active ?? 0} color="#58a6ff"/>
+        <KnowledgeStat label="Wersje łącznie"      value={a.total ?? 0}/>
+        <KnowledgeStat label="Zastąpione"          value={a.superseded ?? 0} color="#8b949e"/>
+        <KnowledgeStat label="Rozmiar aktywnych"   value={knFmtBytes(a.activeBytes)}/>
+        <KnowledgeStat label="Snapshoty manifestu" value={snaps.total ?? 0}/>
+        <KnowledgeStat label="Ostatni snapshot"    value={knFmtTs(snaps.latest)}/>
+      </div>
+
+      {byDomain.length>0 && (
+        <div style={{marginBottom:24}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>Wg domeny</div>
+          <table><thead><tr><th>Domena</th><th>Aktywne</th><th>Rozmiar</th></tr></thead><tbody>
+            {byDomain.map(d=>(
+              <tr key={d.domain}><td>{d.domain}</td><td>{d.active}</td><td>{knFmtBytes(d.bytes)}</td></tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+
+      <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>
+        Aktywne artefakty {list.length>0 && <span style={{color:"#8b949e",fontWeight:400}}>({list.length})</span>}
+      </div>
+      {list.length===0 ? (
+        <div style={{color:"#8b949e",fontSize:13,padding:"12px 0"}}>
+          {enabled
+            ? "Brak artefaktów. Builder uruchamia się co ~15 min i wymaga danych z warstwy Shadow LAB (shadow_*). Poczekaj na pierwszy cykl."
+            : "Brak artefaktów. Warstwa jest wyłączona (KNOWLEDGE_LAYER=off)."}
+        </div>
+      ) : (
+        <table><thead><tr>
+          <th>Domena</th><th>Artefakt</th><th>v</th><th>Confidence</th>
+          <th>Training events</th><th>Rozmiar</th><th>Utworzono (UTC)</th>
+        </tr></thead><tbody>
+          {list.map(r=>(
+            <tr key={r.id}>
+              <td>{r.domain}</td>
+              <td>{r.artifact}</td>
+              <td>{r.version}</td>
+              <td>{r.confidence==null?"—":Number(r.confidence).toFixed(2)}</td>
+              <td>{r.training_events ?? "—"}</td>
+              <td>{knFmtBytes(r.byte_size)}</td>
+              <td style={{color:"#8b949e"}}>{knFmtTs(r.created_at)}</td>
+            </tr>
+          ))}
+        </tbody></table>
+      )}
+
+      {status.provenance && (
+        <div style={{marginTop:20,fontSize:11,color:"#484f58"}}>
+          system v{status.systemVersion||"?"} · run {String(status.provenance.runId||"").slice(0,8)} · build {String(status.provenance.buildId||"").slice(0,8)} · config {String(status.provenance.configHash||"").slice(0,8)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
   const [tab,    setTab]    = useState("LIVE");
@@ -2790,6 +2893,7 @@ function App(){
   const [cooldownAna,setCooldownAna]= useState(null);
   const [weakRelaxed,setWeakRelaxed]= useState(null);
   const [labData,    setLabData]    = useState(null);
+  const [knowledge,  setKnowledge]  = useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
   const [ts,     setTs]     = useState(null);
@@ -2857,6 +2961,13 @@ function App(){
     ]);
     setLabData({ overview:ov, shadowA:sa, shadowB:sb, shadowC:sc, shadowD:sd, comparison:cmp, virtualPerf:vp, ranking:rk, shadowStatus:ss, shadowM:sm });
   }
+  async function refreshKnowledge(){
+    const [st, ar] = await Promise.all([
+      api("/api/knowledge/status"),
+      api("/api/knowledge/artifacts"),
+    ]);
+    setKnowledge({ status:st, artifacts:ar });
+  }
 
   useEffect(()=>{
     refresh();
@@ -2875,6 +2986,7 @@ function App(){
     if(tab==="PIPELINE")  refreshPipeline();
     if(tab==="FILTERED")  refreshFiltered();
     if(tab==="LAB")       refreshLab();
+    if(tab==="KNOWLEDGE") refreshKnowledge();
   },[tab]);
 
   // SSE for live updates
@@ -2931,6 +3043,7 @@ function App(){
       {tab==="BLOCKED"   && <BlockedTab   blocked={blocked} blockedV2={blockedV2} condPerf={condPerf}/>}
       {tab==="FILTERED"  && <FilteredTab     data={weakRelaxed}/>}
       {tab==="LAB"       && <SnowballLabTab data={labData}/>}
+      {tab==="KNOWLEDGE" && <KnowledgeTab data={knowledge}/>}
       {tab==="EXPORT"    && <ExportTab/>}
     </>
   );
