@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -49,6 +49,21 @@ const shadowLabResearch = new ShadowLabManager({
 const KNOWLEDGE_LAYER_ENABLED = (process.env.KNOWLEDGE_LAYER || "off").toLowerCase() === "on";
 const knowledge = new KnowledgeManager({
   db,
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+
+// ── SHADOW OS v2 — Selected Engine (READ-ONLY intelligence orchestration) ──────
+// Aggregates the RECORDED opinions of every Shadow Engine (shadow_engine_evals)
+// plus the Knowledge Layer into a normalized, ranked DecisionContext. It is a
+// pure aggregation/orchestration layer: it NEVER trades and NEVER influences a
+// live/shadow/risk decision. Engines + knowledge domains are AUTO-DISCOVERED, so
+// adding Engine E/F/G or a new domain needs zero changes here. The flag defaults
+// OFF: when off the background refresh NEVER starts (complete no-op). The
+// read-only endpoints below are always registered and report `selectedEnabled`.
+const SELECTED_ENGINE_ENABLED = (process.env.SELECTED_ENGINE || "off").toLowerCase() === "on";
+const selectedEngine = new SelectedEngineManager({
+  db,
+  shadowLab: shadowLabResearch, // read-only expectancy provider (optional)
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
@@ -3170,6 +3185,68 @@ app.get("/api/knowledge/export", async (req, res) => {
   }
 });
 
+// ── SHADOW OS v2 — Selected Engine (read-only intelligence orchestration) ─────
+// Pure aggregation over shadow_engine_evals + the Knowledge Layer. It NEVER
+// trades and NEVER influences a live/shadow/risk decision. `selectedEnabled`
+// reports whether the background refresh is running; the endpoints work either
+// way (a GET /context builds a fresh DecisionContext on demand, read-only).
+
+// GET /api/selected/status — discovered engines, knowledge domains, latest telemetry.
+app.get("/api/selected/status", async (req, res) => {
+  try {
+    const status = await selectedEngine.getStatus();
+    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, ...status });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/selected/engines — the auto-discovered engine plugin set (dynamic).
+app.get("/api/selected/engines", async (req, res) => {
+  try {
+    const engines = await selectedEngine.listEngines();
+    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, count: engines.length, engines });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/selected/context[?signalId=] — build a fresh DecisionContext (defaults
+// to the latest recorded signal). Read-only aggregation; also cached in the ring.
+app.get("/api/selected/context", async (req, res) => {
+  try {
+    const signalId = req.query.signalId ? String(req.query.signalId) : undefined;
+    const context = await selectedEngine.buildDecisionContext({ signalId });
+    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, context });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/selected/contexts?limit=50 — recent DecisionContext summaries (newest first).
+app.get("/api/selected/contexts", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 1000);
+    const contexts = selectedEngine.listContexts(limit);
+    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, count: contexts.length, contexts });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/selected/context/:id — a previously built DecisionContext by id.
+app.get("/api/selected/context/:id", async (req, res) => {
+  try {
+    const context = selectedEngine.getContext(req.params.id);
+    if (context == null) {
+      return res.status(404).json({ ok: false, selectedEnabled: SELECTED_ENGINE_ENABLED, error: "not found" });
+    }
+    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, context });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── SHADOW OS v2 — Sprint 4: graceful shutdown ────────────────────────────────
 // Railway sends SIGTERM on redeploy. Pre-Sprint-4 the process died instantly
 // (safe — event replay rebuilds state); with the memory flag ON we now flush
@@ -3186,6 +3263,7 @@ async function gracefulExit(signal) {
   if (typeof hardExit.unref === "function") hardExit.unref();
   try {
     if (_botProc) { try { _botProc.kill("SIGTERM"); } catch (_) {} }
+    try { selectedEngine.stop(); } catch (_) {} // read-only, unref'd — stop for symmetry
     await memoryIntegration.gracefulShutdown({ timeoutMs: 4000, reason: signal });
   } catch (err) {
     console.error("[SERVER] Graceful shutdown error:", err.message);
@@ -3218,5 +3296,10 @@ app.listen(PORT, () => {
   if (KNOWLEDGE_LAYER_ENABLED) {
     console.log("[SERVER] KNOWLEDGE_LAYER=on — starting knowledge builder (read-only)");
     knowledge.start().catch(err => console.error("[SERVER] knowledge.start:", err.message));
+  }
+  // Selected Engine: read-only intelligence orchestration — only when enabled (default OFF = no-op).
+  if (SELECTED_ENGINE_ENABLED) {
+    console.log("[SERVER] SELECTED_ENGINE=on — starting selected engine (read-only)");
+    selectedEngine.start().catch(err => console.error("[SERVER] selectedEngine.start:", err.message));
   }
 });

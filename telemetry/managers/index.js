@@ -20,6 +20,7 @@ const { LiveMemoryIntegration, LOCK_CLASS, LOCK_OBJ, OPEN_INTENT_STATUSES, SNAPS
 const { ShadowLabManager, SOURCE_EVENT_TYPES, ENGINE_BY_TYPE, CURSOR_TYPE } = require("./ShadowLabManager");
 const { createProvenance, confidenceLevel, configHash, CONFIDENCE_THRESHOLDS, SYSTEM_VERSION } = require("./shadowLabProvenance");
 const { KnowledgeManager, KnowledgeRepository, ARTIFACTS: KNOWLEDGE_ARTIFACTS } = require("./KnowledgeManager");
+const { SelectedEngineManager } = require("./SelectedEngineManager");
 
 module.exports = {
   RuntimeDomainManager,
@@ -53,4 +54,6 @@ module.exports = {
   KnowledgeManager,
   KnowledgeRepository,
   KNOWLEDGE_ARTIFACTS,
+  // Selected Engine — read-only intelligence orchestration
+  SelectedEngineManager,
 };

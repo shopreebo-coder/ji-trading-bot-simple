@@ -45,6 +45,9 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/managers/KnowledgeRepository.js` — Sprint 6 immutable versioned store (content-addressed CAS upsert + supersede chain + manifest snapshot + read APIs)
 - `telemetry/managers/knowledgeProvenance.js` — Sprint 6 content-ONLY checksum (canonical key-sorted JSON) + provenance triple + confidence score
 - `telemetry/migrations/006_knowledge_foundation.sql` — Sprint 6 schema migration (provenance cols on knowledge_artifacts + new knowledge_snapshots manifest table)
+- `telemetry/managers/selected/ranking.js` — Selected Engine PURE core (null-safe coercion, tri-state consensus, `rankIntelligence` by Confidence→Expectancy→TrainingEvents→ArtifactVersion→SnapshotFreshness). No I/O.
+- `telemetry/managers/selected/enginePlugins.js` — Selected Engine auto-discovery (`DISTINCT engine_id` → generic `RecordedEvalAdapter`, ZERO hardcoded engine names) + optional fs-scanned custom plugin dir
+- `telemetry/managers/SelectedEngineManager.js` — Selected Engine READ-ONLY orchestrator (buildDecisionContext, deterministic id, ring buffer, unref'd poll; only db.get/db.all; never trades, never writes)
 - `telemetry/tests/drivers/` — cross-process test drivers (spawned as separate OS processes; never spawn server.js)
 - `telemetry/migrations/003_trade_intent_v2.sql` — Sprint 2 schema migration
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
@@ -76,6 +79,7 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 | 5      | Shadow LAB Foundation (research-only measurement layer) | ✅ COMPLETE |
 | 6      | KnowledgeManager (read-only knowledge layer) | ✅ COMPLETE |
 | 7      | RecoveryManager + ValidationManager    | Not started  |
+| SEL    | Selected Engine (read-only intelligence orchestration) | ✅ COMPLETE |
 
 ## User preferences
 
@@ -121,3 +125,5 @@ Live OANDA forex trading bot executing trades on EUR/USD, GBP/USD and other pair
 - See `docs/reports/SPRINT_6_REPORT.md` (+ `.pdf`) for Sprint 6 (Knowledge Manager Foundation) findings and gate results
 - Run Sprint 6 tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/knowledgeProvenance.test.js telemetry/tests/integration/knowledgeMigration.test.js telemetry/tests/integration/knowledgeManager.test.js telemetry/tests/integration/knowledgeRecovery.test.js telemetry/tests/integration/knowledgeFeatureFlag.test.js`
 - Sprint 6 flag: `KNOWLEDGE_LAYER` (default OFF) gates the knowledge builder (unref'd 15-min poll). Read-only endpoints: `/api/knowledge/status`, `/api/knowledge/artifacts`, `/api/knowledge/artifacts/:domain/:artifact` (`?version=`/`?history=1`), `/api/knowledge/snapshots`, `/api/knowledge/export` (always registered; report `knowledgeEnabled`)
+- Run Selected Engine tests: `node --test --test-reporter=spec --test-concurrency=1 telemetry/tests/unit/selectedRanking.test.js telemetry/tests/integration/selectedEngineManager.test.js telemetry/tests/integration/selectedFeatureFlag.test.js`
+- Selected Engine flag: `SELECTED_ENGINE` (default OFF) gates ONLY the background refresh loop (unref'd poll); OFF is a complete no-op. Read-only endpoints build DecisionContexts on demand regardless of the flag: `/api/selected/status`, `/api/selected/engines`, `/api/selected/context` (`?signalId=`), `/api/selected/contexts`, `/api/selected/context/:id` (always registered; report `selectedEnabled`). Engines are AUTO-DISCOVERED (`DISTINCT engine_id`) — adding Engine E/F/G = zero code changes. Read-only: never trades, never writes.

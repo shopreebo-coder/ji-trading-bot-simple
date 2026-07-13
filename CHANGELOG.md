@@ -6,6 +6,67 @@ additive.
 
 ---
 
+## Selected Engine — Read-Only Intelligence Orchestration (2026-07-13)
+
+A pure **read-only** aggregation/orchestration layer that turns already-recorded
+research into a normalized, ranked, tri-state **DecisionContext** per signal. It
+**never trades, never influences any Live Bot / Shadow / Risk decision, and never
+writes to any table** — reads only. `index.js` and the trading paths are untouched.
+
+### Added
+- **Pure ranking + consensus core** (`telemetry/managers/selected/ranking.js`):
+  `numOrNull`/`boolOrNull` (null/undefined/"" → `null`, never a fabricated `0`;
+  tri-state booleans preserve engine abstention), `confidenceToScore`/
+  `scoreToTier`, `cmpDescNullsLast`, `rankIntelligence` (orders by
+  **Confidence → Expectancy → TrainingEvents → ArtifactVersion → SnapshotFreshness**,
+  NOT winrate), and `computeConsensus` (abstainers excluded from BOTH numerator
+  and denominator; TRADE / NO_TRADE / SPLIT / ABSTAIN with null scores when
+  nobody commits).
+- **Auto-discovery plugin layer** (`telemetry/managers/selected/enginePlugins.js`):
+  `discoverEngines` reads `DISTINCT engine_id` from `shadow_engine_evals` and
+  wraps each in a generic `RecordedEvalAdapter` (uniform
+  `analyze`/`score`/`explain`/`confidence`/`metadata` interface) — **zero
+  hardcoded engine names**, so a future Engine E/F/G that starts recording evals
+  is picked up with no code change. Also fs-scans an optional plugin directory
+  for bespoke custom plugins (best-effort).
+- **SelectedEngineManager** (`telemetry/managers/SelectedEngineManager.js`):
+  `buildDecisionContext({ signalId })` composes per-engine opinions, dynamic
+  `shadow<ID>` aliases, tri-state consensus, an auto-discovered Knowledge-domain
+  list, and a ranked intelligence package (engines + expectancy + knowledge).
+  DecisionContext **id is deterministic** (SHA-256 over
+  `{signalId, evalIds, artifactVersions, snapshotChecksum}` — no wall-clock).
+  In-memory ring buffer serves `getLatest`/`getContext(id)`/`listContexts`; read
+  APIs `getStatus`/`listEngines`/`getContext`. Lifecycle `start()` (unref'd poll)
+  / `stop()`; construction is side-effect-free. Uses ONLY `db.get`/`db.all`, every
+  read wrapped try/catch (no `pool.connect()` → CAS deadlock structurally
+  impossible).
+- **Five read-only endpoints** (`telemetry/server.js`): `/api/selected/status`,
+  `/api/selected/engines`, `/api/selected/context`, `/api/selected/contexts`,
+  `/api/selected/context/:id` — always registered, each reports `selectedEnabled`.
+- **Dashboard SELECTED tab** (`telemetry/public/index.html`): Polish-language UI
+  showing discovered engines, per-signal opinions, consensus and the ranked
+  intelligence package.
+
+### Behavior / flags
+- **`SELECTED_ENGINE`** (default **OFF**) gates ONLY the background refresh loop.
+  OFF is a complete no-op: no timer, no builds, zero behavior change. The
+  read-only endpoints are always registered and build DecisionContexts on demand
+  regardless of the flag. `stop()` is wired into graceful shutdown for symmetry
+  (harmless — the timer is already unref'd).
+
+### Tests
+- `telemetry/tests/unit/selectedRanking.test.js` — 10 pure tests (null-safety,
+  no fabricated zero, tri-state consensus, full ranking key chain).
+- `telemetry/tests/integration/selectedEngineManager.test.js` — end-to-end:
+  auto-discovery of a brand-new Engine `E` with zero code, deterministic id,
+  consensus, ring buffer, and a **"writes NOTHING"** row-count proof over
+  `shadow_signals` / `shadow_engine_evals` / `knowledge_artifacts`.
+- `telemetry/tests/integration/selectedFeatureFlag.test.js` — flag-OFF no-op,
+  on-demand reads without `start()`, and `start()`/`stop()` idempotent lifecycle.
+- All 21 pass; full `pnpm run typecheck` clean.
+
+---
+
 ## Sprint 6 — Knowledge Manager Foundation (2026-07-12)
 
 ### Added

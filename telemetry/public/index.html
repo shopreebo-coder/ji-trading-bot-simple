@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","EXPORT"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","SELECTED","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -2864,6 +2864,143 @@ function KnowledgeTab({ data }){
   );
 }
 
+// ── SELECTED ENGINE tab ──────────────────────────────────────────────────────
+function selConsensusColor(c){
+  if(c==="TRADE")    return "#3fb950";
+  if(c==="NO_TRADE") return "#f85149";
+  if(c==="SPLIT")    return "#d29922";
+  return "#8b949e";
+}
+function selFmtWould(wt){
+  if(wt===true)  return "TAK";
+  if(wt===false) return "NIE";
+  return "—";
+}
+function selFmtNum(n,dp){
+  if(n===null||n===undefined) return "—";
+  const v=Number(n); return Number.isFinite(v)? v.toFixed(dp==null?2:dp):"—";
+}
+function SelectedTab({ data }){
+  if(!data) return <div className="content"><div style={{color:"#8b949e"}}>Ładowanie…</div></div>;
+  const status  = data.status||{};
+  const ctx     = data.context||null;
+  const enabled = status.selectedEnabled;
+  const engines = status.engines||[];
+  const tel     = status.telemetry||{};
+  const cons    = ctx ? ctx.consensus       : tel.consensus;
+  const agree   = ctx ? ctx.agreementScore  : tel.agreementScore;
+  const disagr  = ctx ? ctx.disagreementScore : tel.disagreementScore;
+  const conf    = ctx && ctx.confidence ? ctx.confidence.tier : tel.confidence;
+  const opinions= ctx && ctx.engines ? Object.values(ctx.engines) : [];
+  const ranking = ctx && ctx.ranking  ? ctx.ranking : [];
+  const meta    = ctx ? (ctx.metadata||{}) : {};
+  return (
+    <div className="content">
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:700,color:"#79c0ff",marginBottom:4}}>🎯 SELECTED ENGINE</div>
+        <div style={{fontSize:12,color:"#484f58"}}>
+          Warstwa agregacji i orkiestracji inteligencji · tylko-do-odczytu · NIE handluje i NIE zmienia decyzji Live Bota
+        </div>
+      </div>
+
+      <div style={{
+        display:"inline-block",padding:"6px 14px",borderRadius:6,marginBottom:16,fontSize:12,fontWeight:600,
+        background: enabled ? "#12261a" : "#2d2212",
+        color: enabled ? "#3fb950" : "#d29922",
+        border:`1px solid ${enabled ? "#238636" : "#9e6a03"}`,
+      }}>
+        {enabled ? "● SELECTED_ENGINE = ON — kontekst odświeżany w tle (~15 min)" : "○ SELECTED_ENGINE = OFF — kontekst budowany na żądanie przy otwarciu zakładki"}
+      </div>
+
+      <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        <KnowledgeStat label="Konsensus"        value={cons||"—"} color={selConsensusColor(cons)}/>
+        <KnowledgeStat label="Zgodność"         value={agree==null?"—":agree+"%"} color="#58a6ff"/>
+        <KnowledgeStat label="Niezgodność"      value={disagr==null?"—":disagr+"%"} color="#8b949e"/>
+        <KnowledgeStat label="Pewność"          value={conf||"—"}/>
+        <KnowledgeStat label="Silniki (wykryte)" value={status.engineCount ?? engines.length} color="#58a6ff"/>
+        <KnowledgeStat label="Domeny wiedzy"    value={(status.knowledgeDomains||[]).length}/>
+        <KnowledgeStat label="Wersja wiedzy"    value={status.knowledgeVersion ?? "—"}/>
+      </div>
+
+      {ctx && ctx.id && (
+        <div style={{fontSize:11,color:"#484f58",marginBottom:20}}>
+          DecisionContext id: <span style={{color:"#8b949e",fontFamily:"monospace"}}>{String(ctx.id).slice(0,24)}…</span>
+          {ctx.symbol && <span> · symbol {ctx.symbol}</span>}
+          {ctx.setupId && <span> · setup {String(ctx.setupId).slice(0,16)}</span>}
+          {ctx.selectedReason && <div style={{marginTop:4,color:"#6e7681"}}>{ctx.selectedReason}</div>}
+        </div>
+      )}
+
+      <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>Wykryte silniki (plugin, dynamiczne)</div>
+      {engines.length===0 ? (
+        <div style={{color:"#8b949e",fontSize:13,padding:"12px 0"}}>Brak wykrytych silników — warstwa badawcza Shadow LAB nie zapisała jeszcze ocen (shadow_engine_evals).</div>
+      ) : (
+        <table style={{marginBottom:24}}><thead><tr>
+          <th>Silnik</th><th>Wersja</th><th>Typ</th><th>Źródło</th><th>Custom</th>
+        </tr></thead><tbody>
+          {engines.map(e=>(
+            <tr key={e.engineId}>
+              <td style={{fontWeight:600}}>{e.engineId}</td>
+              <td style={{color:"#8b949e"}}>{e.engineVersion||"—"}</td>
+              <td>{e.kind||"—"}</td>
+              <td style={{color:"#8b949e"}}>{e.source||"—"}</td>
+              <td>{e.custom?"✓":"—"}</td>
+            </tr>
+          ))}
+        </tbody></table>
+      )}
+
+      {opinions.length>0 && (
+        <div style={{marginBottom:24}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>Opinie silników dla bieżącego sygnału</div>
+          <table><thead><tr>
+            <th>Silnik</th><th>Handluje?</th><th>Pewność</th><th>Score</th><th>Stan rynku</th><th>Powód</th>
+          </tr></thead><tbody>
+            {opinions.map(o=>(
+              <tr key={o.engineId}>
+                <td style={{fontWeight:600}}>{o.engineId}</td>
+                <td style={{color:selConsensusColor(o.wouldTrade===true?"TRADE":o.wouldTrade===false?"NO_TRADE":"")}}>{selFmtWould(o.wouldTrade)}</td>
+                <td>{o.confidence||"—"}</td>
+                <td>{selFmtNum(o.score)}</td>
+                <td style={{color:"#8b949e"}}>{o.marketState||"—"}</td>
+                <td style={{color:"#8b949e",maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.reason||"—"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+
+      {ranking.length>0 && (
+        <div style={{marginBottom:24}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>
+            Ranking inteligencji <span style={{color:"#8b949e",fontWeight:400}}>(pewność → oczekiwana wartość → zdarzenia → wersja → świeżość)</span>
+          </div>
+          <table><thead><tr>
+            <th>#</th><th>Źródło</th><th>Typ</th><th>Pewność</th><th>Oczek. (pips)</th>
+          </tr></thead><tbody>
+            {ranking.map((r,i)=>(
+              <tr key={r.source+i}>
+                <td style={{color:"#8b949e"}}>{i+1}</td>
+                <td>{r.source}</td>
+                <td style={{color:"#8b949e"}}>{r.kind}</td>
+                <td>{selFmtNum(r.confidence)}</td>
+                <td>{selFmtNum(r.expectancy,1)}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+
+      {status.provenance && (
+        <div style={{marginTop:20,fontSize:11,color:"#484f58"}}>
+          system v{status.systemVersion||"?"} · run {String(status.provenance.runId||"").slice(0,8)} · build {String(status.provenance.buildId||"").slice(0,8)} · config {String(status.provenance.configHash||"").slice(0,8)}
+          {meta.snapshotVersion && meta.snapshotVersion.checksum && <span> · snapshot {String(meta.snapshotVersion.checksum).slice(0,8)}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ROOT APP ───────────────────────────────────────────────────────────────
 function App(){
   const [tab,    setTab]    = useState("LIVE");
@@ -2894,6 +3031,7 @@ function App(){
   const [weakRelaxed,setWeakRelaxed]= useState(null);
   const [labData,    setLabData]    = useState(null);
   const [knowledge,  setKnowledge]  = useState(null);
+  const [selected,   setSelected]   = useState(null);
   const [events, setEvents] = useState([]);
   const [logLines,setLogLines]=useState([]);
   const [ts,     setTs]     = useState(null);
@@ -2968,6 +3106,13 @@ function App(){
     ]);
     setKnowledge({ status:st, artifacts:ar });
   }
+  async function refreshSelected(){
+    const [st, cx] = await Promise.all([
+      api("/api/selected/status"),
+      api("/api/selected/context"),
+    ]);
+    setSelected({ status:st, context: cx && cx.context });
+  }
 
   useEffect(()=>{
     refresh();
@@ -2987,6 +3132,7 @@ function App(){
     if(tab==="FILTERED")  refreshFiltered();
     if(tab==="LAB")       refreshLab();
     if(tab==="KNOWLEDGE") refreshKnowledge();
+    if(tab==="SELECTED")  refreshSelected();
   },[tab]);
 
   // SSE for live updates
@@ -3044,6 +3190,7 @@ function App(){
       {tab==="FILTERED"  && <FilteredTab     data={weakRelaxed}/>}
       {tab==="LAB"       && <SnowballLabTab data={labData}/>}
       {tab==="KNOWLEDGE" && <KnowledgeTab data={knowledge}/>}
+      {tab==="SELECTED"  && <SelectedTab  data={selected}/>}
       {tab==="EXPORT"    && <ExportTab/>}
     </>
   );
