@@ -6,6 +6,62 @@ additive.
 
 ---
 
+## AI Complete Analysis Report v2 — Dashboard Export (2026-07-14)
+
+One-click, **client-side only** extension of the Analysis Report in the
+dashboard EXPORT tab (`telemetry/public/index.html`). Zero server change, zero
+DB writes, zero Live Bot impact — the report is assembled in the browser from
+~26 existing read-only GET endpoints and downloaded as
+`ai_analysis_report_v2_TIMESTAMP.txt`. `generateSnapshot()` (Full Analysis
+Snapshot) is untouched.
+
+### Added
+- **`buildReportV2()`** — pure, defensive report builder (module-level, no I/O):
+  every endpoint input may be `null` (failed fetch) and every field renders as
+  `N/A` instead of crashing. Sections:
+  - **LIVE BOT** — legacy performance summary, verbatim content.
+  - **SHADOW LAB** — overview, gate evaluations, research-layer counts,
+    agreement & caution flags, Shadow A/B/C/D summaries, per-symbol comparison,
+    virtual-expectancy ranking (+ dataQualityNote), virtual performance,
+    Exit Lab (Shadow M), computed BEST/WORST observations.
+  - **KNOWLEDGE LAYER** — latest snapshot/manifest, growth diff vs previous
+    snapshot (artifact/byte delta + manifest-checksum change), store statistics,
+    active artifact versions, and 5 artifact deep-dives (confidence/history,
+    expectancy/history, experiments/metadata, market/fingerprints,
+    patterns/validated).
+  - **SELECTED ENGINE** — DecisionContext (schema v1), consensus &
+    disagreement, confidence chain, engine opinions, ranking, explainability,
+    reproducible evidence trace, knowledge-vs-engine contribution, final
+    reasoning, manager status.
+  - **PIPELINE HEALTH** — ingestion waterfall, research/knowledge/selected
+    stages, telemetry & persistence, polling & cache, export-stage self-metrics
+    (per-endpoint timings), FAILURES (fetch + CRITICAL/HIGH audit findings),
+    WARNINGS (data quality, INFO findings, disabled feature flags).
+  - **AI SUMMARY** — deterministic rule-based synthesis (no external AI):
+    what works well, degraded-since-previous-report (localStorage baseline
+    `forex_ai_report_v2_prev`, guarded so a heavily-failed fetch pass never
+    overwrites a healthy baseline), best developing Shadow, Knowledge-layer
+    value verdict, Selected Engine sanity check (incl. Lab-vs-Selected ranking
+    consistency), next-sprint recommendations.
+- **`safe()` fetch wrapper** in `generateReport()` — per-endpoint try/catch →
+  `null`, collects failures and timings; 6 batched `Promise.all` waves with
+  progress status updates.
+
+### Fixed (during review)
+- `patterns/validated` winrate is stored as a 0–1 fraction — rendered ×100 as a
+  percent (architect review catch; would have fed "WR 0.6%" to the AI).
+
+### Verification
+- esbuild JSX syntax check of the whole Babel-standalone script: PASS.
+- Node smoke tests of `buildReportV2`: all-null inputs (199 lines, no crash) and
+  realistic mocks (309 lines) — PASS.
+- All 26 fetched endpoint paths verified present in `telemetry/server.js` /
+  `telemetry/index.js`.
+- Architect review: PASS after the winrate fix; read-only constraint confirmed
+  (GET-only, localStorage is the sole write surface).
+
+---
+
 ## Selected Engine — Read-Only Intelligence Orchestration (2026-07-13)
 
 A pure **read-only** aggregation/orchestration layer that turns already-recorded

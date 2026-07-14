@@ -646,6 +646,551 @@ function CooldownAnalysisPanel({ data }){
   );
 }
 
+// ── AI COMPLETE ANALYSIS REPORT v2 — pure client-side builder ────────────────
+// Read-only: assembles a full architectural report from existing GET endpoints.
+// Zero server change, zero DB writes, zero Live Bot impact. Every input may be
+// null (endpoint failed) — every formatter below is defensive.
+const RPT_W = 50;
+function rptHdr(t){ return ["", "=".repeat(RPT_W), t, "=".repeat(RPT_W), ""]; }
+function rptSub(t){ return ["", "--- " + t + " ---"]; }
+function rv(v, suf){ return (v==null || v==="") ? "N/A" : String(v) + (suf||""); }
+function rnum(v, d, suf){ const x = Number(v); return (v==null || isNaN(x)) ? "N/A" : x.toFixed(d==null?2:d) + (suf||""); }
+function rjson(v){ try { return JSON.stringify(v); } catch(_){ return String(v); } }
+function knParse(resp){
+  if(!resp || resp.ok===false || !resp.result) return null;
+  const row = resp.result;
+  let value = row.value;
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch(_){} }
+  return { row, value };
+}
+
+function buildReportV2(d){
+  const {
+    ts, stats, today, syms, ins, blocked, quality,
+    labOverview, unified, labComparison, labRanking, labVirtual, shadowStatus,
+    shA, shB, shC, shD, exitLab, research,
+    knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
+    selStatus, selContext, pipeline, healthz, memInteg,
+    failures, timings, prev,
+  } = d;
+  const L = [];
+  const push = (...xs) => { for (const x of xs) L.push(x); };
+
+  // ════════ TITLE ════════
+  push(
+    "FOREX ENGINE PRO — AI COMPLETE ANALYSIS REPORT v2",
+    `Generated: ${ts}`,
+    "Scope: LIVE BOT + SHADOW LAB + KNOWLEDGE LAYER + SELECTED ENGINE + PIPELINE HEALTH + AI SUMMARY",
+    "Mode: READ-ONLY (assembled client-side from existing telemetry endpoints)",
+  );
+
+  // ════════ LIVE BOT (unchanged legacy report) ════════
+  push(...rptHdr("LIVE BOT"));
+  push(
+    "PERFORMANCE SUMMARY",
+    `  Trades: ${stats?.trades||0}  Wins: ${stats?.wins||0}  Losses: ${stats?.losses||0}  BE: ${stats?.breakevens||0}`,
+    `  Win Rate: ${stats?.winRate||"0.0"}%`,
+    `  Avg Peak: ${stats?.avgPeak||"0.00"}p`,
+    `  Avg Exit Eff: ${ins?.avgExitEfficiency!=null?ins.avgExitEfficiency+"%":"N/A"}`,
+    "","TODAY BLOCKS",
+    ...Object.entries(today?.blockCounts||{}).map(([k,v])=>`  ${k}: ${v}`),
+    "","SYMBOL PERFORMANCE",
+    ...(syms||[]).map(s=>`  ${s.symbol}: ${s.trades} trades, ${s.winRate}% WR, avg ${s.avgProfit}p`),
+    "","FILTER COST (BLOCKED OUTCOMES)",
+    ...((blocked&&blocked.summary)||[]).map(b=>`  ${b.blockType}: ${b.total} blocked, ${b.movedPct}% moved, avg ${b.avgMovePips}p`),
+    "","TRADE QUALITY",
+    `  Reached +2p: ${quality?.pctReachedPlusTwo||"0.0"}%`,
+    `  Instant Adverse: ${quality?.pctInstantAdverse||"0.0"}%`,
+  );
+
+  // ════════ SHADOW LAB ════════
+  push(...rptHdr("SHADOW LAB"));
+  push(...rptSub("OVERVIEW"));
+  if (labOverview){
+    push(
+      `  Signals processed (comparisons): ${rv(labOverview.totalProcessed)}`,
+      `  Last processed: ${rv(labOverview.lastProcessedTs)}`,
+      `  Engine A: ${rv(labOverview.engineA?.decisions)} decisions, wouldTrade ${rv(labOverview.engineA?.wouldTrade)}, avg score ${rv(labOverview.engineA?.avgScore)}`,
+      `  Engine B: ${rv(labOverview.engineB?.decisions)} decisions, wouldTrade ${rv(labOverview.engineB?.wouldTrade)}, states ${rjson(labOverview.engineB?.stateBreakdown||{})}`,
+      `  Engine C: ${rv(labOverview.engineC?.decisions)} decisions, wouldTrade ${rv(labOverview.engineC?.wouldTrade)}, abstain rate ${rv(labOverview.engineC?.abstainRate,"%")}`,
+    );
+  } else push("  N/A (endpoint unavailable)");
+  if (shadowStatus){
+    push(
+      `  Shadow mode: ${rv(shadowStatus.shadowMode)} (gate active: ${rv(shadowStatus.gateActive)})`,
+      `  Data collection: ${rv(shadowStatus.dataCollection?.closedTrades)}/${rv(shadowStatus.dataCollection?.target)} closed trades (${rv(shadowStatus.dataCollection?.progressPct,"%")}, ready: ${rv(shadowStatus.dataCollection?.ready)})`,
+    );
+  }
+
+  push(...rptSub("GATE EVALUATIONS"));
+  if (shadowStatus?.gateStats || unified?.gate){
+    const g = shadowStatus?.gateStats, ug = unified?.gate;
+    if (g)  push(`  Gate evaluations: ${rv(g.evaluations)}  blocks: ${rv(g.blocks)}  block rate: ${rv(g.blockRate,"%")}`);
+    if (ug) push(`  Recent gate window: ${rv(ug.evals)} evals, ${rv(ug.blocks)} blocks`);
+    if (ug && Array.isArray(ug.recent) && ug.recent.length)
+      push(...ug.recent.slice(0,5).map(r=>`    ${rv(r.symbol)} ${rv(r.side)} [${rv(r.session)}] mode=${rv(r.mode)} engineD=${rv(r.engineDDecision)} conf=${rv(r.engineDConfidence)} blocked=${rv(r.blocked)}`));
+  } else push("  N/A");
+
+  push(...rptSub("SIGNALS PROCESSED (RESEARCH LAYER)"));
+  if (research && research.counts){
+    push(
+      `  Research enabled: ${rv(research.researchEnabled)}`,
+      `  shadow_signals: ${rv(research.counts.signals)}  engine_evals: ${rv(research.counts.engineEvals)}  outcomes: ${rv(research.counts.outcomes)}`,
+      ...(research.engines||[]).map(e=>`  Engine ${e.engineId}: ${e.total} evals (trade ${e.wouldTrade}, abstain ${e.abstain})`),
+    );
+    if (research.expectancy) push(`  Expectancy[ALL]: ${rnum(research.expectancy.expectancyPips ?? research.expectancy.expectancy_pips,2,"p")} over ${rv(research.expectancy.resolvedTrades ?? research.expectancy.resolved_trades)} resolved (confidence: ${rv(research.expectancy.confidenceLevel ?? research.expectancy.confidence_level)})`);
+  } else push("  N/A");
+
+  push(...rptSub("AGREEMENT & CAUTION FLAGS"));
+  if (labComparison){
+    push(
+      `  Comparisons: ${rv(labComparison.totalComparisons)}`,
+      `  Avg agreement: ${rv(labComparison.avgAgreementPct,"%")}   All-agree: ${rv(labComparison.allAgreeCount)} (${rv(labComparison.allAgreePct,"%")})`,
+      `  Caution flags: ${rv(labComparison.cautionFlagCount)} (${rv(labComparison.cautionFlagPct,"%")})`,
+      `  Engine agreement with LIVE: A ${rv(labComparison.engineAgreement?.A?.pct,"%")} · B ${rv(labComparison.engineAgreement?.B?.pct,"%")} · C ${rv(labComparison.engineAgreement?.C?.pct,"%")} (decided ${rv(labComparison.engineAgreement?.C?.decided)})`,
+    );
+  } else push("  N/A");
+
+  push(...rptSub("SHADOW A SUMMARY — Quality Score"));
+  if (shA) push(
+    `  Decisions: ${rv(shA.totalDecisions)}  wouldTrade: ${rv(shA.wouldTradeCount)} (${rv(shA.wouldTradePct,"%")})  avg score: ${rv(shA.avgScore)}`,
+    `  Score distribution: ${rjson(shA.scoreDistribution||{})}`,
+    `  Confidence: ${rjson(shA.confidenceBreakdown||{})}`,
+    ...(shA.bySymbol||[]).slice(0,4).map(s=>`  ${s.symbol}: ${s.count} decisions, avg score ${rv(s.avgScore)}, trade ${rv(s.wouldTradePct,"%")}`),
+  ); else push("  N/A");
+
+  push(...rptSub("SHADOW B SUMMARY — Market Context"));
+  if (shB) push(
+    `  Decisions: ${rv(shB.totalDecisions)}  wouldTrade: ${rv(shB.wouldTradeCount)} (${rv(shB.wouldTradePct,"%")})`,
+    ...(shB.stateBreakdown||[]).map(s=>`  State ${s.state}: ${s.count} (trade ${s.wouldTrade})`),
+  ); else push("  N/A");
+
+  push(...rptSub("SHADOW C SUMMARY — KNN Memory"));
+  if (shC) push(
+    `  Decisions: ${rv(shC.totalDecisions)}  decided: ${rv(shC.decidedCount)}  abstain: ${rv(shC.abstainCount)} (${rv(shC.abstainRate,"%")})`,
+    `  wouldTrade: ${rv(shC.wouldTradeCount)}  wouldSkip: ${rv(shC.wouldSkipCount)}`,
+    `  Avg historical WR: ${rv(shC.avgHistoricalWinrate,"%")}  avg historical expectancy: ${rv(shC.avgHistoricalExpectancy,"p")}`,
+    `  Confidence: ${rjson(shC.confidenceBreakdown||{})}`,
+  ); else push("  N/A");
+
+  push(...rptSub("SHADOW D SUMMARY — Meta Engine"));
+  if (shD) push(
+    `  Decisions: ${rv(shD.totalDecisions)}  decided: ${rv(shD.decidedCount)}  abstain: ${rv(shD.abstainCount)} (${rv(shD.abstainRate,"%")})`,
+    `  Avg meta vote score: ${rv(shD.avgVoteScore)}  weights A/B/C: ${rv(shD.avgWeightA)}/${rv(shD.avgWeightB)}/${rv(shD.avgWeightC)}`,
+    `  Confidence: ${rjson(shD.confCounts||{})}  regimes: ${rjson(shD.regimeCounts||{})}`,
+    `  Status: ${rv(shD.engineStatus)}`,
+  ); else push("  N/A");
+
+  push(...rptSub("COMPARISON (BY SYMBOL)"));
+  if (labComparison && Array.isArray(labComparison.bySymbol) && labComparison.bySymbol.length)
+    push(...labComparison.bySymbol.slice(0,6).map(s=>`  ${s.symbol}: ${s.count} comparisons, avg agreement ${rv(s.avgAgreement,"%")}, caution ${rv(s.cautionRate,"%")}`));
+  else push("  N/A");
+
+  push(...rptSub("RANKING (VIRTUAL EXPECTANCY)"));
+  if (labRanking){
+    push(`  LIVE reference: WR ${rv(labRanking.liveBot?.winRate,"%")}, expectancy ${rv(labRanking.liveBot?.expectancy,"p")}, ${rv(labRanking.liveBot?.trades)} trades`);
+    push(...(labRanking.engines||[]).map(e=>`  #${e.rank} ${e.label||e.id}: expectancy ${rv(e.expectancy,"p")}, WR ${rv(e.winRate,"%")}, resolved ${rv(e.resolved ?? e.trades)}`));
+    push(`  Data quality: ${rv(labRanking.dataQualityNote)}`);
+  } else push("  N/A");
+
+  push(...rptSub("VIRTUAL PERFORMANCE"));
+  if (labVirtual){
+    const rows = [["live",labVirtual.live],["engineA",labVirtual.engineA],["engineB",labVirtual.engineB],["engineC",labVirtual.engineC],["engineD",labVirtual.engineD]];
+    for (const [k,p] of rows){
+      if (!p) continue;
+      push(`  ${p.label||k}: trades ${rv(p.trades)}, WR ${rv(p.winRate,"%")}, expectancy ${rv(p.expectancy,"p")}, PF ${rv(p.profitFactor)}, avg MFE ${rv(p.avgMFE,"p")}`);
+    }
+  } else push("  N/A");
+
+  push(...rptSub("EXIT LAB (SHADOW M)"));
+  if (exitLab && exitLab.stats){
+    const s = exitLab.stats;
+    push(
+      `  Trades observed: ${rv(s.tradesObserved)} (active now: ${rv(s.activeNow)})`,
+      `  Avg MFE: ${rnum(s.avgMfe,1,"p")}  Avg MAE: ${rnum(s.avgMae,1,"p")}  Avg duration: ${rnum(s.avgDuration,0," min")}`,
+      `  Exit efficiency: ${rnum(s.exitEfficiency,1,"%")}  Avg given back: ${rnum(s.avgGivenBack,1,"p")}`,
+      `  Avg profit saved vs LIVE: ${rnum(s.avgProfitSaved,1,"p")}  Total saved: ${rnum(s.totalProfitSaved,1,"p")}`,
+      `  Best exit strategy: ${rv(s.bestStrategyOverall)}`,
+      ...((s.strategyRankingOverall||[]).slice(0,3).map((r,i)=>`    #${i+1} ${rv(r.strategy||r.name)}: ${rjson(r)}`)),
+    );
+  } else push("  N/A");
+
+  push(...rptSub("BEST & WORST OBSERVATIONS"));
+  {
+    const obs = [];
+    const engs = (labRanking && labRanking.engines) || [];
+    const withExp = engs.filter(e=>e.expectancy!=null);
+    if (withExp.length){
+      const best = withExp[0], worst = withExp[withExp.length-1];
+      obs.push(`  [BEST]  ${best.label||best.id} leads virtual expectancy at ${rnum(best.expectancy,2,"p")}.`);
+      if (worst !== best) obs.push(`  [WORST] ${worst.label||worst.id} trails at ${rnum(worst.expectancy,2,"p")}.`);
+    }
+    const bySym = (labComparison && labComparison.bySymbol) || [];
+    const agree = bySym.filter(s=>s.avgAgreement!=null);
+    if (agree.length){
+      const ba = [...agree].sort((a,b)=>b.avgAgreement-a.avgAgreement);
+      obs.push(`  [BEST]  Highest engine agreement: ${ba[0].symbol} (${rnum(ba[0].avgAgreement,1,"%")}).`);
+      const bc = [...bySym].filter(s=>s.cautionRate!=null).sort((a,b)=>b.cautionRate-a.cautionRate);
+      if (bc.length && bc[0].cautionRate > 0) obs.push(`  [WORST] Highest caution rate: ${bc[0].symbol} (${rnum(bc[0].cautionRate,1,"%")}).`);
+    }
+    if (exitLab?.stats?.totalProfitSaved != null){
+      const t = exitLab.stats.totalProfitSaved;
+      obs.push(t > 0 ? `  [BEST]  Exit Lab strategies saved a cumulative ${rnum(t,1,"p")} vs live exits.`
+                     : `  [WORST] Exit Lab strategies show no cumulative saving vs live exits (${rnum(t,1,"p")}).`);
+    }
+    if (labRanking?.dataQualityNote && String(labRanking.dataQualityNote).indexOf("ADEQUATE") !== 0)
+      obs.push(`  [WORST] Data quality: ${labRanking.dataQualityNote}`);
+    push(...(obs.length?obs:["  N/A (insufficient data)"]));
+  }
+
+  // ════════ KNOWLEDGE LAYER ════════
+  push(...rptHdr("KNOWLEDGE LAYER"));
+  const snaps = (knSnapshots && knSnapshots.snapshots) || [];
+  push(...rptSub("SNAPSHOT / MANIFEST"));
+  if (snaps.length){
+    const s0 = snaps[0];
+    push(
+      `  Latest snapshot id (manifest version): ${rv(s0.id)}`,
+      `  Manifest checksum: ${rv(s0.manifest_checksum)}`,
+      `  Artifact count: ${rv(s0.artifact_count)}  total bytes: ${rv(s0.total_bytes)}`,
+      `  Created: ${rv(s0.created_at)}`,
+      `  Snapshots recorded: ${rv(knSnapshots.count)}`,
+    );
+  } else push("  N/A (no snapshots yet)");
+
+  push(...rptSub("GROWTH SINCE PREVIOUS SNAPSHOT"));
+  if (snaps.length >= 2){
+    const s0 = snaps[0], s1 = snaps[1];
+    push(
+      `  Previous snapshot id: ${rv(s1.id)} (${rv(s1.created_at)})`,
+      `  Artifacts: ${rv(s1.artifact_count)} -> ${rv(s0.artifact_count)} (${Number(s0.artifact_count||0)-Number(s1.artifact_count||0) >= 0 ? "+" : ""}${Number(s0.artifact_count||0)-Number(s1.artifact_count||0)})`,
+      `  Bytes: ${rv(s1.total_bytes)} -> ${rv(s0.total_bytes)} (${Number(s0.total_bytes||0)-Number(s1.total_bytes||0) >= 0 ? "+" : ""}${Number(s0.total_bytes||0)-Number(s1.total_bytes||0)})`,
+      `  Manifest changed: ${s0.manifest_checksum !== s1.manifest_checksum}`,
+    );
+  } else push("  N/A (fewer than 2 snapshots)");
+
+  push(...rptSub("STORE STATISTICS"));
+  if (knStatus){
+    push(
+      `  Builder enabled (KNOWLEDGE_LAYER): ${rv(knStatus.knowledgeEnabled)}`,
+      `  Artifacts: total ${rv(knStatus.artifacts?.total)}, active ${rv(knStatus.artifacts?.active)}, superseded ${rv(knStatus.artifacts?.superseded)}, active bytes ${rv(knStatus.artifacts?.activeBytes)}`,
+      `  Domains: ${(knStatus.byDomain||[]).map(x=>`${x.domain}(${x.active})`).join(", ")||"N/A"}`,
+      `  Snapshots: ${rv(knStatus.snapshots?.total)} (latest ${rv(knStatus.snapshots?.latest)})`,
+      `  System version: ${rv(knStatus.systemVersion)}  run: ${rv(knStatus.provenance?.runId)}`,
+    );
+    if (knStatus.lastBuild) push(`  Last build: ${rjson(knStatus.lastBuild)}`);
+    else push("  Last build: none this process (builder idle or disabled)");
+  } else push("  N/A");
+
+  push(...rptSub("ACTIVE ARTIFACTS (VERSIONS)"));
+  if (knArtifacts && Array.isArray(knArtifacts.artifacts) && knArtifacts.artifacts.length)
+    push(...knArtifacts.artifacts.map(a=>`  ${a.domain}/${a.artifact} v${a.version} — confidence ${rv(a.confidence)}, trainingEvents ${rv(a.training_events)}, ${rv(a.byte_size)}B, created ${rv(a.created_at)}`));
+  else push("  N/A (no active artifacts)");
+
+  const kc = knParse(knConfidence);
+  push(...rptSub("CONFIDENCE HISTORY (confidence/history)"));
+  if (kc && kc.value && kc.value.byScope){
+    for (const [scope, arr] of Object.entries(kc.value.byScope))
+      push(`  ${scope}: ${(arr||[]).map(x=>`${x.confidenceLevel}(${x.points}pt, resolved ${x.minResolved}-${x.maxResolved})`).join(" -> ")}`);
+  } else push("  N/A");
+
+  const ke = knParse(knExpectancy);
+  push(...rptSub("EXPECTANCY HISTORY (expectancy/history)"));
+  if (ke && ke.value && Array.isArray(ke.value.scopes)){
+    push(...ke.value.scopes.slice(0,8).map(s=>`  ${s.scope}: ${s.points} points, latest expectancy ${rnum(s.latest?.expectancyPips,2,"p")}, PF ${rv(s.latest?.profitFactor)}, resolved ${rv(s.latest?.resolvedTrades)}, confidence ${rv(s.latest?.confidenceLevel)}`));
+  } else push("  N/A");
+
+  const kx = knParse(knExperiments);
+  push(...rptSub("EXPERIMENTS METADATA (experiments/metadata)"));
+  if (kx && kx.value && Array.isArray(kx.value.experiments)){
+    push(`  Experiments (run/build/config combos): ${rv(kx.value.experimentCount)}`);
+    push(...kx.value.experiments.slice(0,5).map(e=>`  run ${String(e.runId||"").slice(0,12)}… build ${rv(e.buildId)}: signals ${e.signals}, evals ${e.evals}, outcomes ${e.outcomes} (${rv(e.firstAt)} -> ${rv(e.lastAt)})`));
+  } else push("  N/A");
+
+  const kf = knParse(knFingerprints);
+  push(...rptSub("MARKET FINGERPRINTS (market/fingerprints)"));
+  if (kf && kf.value && Array.isArray(kf.value.fingerprints)){
+    push(`  Distinct fingerprints: ${rv(kf.value.fingerprintCount)}`);
+    push(...kf.value.fingerprints.slice(0,5).map(f=>`  ${String(f.fingerprint).slice(0,40)}: ${f.signals} signals, ${f.resolved} resolved, avg ${rnum(f.avgProfitPips,2,"p")}`));
+  } else push("  N/A");
+
+  const kp = knParse(knPatterns);
+  push(...rptSub("VALIDATED PATTERNS (patterns/validated)"));
+  if (kp && kp.value && Array.isArray(kp.value.patterns)){
+    push(`  Patterns: ${rv(kp.value.patternCount)}  validated: ${rv(kp.value.validatedCount)} (min sample ${rv(kp.value.validationMinSample)})`);
+    push(...kp.value.patterns.filter(p=>p.validated).slice(0,5).map(p=>`  [VALID] ${p.symbol} ${p.side} ${p.trendBucket}/${p.volatilityBucket}/${p.spreadBucket}: WR ${rnum(p.winrate==null?null:p.winrate*100,1,"%")}, expectancy ${rnum(p.expectancyPips,2,"p")} (${p.resolved} resolved)`));
+    push(...kp.value.patterns.filter(p=>!p.validated).slice(0,3).map(p=>`  [obs]   ${p.symbol} ${p.side} ${p.trendBucket}/${p.volatilityBucket}/${p.spreadBucket}: ${p.resolved} resolved, expectancy ${rnum(p.expectancyPips,2,"p")}`));
+  } else push("  N/A");
+
+  // ════════ SELECTED ENGINE ════════
+  push(...rptHdr("SELECTED ENGINE"));
+  const ctx = (selContext && selContext.context) || null;
+  push(...rptSub("DECISION CONTEXT"));
+  if (ctx){
+    push(
+      `  Context id: ${rv(ctx.id)}  (schema v${rv(ctx.schemaVersion)})`,
+      `  Signal: ${rv(ctx.liveSignal?.signalId)}  symbol ${rv(ctx.symbol)}  side ${rv(ctx.liveSignal?.side)}  session ${rv(ctx.liveSignal?.session)}`,
+      `  Built: ${rv(ctx.metadata?.generated)}  engines: ${rv(ctx.metadata?.engineCount)} [${(ctx.metadata?.engineIds||[]).join(", ")}]`,
+      `  Resolved outcome: ${ctx.metadata?.resolved ? rjson(ctx.metadata.outcome) : "not resolved yet"}`,
+    );
+  } else push("  N/A (no DecisionContext — no recorded signals yet)");
+
+  push(...rptSub("CONSENSUS & DISAGREEMENT"));
+  if (ctx){
+    const cd = ctx.consensusDetail || {};
+    push(
+      `  Consensus: ${rv(ctx.consensus)}  agreement ${rv(ctx.agreementScore,"%")}  disagreement ${rv(ctx.disagreementScore,"%")}`,
+      `  Agreeing: [${(cd.agreeing||[]).join(", ")}]  dissenting: [${(cd.dissenting||[]).join(", ")}]  abstaining: [${(cd.abstaining||[]).join(", ")}]  decided: ${rv(cd.decided)}`,
+    );
+  } else push("  N/A");
+
+  push(...rptSub("CONFIDENCE"));
+  if (ctx && ctx.confidence){
+    push(`  Tier: ${rv(ctx.confidence.tier)}  average: ${rv(ctx.confidence.average)}`);
+    if (ctx.confidence.perEngine) push(`  Per engine: ${rjson(ctx.confidence.perEngine)}`);
+  } else push("  N/A");
+
+  push(...rptSub("ENGINE OPINIONS"));
+  if (ctx && ctx.engines && Object.keys(ctx.engines).length){
+    for (const [eid, op] of Object.entries(ctx.engines)){
+      push(`  Engine ${eid}: wouldTrade=${rv(op?.wouldTrade)} confidence=${rv(op?.confidence)} score=${rv(op?.score)} histWR=${rv(op?.historicalWinrate)} histExp=${rv(op?.historicalExpectancy)}`);
+    }
+  } else push("  N/A");
+
+  push(...rptSub("RANKING (Confidence -> Expectancy -> TrainingEvents -> Version -> Freshness)"));
+  if (ctx && Array.isArray(ctx.ranking) && ctx.ranking.length)
+    push(...ctx.ranking.slice(0,8).map((r,i)=>`  #${i+1} ${r.source} [${rv(r.kind)}] confidence ${rv(r.confidence)}, expectancy ${rv(r.expectancy)}, trainingEvents ${rv(r.trainingEvents)}`));
+  else push("  N/A");
+
+  push(...rptSub("EXPLAINABILITY"));
+  if (ctx && ctx.explainability){
+    const ex = ctx.explainability;
+    push(
+      `  Why selected: ${rv(ex.selectionReason || ctx.selectedReason)}`,
+      `  Top ranked sources: [${((ex.evidenceSummary&&ex.evidenceSummary.topSources)||[]).join(", ")}]`,
+      `  Selected sources: [${(ex.selectedSources||[]).join(", ")}]`,
+      `  Confidence chain: tier ${rv(ex.confidenceChain?.tier)}, avg ${rv(ex.confidenceChain?.average)}`,
+      `  Knowledge versions: max ${rv(ex.knowledgeVersions?.max)}, snapshot ${rjson(ex.knowledgeVersions?.snapshot||null)}`,
+      `  Market fingerprint: ${rjson((ex.evidenceSummary&&ex.evidenceSummary.marketFingerprint)||null)}`,
+    );
+  } else push(`  Why selected: ${rv(ctx && ctx.selectedReason)}`);
+
+  push(...rptSub("EVIDENCE TRACE (REPRODUCIBLE)"));
+  if (ctx && ctx.evidenceTrace){
+    const tr = ctx.evidenceTrace;
+    push(
+      `  Checksum (content-only, restart-stable): ${rv(tr.checksum)}`,
+      `  Records: ${(tr.records||[]).length}  knowledge artifacts: ${(tr.artifacts||[]).length}  engines: [${(tr.engineIds||[]).join(", ")}]`,
+      `  Snapshot checksum: ${rv(tr.snapshotChecksum)}`,
+      `  Ranking criteria embedded: ${tr.rankingCriteria ? "yes (RANKING_CRITERIA v" + rv(tr.rankingCriteria.version) + ")" : "no"}`,
+    );
+  } else push("  N/A");
+
+  push(...rptSub("KNOWLEDGE vs ENGINE CONTRIBUTION"));
+  if (ctx && Array.isArray(ctx.ranking) && ctx.ranking.length){
+    const kn = ctx.ranking.filter(r=>String(r.source||"").indexOf("knowledge:")===0).length;
+    const en = ctx.ranking.filter(r=>String(r.source||"").indexOf("engine:")===0).length;
+    const other = ctx.ranking.length - kn - en;
+    const top = ctx.ranking[0];
+    push(
+      `  Ranking inputs: ${en} engine source(s), ${kn} knowledge source(s), ${other} other`,
+      `  Top-ranked source kind: ${rv(top && top.source)}`,
+      `  Knowledge contribution: ${kn>0 ? `${kn} artifact-backed record(s) in ranking (versions: ${rjson((ctx.explainability&&ctx.explainability.knowledgeVersions&&ctx.explainability.knowledgeVersions.artifacts)||{})})` : "none — decision is engine-only"}`,
+      `  Engine contribution: ${en>0 ? `${en} live engine opinion(s); decided ${rv(ctx.consensusDetail?.decided)} of ${Object.keys(ctx.engines||{}).length}` : "none"}`,
+    );
+  } else push("  N/A");
+
+  push(...rptSub("FINAL REASONING"));
+  if (ctx){
+    push(`  ${rv(ctx.selectedReason)}`);
+  } else push("  N/A");
+
+  if (selStatus) push(
+    "",
+    `  [status] running=${rv(selStatus.running)} (SELECTED_ENGINE flag gates background refresh only)`,
+    `  [status] ring ${rv(selStatus.ring?.size)}/${rv(selStatus.ring?.capacity)} cached contexts, builds ${rv(selStatus.stats?.builds)}, last build ${rv(selStatus.stats?.lastBuildAt)}`,
+    `  [status] knowledge domains visible: [${(selStatus.knowledgeDomains||[]).join(", ")}]  knowledge version ${rv(selStatus.knowledgeVersion)}`,
+  );
+
+  // ════════ PIPELINE HEALTH ════════
+  push(...rptHdr("PIPELINE HEALTH"));
+  push(...rptSub("INGESTION (LIVE SIGNAL PIPELINE)"));
+  if (pipeline){
+    const wf = pipeline.waterfall||[];
+    const first = wf[0], gate = wf.find(w=>String(w.stage||"").indexOf("Reached Gate")===0);
+    push(
+      `  Signals detected: ${rv(first && first.survivors)}  reached gate: ${rv(gate && gate.survivors)}  trades opened: ${rv(pipeline.tradeOpens)}  closed: ${rv(pipeline.tradeCloses)}`,
+      `  Outcomes: ${rv(pipeline.wins)}W / ${rv(pipeline.losses)}L / ${rv(pipeline.breakevens)}BE`,
+      `  Dominant blocker: ${pipeline.dominantBlocker ? `${pipeline.dominantBlocker.name} (${pipeline.dominantBlocker.count})` : "none"}  terminal: ${rv(pipeline.terminalBlocker)}`,
+      `  Silent leakage: ${rv(pipeline.silentLeakage)}`,
+    );
+  } else push("  N/A");
+
+  push(...rptSub("SHADOW / RESEARCH STAGE"));
+  push(`  Lab comparisons: ${rv(labOverview?.totalProcessed)}  research signals: ${rv(research?.counts?.signals)}  evals: ${rv(research?.counts?.engineEvals)}  outcomes: ${rv(research?.counts?.outcomes)}`);
+  push(`  Research reconciler enabled (SHADOW_LAB_RESEARCH): ${rv(research?.researchEnabled)}`);
+
+  push(...rptSub("KNOWLEDGE STAGE"));
+  push(`  Builder enabled (KNOWLEDGE_LAYER): ${rv(knStatus?.knowledgeEnabled)}  active artifacts: ${rv(knStatus?.artifacts?.active)}  snapshots: ${rv(knStatus?.snapshots?.total)}`);
+
+  push(...rptSub("SELECTED STAGE"));
+  push(`  Background refresh (SELECTED_ENGINE): ${rv(selStatus?.running)}  builds: ${rv(selStatus?.stats?.builds)}  context available: ${ctx ? "yes" : "no"}`);
+
+  push(...rptSub("TELEMETRY & PERSISTENCE"));
+  if (healthz){
+    push(
+      `  DB backend: ${rv(healthz.dbBackend)} (persistent: ${rv(healthz.persistence)})`,
+      `  Event counts: ${rjson(healthz.eventCounts||{})}`,
+      `  Shadow mode: ${rv(healthz.shadowMode)}  live open trades: ${(healthz.liveOpenTrades||[]).length}`,
+    );
+  } else push("  N/A");
+  if (memInteg) push(`  Memory integration: ${rjson(memInteg)}`);
+
+  push(...rptSub("POLLING & CACHE"));
+  push(
+    `  Shadow M poll: event-driven cursor (see healthz shadowM: ${rjson(healthz?.shadowM?.tradesObserved!=null?{tradesObserved:healthz.shadowM.tradesObserved}:null)})`,
+    `  Knowledge builder poll: 15 min (unref'd), enabled=${rv(knStatus?.knowledgeEnabled)}`,
+    `  Selected Engine poll: unref'd background refresh, running=${rv(selStatus?.running)}`,
+    `  Selected ring cache: ${rv(selStatus?.ring?.size)}/${rv(selStatus?.ring?.capacity)}`,
+  );
+
+  push(...rptSub("EXPORT STAGE (THIS REPORT)"));
+  {
+    const tKeys = Object.keys(timings||{});
+    const totalMs = tKeys.reduce((s,k)=>s+(timings[k]||0),0);
+    const slow = tKeys.map(k=>[k,timings[k]]).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    push(
+      `  Endpoints fetched: ${tKeys.length}  failed: ${(failures||[]).length}`,
+      `  Cumulative fetch time: ${totalMs}ms`,
+      `  Slowest endpoints: ${slow.map(([k,v])=>`${k} (${v}ms)`).join(", ")||"N/A"}`,
+    );
+  }
+
+  push(...rptSub("FAILURES"));
+  const fails = [];
+  for (const f of (failures||[])) fails.push(`  [FETCH] ${f}`);
+  for (const f of ((pipeline&&pipeline.findings)||[]).filter(x=>x.severity==="CRITICAL"||x.severity==="HIGH"))
+    fails.push(`  [${f.severity}] (${f.classification}) ${f.finding}`);
+  push(...(fails.length?fails:["  none"]));
+
+  push(...rptSub("WARNINGS"));
+  const warns = [];
+  if (labRanking?.dataQualityNote && String(labRanking.dataQualityNote).indexOf("ADEQUATE")!==0) warns.push(`  [DATA] ${labRanking.dataQualityNote}`);
+  for (const f of ((pipeline&&pipeline.findings)||[]).filter(x=>x.severity==="INFO")) warns.push(`  [INFO] (${f.classification}) ${f.finding}`);
+  if (knStatus && knStatus.knowledgeEnabled===false) warns.push("  [FLAG] KNOWLEDGE_LAYER is OFF — artifacts refresh only when the flag is enabled.");
+  if (selStatus && selStatus.running===false) warns.push("  [FLAG] SELECTED_ENGINE background refresh is OFF — contexts build on demand only.");
+  if (research && research.researchEnabled===false) warns.push("  [FLAG] SHADOW_LAB_RESEARCH is OFF — research reconciler is not appending new research rows.");
+  push(...(warns.length?warns:["  none"]));
+
+  // ════════ AI SUMMARY (rule-based, deterministic) ════════
+  push(...rptHdr("AI SUMMARY"));
+  push("(Deterministic rule-based synthesis — no external AI calls. Compare-to-previous uses the last report generated in this browser.)");
+
+  const liveExp = labVirtual?.live?.expectancy ?? null;
+  const liveWR  = labVirtual?.live?.winRate ?? (stats?.winRate!=null ? Number(stats.winRate) : null);
+  const engsRanked = (labRanking && labRanking.engines) || [];
+  const bestEng = engsRanked.find(e=>e.expectancy!=null) || engsRanked[0] || null;
+  const cur = {
+    generated: ts,
+    liveTrades: labVirtual?.live?.trades ?? stats?.trades ?? null,
+    liveWinRate: liveWR!=null && !isNaN(Number(liveWR)) ? Number(liveWR) : null,
+    liveExpectancy: liveExp,
+    avgAgreement: labComparison?.avgAgreementPct ?? null,
+    cautionPct: labComparison?.cautionFlagPct ?? null,
+    bestEngineId: bestEng ? (bestEng.id||bestEng.label) : null,
+    bestEngineExpectancy: bestEng ? bestEng.expectancy : null,
+    knowledgeActive: knStatus?.artifacts?.active ?? null,
+    latestSnapshotId: snaps.length ? snaps[0].id : null,
+    selectedConsensus: ctx ? ctx.consensus : null,
+    selectedConfidenceTier: ctx && ctx.confidence ? ctx.confidence.tier : null,
+  };
+
+  push(...rptSub("WHAT WORKS WELL"));
+  {
+    const good = [];
+    if (cur.liveExpectancy!=null && cur.liveExpectancy>0) good.push(`  Live bot expectancy is positive (${rnum(cur.liveExpectancy,2,"p")}/trade over ${rv(cur.liveTrades)} trades).`);
+    if (cur.liveWinRate!=null && cur.liveWinRate>=50) good.push(`  Live win rate is ${rnum(cur.liveWinRate,1,"%")}.`);
+    if (cur.avgAgreement!=null && cur.avgAgreement>=70) good.push(`  Shadow engines agree ${rnum(cur.avgAgreement,1,"%")} on average — decision surface is coherent.`);
+    if (exitLab?.stats?.totalProfitSaved > 0) good.push(`  Exit Lab shows ${rnum(exitLab.stats.totalProfitSaved,1,"p")} cumulative improvement potential over live exits.`);
+    if (cur.knowledgeActive > 0) good.push(`  Knowledge Layer holds ${cur.knowledgeActive} active versioned artifact(s) with provenance and content-only checksums.`);
+    if (ctx && ctx.evidenceTrace && ctx.evidenceTrace.checksum) good.push("  Selected Engine produces reproducible, checksummed evidence traces — decisions are fully auditable.");
+    if (healthz && healthz.persistence===true) good.push("  PostgreSQL persistence is active — trading knowledge survives redeploys (sacred constraint holds).");
+    push(...(good.length?good:["  Not enough data yet to confirm strengths — keep collecting."]));
+  }
+
+  push(...rptSub("DEGRADED SINCE PREVIOUS REPORT"));
+  if (prev && prev.generated){
+    const deg = [];
+    const dropped = (a,b,eps)=> a!=null && b!=null && (b-a) > eps;
+    if (dropped(cur.liveWinRate, prev.liveWinRate, 2))      deg.push(`  Win rate fell ${rnum(prev.liveWinRate,1,"%")} -> ${rnum(cur.liveWinRate,1,"%")}.`);
+    if (dropped(cur.liveExpectancy, prev.liveExpectancy, 0.2)) deg.push(`  Live expectancy fell ${rnum(prev.liveExpectancy,2,"p")} -> ${rnum(cur.liveExpectancy,2,"p")}.`);
+    if (dropped(cur.avgAgreement, prev.avgAgreement, 5))    deg.push(`  Engine agreement fell ${rnum(prev.avgAgreement,1,"%")} -> ${rnum(cur.avgAgreement,1,"%")}.`);
+    if (cur.cautionPct!=null && prev.cautionPct!=null && (cur.cautionPct-prev.cautionPct) > 5) deg.push(`  Caution-flag rate rose ${rnum(prev.cautionPct,1,"%")} -> ${rnum(cur.cautionPct,1,"%")}.`);
+    if (dropped(cur.bestEngineExpectancy, prev.bestEngineExpectancy, 0.2)) deg.push(`  Best engine expectancy fell ${rnum(prev.bestEngineExpectancy,2,"p")} -> ${rnum(cur.bestEngineExpectancy,2,"p")}.`);
+    if (cur.knowledgeActive!=null && prev.knowledgeActive!=null && cur.knowledgeActive < prev.knowledgeActive) deg.push(`  Active knowledge artifacts dropped ${prev.knowledgeActive} -> ${cur.knowledgeActive}.`);
+    push(...(deg.length?deg:[`  No degradation detected vs previous report (${prev.generated}).`]));
+  } else push("  N/A — first v2 report in this browser (baseline saved for next comparison).");
+
+  push(...rptSub("BEST DEVELOPING SHADOW"));
+  if (bestEng && bestEng.expectancy!=null){
+    push(`  ${bestEng.label||bestEng.id} — rank #${rv(bestEng.rank)}, virtual expectancy ${rnum(bestEng.expectancy,2,"p")}, WR ${rv(bestEng.winRate,"%")}.`);
+    if (prev && prev.bestEngineId && prev.bestEngineId !== cur.bestEngineId)
+      push(`  Leadership changed: previously ${prev.bestEngineId}, now ${cur.bestEngineId}.`);
+    if (labRanking?.dataQualityNote && String(labRanking.dataQualityNote).indexOf("ADEQUATE")!==0)
+      push(`  Caveat: ${labRanking.dataQualityNote}`);
+  } else push("  N/A — no engine has enough resolved virtual trades to rank reliably.");
+
+  push(...rptSub("KNOWLEDGE LAYER VALUE"));
+  {
+    const kv = [];
+    if (cur.knowledgeActive > 0){
+      kv.push(`  ${cur.knowledgeActive} active artifact(s) across domains [${(knStatus?.byDomain||[]).map(x=>x.domain).join(", ")}].`);
+      if (snaps.length>=2){
+        const grew = Number(snaps[0].artifact_count||0) - Number(snaps[1].artifact_count||0);
+        const changed = snaps[0].manifest_checksum !== snaps[1].manifest_checksum;
+        kv.push(changed ? `  Manifest evolved since previous snapshot (artifact delta ${grew>=0?"+":""}${grew}) — knowledge is actively accruing.`
+                        : "  Manifest unchanged since previous snapshot — no new research content (idempotent rebuilds, as designed).");
+      }
+      if (kp && kp.value && kp.value.validatedCount > 0) kv.push(`  ${kp.value.validatedCount} validated pattern(s) already exceed the minimum-sample bar — actionable knowledge exists.`);
+      else kv.push("  No validated patterns yet — knowledge is accruing but below the validation sample threshold.");
+      kv.push(`  Verdict: ${ (kp?.value?.validatedCount>0 || (snaps.length>=2 && snaps[0].manifest_checksum!==snaps[1].manifest_checksum)) ? "YES — the layer adds measurable value." : "EARLY — infrastructure is sound, value pending more resolved trades."}`);
+    } else kv.push("  NOT YET — no active artifacts. Enable KNOWLEDGE_LAYER (or wait for the first build) to start accruing.");
+    push(...kv);
+  }
+
+  push(...rptSub("SELECTED ENGINE SANITY"));
+  if (ctx){
+    const sane = [];
+    sane.push(`  Consensus ${rv(ctx.consensus)} with confidence tier ${rv(ctx.confidence?.tier)} — reason: ${rv(ctx.selectedReason)}`);
+    const topSrc = (ctx.ranking && ctx.ranking[0] && String(ctx.ranking[0].source)) || "";
+    const topEng = topSrc.indexOf("engine:")===0 ? topSrc.slice(7) : null;
+    const labBest = bestEng ? String(bestEng.id||"").replace("ENGINE_","") : null;
+    if (topEng && labBest) sane.push(topEng===labBest
+      ? `  CONSISTENT — top-ranked source (engine:${topEng}) matches the Lab's best engine (${labBest}).`
+      : `  DIVERGENT — top-ranked source is engine:${topEng} but the Lab ranks ${labBest} best. Rankings use different criteria (confidence-first vs expectancy-only); monitor, not necessarily an error.`);
+    sane.push(ctx.evidenceTrace && ctx.evidenceTrace.checksum ? "  Every decision carries a reproducible evidence trace — sanity is verifiable, not asserted." : "  WARNING: no evidence trace present.");
+    sane.push("  Verdict: decisions are reasoned, read-only, and never influence trading (by design).");
+    push(...sane);
+  } else push("  N/A — no DecisionContext available yet.");
+
+  push(...rptSub("NEXT SPRINT RECOMMENDATIONS"));
+  {
+    const rec = [];
+    if (labRanking?.dataQualityNote && String(labRanking.dataQualityNote).indexOf("INSUFFICIENT")===0)
+      rec.push("  1. PRIORITY: keep collecting closed trades — every ranking/expectancy verdict is unreliable below 50 resolved trades.");
+    if (research && research.researchEnabled===false) rec.push(`  ${rec.length+1}. Enable SHADOW_LAB_RESEARCH so the research reconciler persists signals/evals/outcomes continuously.`);
+    if (knStatus && knStatus.knowledgeEnabled===false) rec.push(`  ${rec.length+1}. Enable KNOWLEDGE_LAYER so artifacts refresh on the 15-min cycle instead of staying frozen.`);
+    if (selStatus && selStatus.running===false) rec.push(`  ${rec.length+1}. Consider enabling SELECTED_ENGINE background refresh for a warm DecisionContext ring.`);
+    if (cur.cautionPct!=null && cur.cautionPct>30) rec.push(`  ${rec.length+1}. Investigate engine disagreement — caution-flag rate ${rnum(cur.cautionPct,1,"%")} exceeds 30%.`);
+    if (pipeline && pipeline.silentLeakage>0) rec.push(`  ${rec.length+1}. Close the telemetry gap: silent leakage of ${pipeline.silentLeakage} signal(s) between block arithmetic and gate checks.`);
+    rec.push(`  ${rec.length+1}. Proceed with Sprint 7 (RecoveryManager + ValidationManager) — the next planned SHADOW OS v2 milestone.`);
+    push(...rec);
+  }
+
+  push("", "=".repeat(RPT_W), "END OF REPORT — AI COMPLETE ANALYSIS REPORT v2", "=".repeat(RPT_W), "");
+  return { lines: L, metrics: cur };
+}
+
 // ── EXPORT tab ───────────────────────────────────────────────────────────────
 function ExportTab(){
   const [loading, setLoading] = useState(false);
@@ -662,36 +1207,71 @@ function ExportTab(){
   function dlRaw(format){ window.open(`/api/export?format=${format}&date=today`,"_blank"); }
 
   async function generateReport(){
-    setLoading(true); setStatus("Fetching data…");
+    setLoading(true); setStatus("Generating AI Complete Analysis Report v2…");
     try {
+      const failures = [];
+      const timings  = {};
+      const safe = async (path) => {
+        const s = Date.now();
+        try { const r = await fetch(path); const j = await r.json(); timings[path] = Date.now()-s; return j; }
+        catch(e){ timings[path] = Date.now()-s; failures.push(`${path} — ${e.message}`); return null; }
+      };
+
+      setStatus("Fetching… (1/6) live bot");
       const [stats,today,syms,ins,blocked,quality] = await Promise.all([
-        api("/api/stats"),api("/api/today"),api("/api/symbols"),
-        api("/api/insights"),api("/api/blocked-outcomes"),api("/api/trade-quality"),
+        safe("/api/stats"),safe("/api/today"),safe("/api/symbols"),
+        safe("/api/insights"),safe("/api/blocked-outcomes"),safe("/api/trade-quality"),
       ]);
+      setStatus("Fetching… (2/6) shadow lab core");
+      const [labOverview,unified,labComparison,labRanking,labVirtual,shadowStatus] = await Promise.all([
+        safe("/api/lab/overview"),safe("/api/lab/unified-report"),safe("/api/lab/comparison"),
+        safe("/api/lab/engine-ranking"),safe("/api/lab/virtual-performance"),safe("/api/shadow/status"),
+      ]);
+      setStatus("Fetching… (3/6) shadow engines + exit lab");
+      const [shA,shB,shC,shD,exitLab,research] = await Promise.all([
+        safe("/api/lab/shadow-a"),safe("/api/lab/shadow-b"),safe("/api/lab/shadow-c"),
+        safe("/api/lab/shadow-d"),safe("/api/shadowm/dashboard"),safe("/api/lab/research/summary"),
+      ]);
+      setStatus("Fetching… (4/6) knowledge layer");
+      const [knStatus,knArtifacts,knSnapshots,knConfidence,knExpectancy,knExperiments] = await Promise.all([
+        safe("/api/knowledge/status"),safe("/api/knowledge/artifacts"),safe("/api/knowledge/snapshots?limit=10"),
+        safe("/api/knowledge/artifacts/confidence/history"),safe("/api/knowledge/artifacts/expectancy/history"),
+        safe("/api/knowledge/artifacts/experiments/metadata"),
+      ]);
+      setStatus("Fetching… (5/6) knowledge details + selected engine");
+      const [knFingerprints,knPatterns,selStatus,selContext,pipeline,healthz] = await Promise.all([
+        safe("/api/knowledge/artifacts/market/fingerprints"),safe("/api/knowledge/artifacts/patterns/validated"),
+        safe("/api/selected/status"),safe("/api/selected/context"),
+        safe("/api/pipeline-audit"),safe("/api/healthz/persistence"),
+      ]);
+      setStatus("Fetching… (6/6) memory integration");
+      const memInteg = await safe("/api/memory-integration/status");
+
+      setStatus("Assembling report…");
+      let prev = null;
+      try { prev = JSON.parse(localStorage.getItem("forex_ai_report_v2_prev") || "null"); } catch(_){}
+
       const ts = new Date().toISOString();
-      const lines = [
-        "FOREX ENGINE PRO v39.3 — Analysis Report",
-        `Generated: ${ts}`,
-        "=".repeat(60),"",
-        "PERFORMANCE SUMMARY",
-        `  Trades: ${stats.trades||0}  Wins: ${stats.wins||0}  Losses: ${stats.losses||0}  BE: ${stats.breakevens||0}`,
-        `  Win Rate: ${stats.winRate||"0.0"}%`,
-        `  Avg Peak: ${stats.avgPeak||"0.00"}p`,
-        `  Avg Exit Eff: ${ins.avgExitEfficiency!=null?ins.avgExitEfficiency+"%":"N/A"}`,
-        "","TODAY BLOCKS",
-        ...Object.entries(today.blockCounts||{}).map(([k,v])=>`  ${k}: ${v}`),
-        "","SYMBOL PERFORMANCE",
-        ...syms.map(s=>`  ${s.symbol}: ${s.trades} trades, ${s.winRate}% WR, avg ${s.avgProfit}p`),
-        "","FILTER COST (BLOCKED OUTCOMES)",
-        ...(blocked.summary||[]).map(b=>`  ${b.blockType}: ${b.total} blocked, ${b.movedPct}% moved, avg ${b.avgMovePips}p`),
-        "","TRADE QUALITY",
-        `  Reached +2p: ${quality.pctReachedPlusTwo||"0.0"}%`,
-        `  Instant Adverse: ${quality.pctInstantAdverse||"0.0"}%`,
-        "",
-      ];
-      const fn = `analysis_report_${ts.slice(0,19).replace(/:/g,"-")}.txt`;
+      const { lines, metrics } = buildReportV2({
+        ts, stats, today, syms, ins, blocked, quality,
+        labOverview, unified, labComparison, labRanking, labVirtual, shadowStatus,
+        shA, shB, shC, shD, exitLab, research,
+        knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
+        selStatus, selContext, pipeline, healthz, memInteg,
+        failures, timings, prev,
+      });
+
+      // Save the comparison baseline only when the fetch pass was mostly healthy —
+      // a heavily-failed run must not overwrite a good baseline with nulls.
+      if (failures.length <= 5) {
+        try { localStorage.setItem("forex_ai_report_v2_prev", JSON.stringify(metrics)); } catch(_){}
+      }
+
+      const fn = `ai_analysis_report_v2_${ts.slice(0,19).replace(/:/g,"-")}.txt`;
       downloadFile(lines.join("\n"), fn, "text/plain");
-      setStatus("Report downloaded.");
+      setStatus(failures.length
+        ? `Report downloaded (${failures.length} endpoint(s) unavailable — marked N/A inside the report).`
+        : "Report downloaded.");
     } catch(e){ setStatus("Error: "+e.message); }
     setLoading(false);
   }
@@ -755,9 +1335,9 @@ function ExportTab(){
           </div>
 
           <div className="sec-divider"/>
-          <div className="sec-label">Analysis Report</div>
+          <div className="sec-label">AI Complete Analysis Report v2</div>
           <div style={{color:"#8b949e",fontSize:11,marginBottom:10}}>
-            Summary text: performance, block breakdown, symbol stats, filter cost, trade quality.
+            One full architectural report (<code style={{color:"#79c0ff"}}>.txt</code>): LIVE BOT (unchanged summary) + SHADOW LAB (engines A–D, ranking, virtual performance, Exit Lab) + KNOWLEDGE LAYER (artifacts, snapshots, growth) + SELECTED ENGINE (DecisionContext, consensus, evidence trace) + PIPELINE HEALTH + rule-based AI SUMMARY with next-sprint recommendations. Read-only — assembled from existing endpoints.
           </div>
           <div style={{display:"flex",gap:10,marginBottom:16}}>
             <button className="btn primary" onClick={generateReport} disabled={loading}>

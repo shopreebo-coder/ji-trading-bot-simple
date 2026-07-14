@@ -53,6 +53,7 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
 - `telemetry/migrations/autoMigrate.js` — Sprint 4.1 startup auto-migration (`ensureSchema`) — pg-native, idempotent, no `psql` dependency
 - `CHANGELOG.md` — Sprint-by-sprint change log
+- `telemetry/public/index.html` — Dashboard (Babel-standalone JSX single file). EXPORT tab: "AI Complete Analysis Report v2" (`buildReportV2()` + `generateReport()`) — client-side-only .txt report assembled from ~26 read-only GET endpoints (LIVE BOT / SHADOW LAB / KNOWLEDGE LAYER / SELECTED ENGINE / PIPELINE HEALTH / rule-based AI SUMMARY); previous-report comparison baseline in localStorage `forex_ai_report_v2_prev`; `generateSnapshot()` untouched
 
 ## Architecture decisions
 

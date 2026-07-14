@@ -3,3 +3,4 @@
 - [reconcileAll appends expectancy](reconcileall-writes-expectancy.md) — resolving a trade bumps the expectancy/confidence knowledge artifacts; never assert they stay unchanged after a resolve.
 - [Dashboard single-file UI](dashboard-single-file-ui.md) — dashboard is hand-written telemetry/public/index.html served by server.js; new endpoints are invisible until a tab is wired in (not a flag/version issue).
 - [Selected Engine invariants](selected-engine-invariants.md) — read-only orchestration layer: never trades, never writes, zero hardcoded engine names, deterministic id, ranks NOT by winrate, tri-state consensus.
+- [Dashboard report conventions](dashboard-report-conventions.md) — winrate units differ (knowledge artifacts = 0–1 fraction, lab endpoints = percent); test dashboard JSX via esbuild extract, never by running server.js.
