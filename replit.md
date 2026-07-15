@@ -54,7 +54,7 @@ Live OANDA forex trading bot on Railway. Currently executing the SHADOW OS v2 mi
 - `telemetry/migrations/004_memory_foundation.sql` — Sprint 3 schema migration (memory_events + memory_event_history)
 - `telemetry/migrations/autoMigrate.js` — Sprint 4.1 startup auto-migration (`ensureSchema`) — pg-native, idempotent, no `psql` dependency
 - `CHANGELOG.md` — Sprint-by-sprint change log
-- `telemetry/public/index.html` — Dashboard (Babel-standalone JSX single file). EXPORT tab: "AI Complete Analysis Report v2" (`buildReportV2()` + `generateReport()`) — client-side-only .txt report assembled from ~26 read-only GET endpoints (LIVE BOT / SHADOW LAB / KNOWLEDGE LAYER / SELECTED ENGINE / PIPELINE HEALTH / rule-based AI SUMMARY); previous-report comparison baseline in localStorage `forex_ai_report_v2_prev`; `generateSnapshot()` untouched
+- `telemetry/public/index.html` — Dashboard (Babel-standalone JSX single file). EXPORT tab: "AI Complete Analysis Report v2" (`buildReportV2()` + `generateReport()`) — client-side-only .txt report assembled from 31 read-only GET endpoints (LIVE BOT / SHADOW LAB / KNOWLEDGE LAYER / SELECTED ENGINE / PIPELINE HEALTH / rule-based AI SUMMARY). Sprint 6.2: `safe()` retries transient 5xx/network errors (600/1800 ms backoff, 404 = expected-absent, no retry, no failure) and `fetchLimited()` caps fetch concurrency at 2–3 per phase (shared pg pool max=10 with the live bot — never restore full-parallel `Promise.all`). Shared `knActiveCount`/`knDomains` derivation keeps ACTIVE ARTIFACTS / PIPELINE HEALTH / AI SUMMARY consistent when one knowledge endpoint fails. Previous-report comparison baseline in localStorage `forex_ai_report_v2_prev`; `generateSnapshot()` untouched
 
 ## Architecture decisions
 

@@ -846,6 +846,18 @@ function buildReportV2(d){
   // ════════ KNOWLEDGE LAYER ════════
   push(...rptHdr("KNOWLEDGE LAYER"));
   const snaps = (knSnapshots && knSnapshots.snapshots) || [];
+  // Single source of truth for "active knowledge artifacts": prefer the status
+  // endpoint, fall back to the artifact list — so ACTIVE ARTIFACTS, PIPELINE
+  // HEALTH and AI SUMMARY always agree, even when one endpoint failed this run.
+  const knArtifactList = (knArtifacts && Array.isArray(knArtifacts.artifacts)) ? knArtifacts.artifacts : [];
+  const knActiveCount =
+    (knStatus && knStatus.artifacts && knStatus.artifacts.active != null && !isNaN(Number(knStatus.artifacts.active)))
+      ? Number(knStatus.artifacts.active)
+      : (knArtifactList.length ? knArtifactList.length : (knArtifacts ? 0 : null));
+  const knDomainsFromStatus = (knStatus?.byDomain||[]).map(x=>x.domain);
+  const knDomains = knDomainsFromStatus.length
+    ? knDomainsFromStatus
+    : Array.from(new Set(knArtifactList.map(a=>a.domain)));
   push(...rptSub("SNAPSHOT / MANIFEST"));
   if (snaps.length){
     const s0 = snaps[0];
@@ -883,8 +895,8 @@ function buildReportV2(d){
   } else push("  N/A");
 
   push(...rptSub("ACTIVE ARTIFACTS (VERSIONS)"));
-  if (knArtifacts && Array.isArray(knArtifacts.artifacts) && knArtifacts.artifacts.length)
-    push(...knArtifacts.artifacts.map(a=>`  ${a.domain}/${a.artifact} v${a.version} — confidence ${rv(a.confidence)}, trainingEvents ${rv(a.training_events)}, ${rv(a.byte_size)}B, created ${rv(a.created_at)}`));
+  if (knArtifactList.length)
+    push(...knArtifactList.map(a=>`  ${a.domain}/${a.artifact} v${a.version} — confidence ${rv(a.confidence)}, trainingEvents ${rv(a.training_events)}, ${rv(a.byte_size)}B, created ${rv(a.created_at)}`));
   else push("  N/A (no active artifacts)");
 
   const kc = knParse(knConfidence);
@@ -968,7 +980,7 @@ function buildReportV2(d){
     push(
       `  Why selected: ${rv(ex.selectionReason || ctx.selectedReason)}`,
       `  Top ranked sources: [${((ex.evidenceSummary&&ex.evidenceSummary.topSources)||[]).join(", ")}]`,
-      `  Selected sources: [${(ex.selectedSources||[]).join(", ")}]`,
+      `  Selected sources: [${(ex.selectedSources||[]).map(s=>(s&&typeof s==="object")?s.source:s).join(", ")}]`,
       `  Confidence chain: tier ${rv(ex.confidenceChain?.tier)}, avg ${rv(ex.confidenceChain?.average)}`,
       `  Knowledge versions: max ${rv(ex.knowledgeVersions?.max)}, snapshot ${rjson(ex.knowledgeVersions?.snapshot||null)}`,
       `  Market fingerprint: ${rjson((ex.evidenceSummary&&ex.evidenceSummary.marketFingerprint)||null)}`,
@@ -1031,7 +1043,7 @@ function buildReportV2(d){
   push(`  Research reconciler enabled (SHADOW_LAB_RESEARCH): ${rv(research?.researchEnabled)}`);
 
   push(...rptSub("KNOWLEDGE STAGE"));
-  push(`  Builder enabled (KNOWLEDGE_LAYER): ${rv(knStatus?.knowledgeEnabled)}  active artifacts: ${rv(knStatus?.artifacts?.active)}  snapshots: ${rv(knStatus?.snapshots?.total)}`);
+  push(`  Builder enabled (KNOWLEDGE_LAYER): ${rv(knStatus?.knowledgeEnabled)}  active artifacts: ${rv(knActiveCount)}  snapshots: ${rv(knStatus?.snapshots?.total)}`);
 
   push(...rptSub("SELECTED STAGE"));
   push(`  Background refresh (SELECTED_ENGINE): ${rv(selStatus?.running)}  builds: ${rv(selStatus?.stats?.builds)}  context available: ${ctx ? "yes" : "no"}`);
@@ -1099,7 +1111,7 @@ function buildReportV2(d){
     cautionPct: labComparison?.cautionFlagPct ?? null,
     bestEngineId: bestEng ? (bestEng.id||bestEng.label) : null,
     bestEngineExpectancy: bestEng ? bestEng.expectancy : null,
-    knowledgeActive: knStatus?.artifacts?.active ?? null,
+    knowledgeActive: knActiveCount,
     latestSnapshotId: snaps.length ? snaps[0].id : null,
     selectedConsensus: ctx ? ctx.consensus : null,
     selectedConfidenceTier: ctx && ctx.confidence ? ctx.confidence.tier : null,
@@ -1144,7 +1156,7 @@ function buildReportV2(d){
   {
     const kv = [];
     if (cur.knowledgeActive > 0){
-      kv.push(`  ${cur.knowledgeActive} active artifact(s) across domains [${(knStatus?.byDomain||[]).map(x=>x.domain).join(", ")}].`);
+      kv.push(`  ${cur.knowledgeActive} active artifact(s) across domains [${knDomains.join(", ")}].`);
       if (snaps.length>=2){
         const grew = Number(snaps[0].artifact_count||0) - Number(snaps[1].artifact_count||0);
         const changed = snaps[0].manifest_checksum !== snaps[1].manifest_checksum;
@@ -1211,52 +1223,82 @@ function ExportTab(){
     try {
       const failures = [];
       const timings  = {};
+      // Retry transient HTTP errors: a Railway-edge 502/timeout during a burst
+      // of heavy scans usually succeeds on a quieter retry. 404 is an EXPECTED
+      // contract (knowledge artifact not built yet) — absent data, no retry,
+      // NOT a failure (keeps the failures.length <= 5 baseline-save guard).
+      const RETRY_BACKOFF_MS = [600, 1800]; // attempt 1 → wait 600ms, attempt 2 → 1800ms
       const safe = async (path) => {
         const s = Date.now();
-        try {
-          const r = await fetch(path);
-          // Non-2xx responses (e.g. proxy 502 JSON error documents) must NOT be
-          // treated as data — they crash array consumers like (syms||[]).map.
-          // 404 is an EXPECTED contract (knowledge artifact not built yet) —
-          // treat as absent data (N/A) without counting it as a failure, so the
-          // baseline-save guard (failures.length <= 5) keeps its old semantics.
-          if (!r.ok) {
-            timings[path] = Date.now()-s;
-            if (r.status !== 404) failures.push(`${path} — HTTP ${r.status}`);
-            return null;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const r = await fetch(path);
+            // Non-2xx responses (e.g. proxy 502 JSON error documents) must NOT
+            // be treated as data — they crash array consumers like syms.map.
+            if (!r.ok) {
+              if (r.status === 404) { timings[path] = Date.now()-s; return null; }
+              if (attempt < RETRY_BACKOFF_MS.length) {
+                await new Promise(res => setTimeout(res, RETRY_BACKOFF_MS[attempt]));
+                continue;
+              }
+              timings[path] = Date.now()-s;
+              failures.push(`${path} — HTTP ${r.status}`);
+              return null;
+            }
+            const j = await r.json(); timings[path] = Date.now()-s; return j;
           }
-          const j = await r.json(); timings[path] = Date.now()-s; return j;
+          catch(e){
+            if (attempt < RETRY_BACKOFF_MS.length) {
+              await new Promise(res => setTimeout(res, RETRY_BACKOFF_MS[attempt]));
+              continue;
+            }
+            timings[path] = Date.now()-s; failures.push(`${path} — ${e.message}`); return null;
+          }
         }
-        catch(e){ timings[path] = Date.now()-s; failures.push(`${path} — ${e.message}`); return null; }
+      };
+
+      // Fetch a batch with LIMITED parallelism (results in input order).
+      // The endpoints behind this report share one pg pool (max 10 connections,
+      // 5s connection timeout) with the live bot. Firing 6 heavy event-scans at
+      // once can exhaust the pool → slow queries → Railway edge 502s. Two at a
+      // time keeps the report reliable without starving the bot's own queries.
+      const fetchLimited = async (paths, limit) => {
+        const out = new Array(paths.length);
+        let next = 0;
+        const worker = async () => {
+          while (next < paths.length) { const i = next++; out[i] = await safe(paths[i]); }
+        };
+        await Promise.all(Array.from({ length: Math.min(limit || 2, paths.length) }, worker));
+        return out;
       };
 
       setStatus("Fetching… (1/6) live bot");
-      const [stats,today,syms,ins,blocked,quality] = await Promise.all([
-        safe("/api/stats"),safe("/api/today"),safe("/api/symbols"),
-        safe("/api/insights"),safe("/api/blocked-outcomes"),safe("/api/trade-quality"),
-      ]);
+      const [stats,today,syms,ins,blocked,quality] = await fetchLimited([
+        "/api/stats","/api/today","/api/symbols",
+        "/api/insights","/api/blocked-outcomes","/api/trade-quality",
+      ], 2);
       setStatus("Fetching… (2/6) shadow lab core");
-      const [labOverview,unified,labComparison,labRanking,labVirtual,shadowStatus] = await Promise.all([
-        safe("/api/lab/overview"),safe("/api/lab/unified-report"),safe("/api/lab/comparison"),
-        safe("/api/lab/engine-ranking"),safe("/api/lab/virtual-performance"),safe("/api/shadow/status"),
-      ]);
+      const [labOverview,unified,labComparison,labRanking,labVirtual,shadowStatus] = await fetchLimited([
+        "/api/lab/overview","/api/lab/unified-report","/api/lab/comparison",
+        "/api/lab/engine-ranking","/api/lab/virtual-performance","/api/shadow/status",
+      ], 2);
       setStatus("Fetching… (3/6) shadow engines + exit lab");
-      const [shA,shB,shC,shD,exitLab,research] = await Promise.all([
-        safe("/api/lab/shadow-a"),safe("/api/lab/shadow-b"),safe("/api/lab/shadow-c"),
-        safe("/api/lab/shadow-d"),safe("/api/shadowm/dashboard"),safe("/api/lab/research/summary"),
-      ]);
+      const [shA,shB,shC,shD,exitLab,research] = await fetchLimited([
+        "/api/lab/shadow-a","/api/lab/shadow-b","/api/lab/shadow-c",
+        "/api/lab/shadow-d","/api/shadowm/dashboard","/api/lab/research/summary",
+      ], 2);
       setStatus("Fetching… (4/6) knowledge layer");
-      const [knStatus,knArtifacts,knSnapshots,knConfidence,knExpectancy,knExperiments] = await Promise.all([
-        safe("/api/knowledge/status"),safe("/api/knowledge/artifacts"),safe("/api/knowledge/snapshots?limit=10"),
-        safe("/api/knowledge/artifacts/confidence/history"),safe("/api/knowledge/artifacts/expectancy/history"),
-        safe("/api/knowledge/artifacts/experiments/metadata"),
-      ]);
+      const [knStatus,knArtifacts,knSnapshots,knConfidence,knExpectancy,knExperiments] = await fetchLimited([
+        "/api/knowledge/status","/api/knowledge/artifacts","/api/knowledge/snapshots?limit=10",
+        "/api/knowledge/artifacts/confidence/history","/api/knowledge/artifacts/expectancy/history",
+        "/api/knowledge/artifacts/experiments/metadata",
+      ], 3);
       setStatus("Fetching… (5/6) knowledge details + selected engine");
-      const [knFingerprints,knPatterns,selStatus,selContext,pipeline,healthz] = await Promise.all([
-        safe("/api/knowledge/artifacts/market/fingerprints"),safe("/api/knowledge/artifacts/patterns/validated"),
-        safe("/api/selected/status"),safe("/api/selected/context"),
-        safe("/api/pipeline-audit"),safe("/api/healthz/persistence"),
-      ]);
+      const [knFingerprints,knPatterns,selStatus,selContext,pipeline,healthz] = await fetchLimited([
+        "/api/knowledge/artifacts/market/fingerprints","/api/knowledge/artifacts/patterns/validated",
+        "/api/selected/status","/api/selected/context",
+        "/api/pipeline-audit","/api/healthz/persistence",
+      ], 2);
       setStatus("Fetching… (6/6) memory integration");
       const memInteg = await safe("/api/memory-integration/status");
 

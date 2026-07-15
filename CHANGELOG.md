@@ -6,6 +6,69 @@ additive.
 
 ---
 
+## SPRINT 6.2: Telemetry stabilization — AI Report v2 (2026-07-15)
+
+Dashboard-only change set (`telemetry/public/index.html`, `generateReport` +
+`buildReportV2` only). Zero server change, zero API-contract change, zero
+Live Bot / Advisor / Selected Engine / Knowledge / Shadow Lab impact.
+`generateSnapshot()` and the global `api()` helper remain byte-identical.
+
+### Fixed
+- **HTTP 502 bursts during report generation.** Root cause (static analysis —
+  server must never be run locally): the report fired 6 phases of **6 parallel
+  fetches**; phase-1 endpoints are the heaviest (`/api/stats` alone runs 4
+  `queryEvents` calls incl. a LIMIT-10000 whole-day scan; `/api/symbols`
+  LIMIT 10000), all sharing ONE pg pool (max 10 connections,
+  `connectionTimeoutMillis` 5000) **with the live trading bot**. The burst
+  exhausts the pool → >5s connect waits throw → 500 at origin / 502 JSON at
+  the Railway edge. Fix (client-side only):
+  - `fetchLimited(paths, limit)` — ordered results with capped concurrency
+    (2 for heavy phases, 3 for the light knowledge-artifact phase) replaces
+    every intra-phase `Promise.all`, leaving pool headroom for the bot;
+  - `safe()` now **retries transient failures** (non-2xx except 404, plus
+    network errors) up to 2× with 600 ms/1800 ms backoff. 404 stays
+    immediate-null/no-retry/no-failure (expected "artifact not built"
+    contract). Exactly one FAILURES entry per finally-failed endpoint;
+    `timings` recorded once per path on every exit branch, so
+    "Endpoints fetched: 31" is preserved.
+- **"Selected sources: [[object Object]]".** `explainability.selectedSources`
+  is an array of OBJECTS `{source, kind, confidence, expectancy}`
+  (`SelectedEngineManager`); the report `.join(", ")`-ed it directly. Now maps
+  objects → `s.source` (plain names, same as `topSources`).
+- **AI SUMMARY contradicting ACTIVE ARTIFACTS.** `knowledgeActive` came only
+  from `knStatus?.artifacts?.active` — if `/api/knowledge/status` failed while
+  `/api/knowledge/artifacts` succeeded, the summary claimed "no active
+  artifacts" under a populated artifact list. Now a single shared derivation
+  (`knActiveCount`, Number-coerced status value when present, else the
+  artifact-list length; `knDomains` analogously) feeds ACTIVE ARTIFACTS,
+  PIPELINE HEALTH → KNOWLEDGE STAGE, AI SUMMARY and KNOWLEDGE LAYER VALUE.
+  STORE STATISTICS still reports the status endpoint verbatim (by design).
+
+### Known cosmetic edge (accepted)
+- Inverse asymmetry: if `/api/knowledge/status` succeeds but
+  `/api/knowledge/artifacts` fails, ACTIVE ARTIFACTS prints "N/A" while
+  KNOWLEDGE STAGE shows the status count. Low priority; both retry now, so
+  the window is small.
+
+### Verification
+- esbuild syntax check of the whole dashboard script: PASS.
+- Node smoke tests of the ACTUAL extracted code: `buildReportV2` (object
+  selectedSources → names; knStatus-failed + artifacts-present → all sections
+  agree; status authoritative over list; empty list → 0/"NOT YET"; all-null →
+  no crash; 502-object `syms` → prior fix intact; prev-comparison 9→7
+  detected) and `safe()`/`fetchLimited` (502→200 retried, 0 failures;
+  persistent 502 → 3 attempts, exactly 1 failure; 404 → 1 attempt, 0
+  failures; network-error retry; ordered results; max in-flight = 2;
+  timings key per path).
+- Regression: SelectedAdvisor + selectedRanking + knowledgeProvenance pure
+  unit suites — 29/29 pass.
+- Architect review: **PASS** — pool-saturation diagnosis confirmed as the
+  dominant 502 mechanism (retry additionally covers a pure edge-timeout
+  cause); all 31 report endpoints verified GET/read-only, so duplicate
+  requests are safe; failure accounting sound.
+
+---
+
 ## BUGFIX: dashboard report crash "(syms || []).map is not a function" (2026-07-15)
 
 Dashboard-only fix (`telemetry/public/index.html`, +15/−2). Zero server change,
