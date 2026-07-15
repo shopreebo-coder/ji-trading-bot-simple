@@ -23,6 +23,7 @@ const { KnowledgeManager, KnowledgeRepository, ARTIFACTS: KNOWLEDGE_ARTIFACTS } 
 const { SelectedEngineManager } = require("./SelectedEngineManager");
 const { SelectedAdvisor, DEFAULT_ATTEMPT_DELAYS_MS, DEFAULT_STALE_MS, DEFAULT_RING_SIZE } = require("./SelectedAdvisor");
 const { TelemetryReconciler, buildDefaultOandaClient, CURSOR_TYPE: RECONCILER_CURSOR_TYPE, REASON_MAP: RECONCILER_REASON_MAP } = require("./TelemetryReconciler");
+const { ModuleStatusManager, MODULE_STATUS } = require("./ModuleStatusManager");
 
 module.exports = {
   RuntimeDomainManager,
@@ -68,4 +69,7 @@ module.exports = {
   buildDefaultOandaClient,
   RECONCILER_CURSOR_TYPE,
   RECONCILER_REASON_MAP,
+  // Sprint 9 — Module Status Registry (presentation-only, read-only)
+  ModuleStatusManager,
+  MODULE_STATUS,
 };

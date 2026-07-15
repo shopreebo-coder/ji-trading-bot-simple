@@ -163,11 +163,103 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","SELECTED","EXPORT"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","SELECTED","MODUŁY","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
       {TABS.map(t => <div key={t} className={`tab ${active===t?"active":""}`} onClick={()=>set(t)}>{t}</div>)}
+    </div>
+  );
+}
+
+// ── MODUŁY tab — Sprint 9: module status registry ──────────────────────────
+// PROJECT RULE: every existing and future module must have its own status
+// card here — no module may stay hidden in code. Data: GET /api/modules/status
+// (read-only registry endpoint; refreshed every 30 s).
+const MODULE_STATUS_COLORS = {
+  "ACTIVE":        "#22c55e",
+  "LEARNING":      "#3b82f6",
+  "OBSERVING":     "#eab308",
+  "INSTALLED":     "#9ca3af",
+  "DISABLED":      "#f97316",
+  "NOT INSTALLED": "#64748b",
+};
+const MODULE_STATUS_ORDER = ["ACTIVE","LEARNING","OBSERVING","INSTALLED","DISABLED","NOT INSTALLED"];
+function ModYesNo({ v }){ return <span className={v?"pp":"pn"}>{v?"YES":"NO"}</span>; }
+function fmtStatVal(v){
+  if(v==null) return "—";
+  if(typeof v==="object"){ try{ return JSON.stringify(v); }catch(e){ return String(v); } }
+  return String(v);
+}
+function ModuleCard({ m }){
+  const c = MODULE_STATUS_COLORS[m.status] || "#9ca3af";
+  const statKeys = m.stats && typeof m.stats==="object" ? Object.keys(m.stats) : [];
+  return (
+    <div className="card" style={{minWidth:280,maxWidth:400,flex:"1 1 300px",textAlign:"left"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+        <div style={{fontSize:13,fontWeight:600,color:"#e2e8f0"}}>{m.name}</div>
+        <span style={{background:c,color:"#0b1220",padding:"2px 8px",borderRadius:10,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{m.status}</span>
+      </div>
+      <div style={{fontSize:12,marginTop:6,lineHeight:1.7}}>
+        <div>Connected to Live Engine: <ModYesNo v={!!m.connected}/></div>
+        <div>Collecting data: <ModYesNo v={!!m.collectsData}/></div>
+        <div>Influence on Live: <ModYesNo v={!!m.influencesLive}/></div>
+        <div>Observations: <b>{m.observations==null?"—":m.observations}</b></div>
+        {m.reason && <div style={{color:"#94a3b8"}}>Reason: {m.reason}</div>}
+        {statKeys.length>0 && (
+          <div style={{marginTop:4,borderTop:"1px solid #263042",paddingTop:4}}>
+            {statKeys.map(k=>(
+              <div key={k} style={{color:"#94a3b8",wordBreak:"break-word"}}>{k}: <span style={{color:"#cbd5e1"}}>{fmtStatVal(m.stats[k])}</span></div>
+            ))}
+          </div>
+        )}
+        {m.alsoVisibleIn && <div style={{color:"#64748b",marginTop:2}}>Details: {m.alsoVisibleIn} tab</div>}
+      </div>
+    </div>
+  );
+}
+function ModulesTab(){
+  const [data,setData] = useState(null);
+  const [err,setErr]   = useState(null);
+  useEffect(()=>{
+    let alive = true;
+    const load = () => api("/api/modules/status")
+      .then(d=>{ if(!alive) return;
+        if(d && Array.isArray(d.modules)){ setData(d); setErr(null); }
+        else setErr((d && d.error) || "unexpected payload"); })
+      .catch(e=>{ if(alive) setErr(e.message); });
+    load();
+    const id = setInterval(load, 30000);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[]);
+  if(err && !data) return <div className="page"><div className="card">Module registry error: {String(err)}</div></div>;
+  if(!data) return <div className="page"><div className="card">Loading module registry…</div></div>;
+  const tiers=[]; const byTier={};
+  data.modules.forEach(m=>{ const t=m.tier||"OTHER"; if(!byTier[t]){ byTier[t]=[]; tiers.push(t); } byTier[t].push(m); });
+  return (
+    <div className="page">
+      <div className="cards">
+        {MODULE_STATUS_ORDER.map(s=>(
+          <div className="card" key={s}><div className="lbl">{s}</div>
+            <div className="val" style={{color:MODULE_STATUS_COLORS[s]}}>{(data.summary && data.summary[s]) || 0}</div></div>
+        ))}
+        <div className="card"><div className="lbl">Shadow Mode</div>
+          <div className="val blue">{data.shadowMode || "—"}</div></div>
+        <div className="card"><div className="lbl">Modules Total</div>
+          <div className="val">{data.modules.length}</div></div>
+      </div>
+      <div style={{color:"#94a3b8",fontSize:12,margin:"8px 2px"}}>
+        {data.rule} {data.generated ? `(updated ${data.generated.slice(11,19)} UTC)` : ""}
+        {err ? <span style={{color:"#f97316"}}> — refresh failed: {String(err)} (showing last good data)</span> : null}
+      </div>
+      {tiers.map(t=>(
+        <div key={t}>
+          <h3 style={{margin:"14px 2px 6px",color:"#cbd5e1"}}>{t}</h3>
+          <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
+            {byTier[t].map(m=> <ModuleCard key={m.id} m={m}/>)}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -3959,6 +4051,7 @@ function App(){
       {tab==="LAB"       && <SnowballLabTab data={labData}/>}
       {tab==="KNOWLEDGE" && <KnowledgeTab data={knowledge}/>}
       {tab==="SELECTED"  && <SelectedTab  data={selected}/>}
+      {tab==="MODUŁY"    && <ModulesTab/>}
       {tab==="EXPORT"    && <ExportTab/>}
     </>
   );

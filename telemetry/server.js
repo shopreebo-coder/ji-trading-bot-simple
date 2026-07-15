@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -101,6 +101,32 @@ const TELEMETRY_RECONCILER_ENABLED = (process.env.TELEMETRY_RECONCILER || "on").
 const telemetryReconciler = new TelemetryReconciler({
   db,
   logEvent,
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+
+// ── SPRINT 9: Module Status Registry (READ-ONLY, presentation-only) ───────────
+// PROJECT RULE (Sprint 9): every existing and future module must have its own
+// visible status section in the dashboard — no module may stay hidden in code.
+// This manager feeds the MODUŁY tab: one status card per module. It is a pure
+// aggregation of feature flags, read-only DB counts and the in-memory stats
+// getters of the managers above. Zero writes, zero timers, zero trading impact.
+const moduleStatus = new ModuleStatusManager({
+  db,
+  flags: {
+    memory:          { enabled: SHADOW_OS_MEMORY_ENABLED,     raw: process.env.SHADOW_OS_MEMORY },
+    research:        { enabled: SHADOW_LAB_RESEARCH_ENABLED,  raw: process.env.SHADOW_LAB_RESEARCH },
+    knowledge:       { enabled: KNOWLEDGE_LAYER_ENABLED,      raw: process.env.KNOWLEDGE_LAYER },
+    selectedEngine:  { enabled: SELECTED_ENGINE_ENABLED,      raw: process.env.SELECTED_ENGINE },
+    selectedAdvisor: { enabled: SELECTED_ADVISOR_ENABLED,     raw: process.env.SELECTED_ADVISOR },
+    reconciler:      { enabled: TELEMETRY_RECONCILER_ENABLED, raw: process.env.TELEMETRY_RECONCILER },
+  },
+  getShadowMode,
+  getShadowMStats,
+  selectedAdvisor,
+  selectedEngine,
+  telemetryReconciler,
+  memoryIntegration,
+  getLiveState: () => live, // `live` is defined below; only called inside request handlers
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
@@ -3429,6 +3455,19 @@ app.get("/api/telemetry/health", async (req, res) => {
       },
       reconciler: { flagEnabled: TELEMETRY_RECONCILER_ENABLED, ...rStats },
     });
+  } catch (err) {
+    // Express 4 async-handler gotcha — NEVER let this endpoint reject
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── SPRINT 9: MODULE STATUS — one status card per module (no hidden modules) ──
+// READ-ONLY registry endpoint for the dashboard MODUŁY tab. Always registered.
+// Every count/getter inside build() is individually guarded — a missing table
+// or failing manager getter degrades to null/0, this endpoint never rejects.
+app.get("/api/modules/status", async (req, res) => {
+  try {
+    res.json(await moduleStatus.build());
   } catch (err) {
     // Express 4 async-handler gotcha — NEVER let this endpoint reject
     res.status(500).json({ ok: false, error: err.message });
