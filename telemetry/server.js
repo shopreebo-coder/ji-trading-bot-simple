@@ -84,6 +84,20 @@ const selectedAdvisor = new SelectedAdvisor({
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
+// ── Sprint 7.1 STABILIZATION — last-resort rejection guard ────────────────────
+// This process is the SUPERVISOR of the live bot (it spawns index.js). Express 4
+// gives async route handlers ZERO error propagation: any rejected handler
+// promise becomes an unhandledRejection, which on Node >=15 KILLS this whole
+// process — and railway.json restartPolicyMaxRetries=10 means repeated crashes
+// leave the bot permanently DOWN. Two such crash bugs were found and fixed in
+// Sprint 7.1 (/api/insights, /api/weak-relaxed). This LOG-ONLY guard ensures no
+// future endpoint bug can ever take down the trading supervisor again. It never
+// alters trading behavior: it only logs and keeps the process alive.
+process.on("unhandledRejection", (reason) => {
+  console.error("[SERVER] UNHANDLED REJECTION (survived — log-only guard):",
+    reason instanceof Error ? (reason.stack || reason.message) : String(reason));
+});
+
 const PORT = process.env.PORT || 3001;
 const app  = express();
 
@@ -1198,7 +1212,14 @@ app.get("/api/insights", async (req, res) => {
   const date   = req.query.date ? parseDate(req.query.date) : undefined;
   const closes = await queryEvents({ type: "trade_close",  date, limit: 10000 });
   const opens  = await queryEvents({ type: "trade_open",   date, limit: 10000 });
-  const blocks = await queryEvents({ date, limit: 20000 })
+  // BUGFIX (Sprint 7.1): queryEvents() is async — calling .filter() directly on
+  // the returned Promise threw a synchronous TypeError on EVERY request. With
+  // Express 4 (no async-error handling) + Node >=15 the rejected handler promise
+  // became an unhandledRejection that CRASHED this whole process — and this
+  // process is the parent that spawns the live bot. Every INSIGHTS tab visit /
+  // report generation therefore 502'd here, reset all in-memory state (advisor
+  // ring, Selected ring) and restarted the bot. Await first, then filter.
+  const blocks = (await queryEvents({ date, limit: 20000 }))
     .filter(e => e.type.endsWith("_block") && !e.type.startsWith("signal_"));
 
   // ── Session performance ───────────────────────────────────────────────────
@@ -2158,7 +2179,10 @@ app.get("/api/pipeline-audit", async (req, res) => {
 app.get("/api/weak-relaxed", async (req, res) => {
   const date     = req.query.date ? parseDate(req.query.date) : undefined;
   const rejected = await queryEvents({ type: "weak_relaxed_no_trend",   date, limit: 10000 });
-  const outcomes = await queryEvents({ type: "almost_trade_outcome",     date, limit: 10000 })
+  // BUGFIX (Sprint 7.1): same Promise-misuse as /api/insights — .filter() was
+  // called on the Promise itself (TypeError → process crash via FILTERED tab).
+  // Await first, then filter.
+  const outcomes = (await queryEvents({ type: "almost_trade_outcome",    date, limit: 10000 }))
     .filter(o => Array.isArray(o.data.failedConditions) && o.data.failedConditions.includes("weak_relaxed_no_trend"));
 
   // ── per-symbol aggregation

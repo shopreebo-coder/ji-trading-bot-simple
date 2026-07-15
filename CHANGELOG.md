@@ -6,6 +6,66 @@ additive.
 
 ---
 
+## SPRINT 7.1: STABILIZATION — bug fixes + validation only (2026-07-15)
+
+Single-file production change (`telemetry/server.js`, 3 hunks) + one new test
+file. Zero new features, zero refactors, zero API-contract changes, zero
+trading-logic impact.
+
+### Fixed
+- **`/api/insights` crashed the ENTIRE server process on every request**
+  (server.js ~1211): `.filter()` was called directly on the Promise returned by
+  async `queryEvents()` → synchronous `TypeError` → rejected async handler →
+  Express 4 has no async error propagation → `unhandledRejection` → Node ≥15
+  kills the process. `server.js` is the SUPERVISOR that spawns the live bot, so
+  every INSIGHTS tab visit / report generation restarted the whole trading
+  system, wiped all in-memory state (SelectedAdvisor ring+counters, Selected
+  Engine ring) and produced the observed 502s. Bug present since the endpoint
+  was introduced (commit 90af9be) — the endpoint NEVER worked. Fix: await
+  first, then filter (one line). Proven by process-level repro (broken pattern
+  = exit 1; fixed = HTTP 200 + survival).
+- **`/api/weak-relaxed` — identical crash vector** (server.js ~2174, found by
+  Architect review): same two-line Promise-misuse on `almost_trade_outcome`
+  events, reachable from the dashboard FILTERED tab. Same one-line fix.
+- **`/api/blocked-outcomes` 502s were collateral damage** — the endpoint itself
+  is correct; it is fetched in the same `Promise.all` batch as `/api/insights`
+  (dashboard `refreshInsights()` + report), so the insights crash reset its
+  connection mid-flight. No change needed; fixed by the insights fix.
+
+### Added
+- **Log-only `process.on("unhandledRejection")` guard** in server.js (before
+  the Express app): Express 4 + ~60 async endpoints + supervisor role + Railway
+  `restartPolicyMaxRetries=10` (bot stays DOWN after 10 crashes) made a
+  last-resort guard mandatory (Architect-mandated). It ONLY logs and keeps the
+  process alive — no trading behavior change. Proven by repro: buggy endpoint
+  logs + times out, server and all other endpoints keep working.
+- **`telemetry/tests/integration/knowledgeValidatedPatterns.test.js`** — T3
+  diagnostic proof (5 pass): the `patterns/validated` gate
+  (`resolved ≥ 30 AND avg_pips > 0`) works exactly as designed — boundary
+  tested at 30/positive (validated), 29/positive (not), 30/negative (not).
+  "Patterns: 39, validated: 0" is a data-volume state, not a bug.
+
+### Diagnosed — NO ISSUE FOUND (no code change)
+- **T1 Advisor zeros** (`observed=0, advisories=0, ring 0/200`): hook intact
+  (stdout parser → `selectedAdvisor.onTradeOpen`, same path as working ShadowM
+  diag); counters/ring are in-memory BY DESIGN. Zeros were caused by the
+  insights crash-loop — the report itself crashed the server (phase with
+  `/api/insights`) before later phases read the advisor endpoints, so it always
+  saw a freshly restarted process. Full advisories additionally require
+  `SHADOW_LAB_RESEARCH=on` in prod (else stubs).
+- **T4 Exit Lab `Total Saved=0 / Best=Live`**: full data flow verified
+  (bot emits `trade_state_snapshot` every 30 s → ShadowM DB-poll 5 s with
+  persistent cursor → 7 strategies simulated per snapshot → ranked at close →
+  `getStats` sums `profit_saved`). `profit_saved ≥ 0` by construction; a zero
+  total means no strategy has beaten the live exit on any closed trade yet —
+  legitimate with current data volume.
+
+### Regression
+- New T3 test 5/5 · Knowledge suite 27 · SelectedAdvisor 16 · Selected Engine
+  25 · ShadowLab 23 — all pass, 0 fail. `node --check server.js` clean.
+
+---
+
 ## SPRINT 7 FAZA 1: Smart Decision Integration — OBSERVATIONAL ONLY (2026-07-15)
 
 Two-file additive change set (`telemetry/managers/SelectedAdvisor.js` `_record()`
