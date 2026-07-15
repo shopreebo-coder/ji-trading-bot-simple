@@ -6,6 +6,69 @@ additive.
 
 ---
 
+## SPRINT 7 FAZA 1: Smart Decision Integration — OBSERVATIONAL ONLY (2026-07-15)
+
+Two-file additive change set (`telemetry/managers/SelectedAdvisor.js` `_record()`
++ `telemetry/public/index.html` report). Zero server.js change, zero new
+endpoints, zero DB/migration change, zero API-contract break (all fields are
+additive), zero trading-logic / Risk Manager / Shadow Lab / Knowledge Layer /
+Selected Engine impact. The advisor still NEVER writes to the DB, NEVER throws
+into the trading path, and records its opinion strictly AFTER each live trade
+open.
+
+### Added
+- **SelectedAdvisor advisory record — Sprint 7 Phase 1 fields** (purely
+  additive; existing payload fields byte-identical):
+  - `status` — normalized observational status: `OK` (opinion attached),
+    `NOT_AVAILABLE` (no DecisionContext could be built — no signalId recovered
+    or empty context), `ERROR` (swallowed exception). The detailed
+    `advisor.status` (`OK`/`NO_SIGNAL_ID`/`EMPTY_CONTEXT`/`ERROR`) is kept.
+  - `selectedRankingTop3` — explicit Sprint 7 field name; same content as the
+    kept `selectedRanking` (top 3 of the Selected Engine ranking).
+  - `knowledgeVersion` / `knowledgeSnapshot` — knowledge-layer provenance of
+    the opinion (from `ctx.metadata`, falling back to
+    `ctx.explainability.knowledgeVersions`).
+  - `marketFingerprint` — from `ctx.explainability.evidenceSummary`.
+  - `selectedDecisionTime` (ISO) + `decisionLatencyMs` — when the Selected
+    opinion was captured, and how long after the observed trade open.
+  (`selectedConsensus`, `selectedConfidence`, `selectedReason`,
+  `selectedEvidenceId` already existed and are unchanged.)
+- **AI Report v2 — SELECTED ADVISOR ANALYSIS section** (after SELECTED
+  ENGINE): advisor counters, status breakdown (OK / NOT_AVAILABLE / ERROR),
+  confidence distribution (HIGH/MEDIUM/LOW), Selected decisions
+  (TRADE/NO_TRADE/SPLIT/ABSTAIN), agreement with the Live Bot (among decided
+  opinions — every advisory corresponds to an executed trade), average
+  consensus (mean `agreementScore`). Pre-Sprint-7 ring entries without the
+  new `status` field are classified via `advisor.status` fallback.
+- **AI Report v2 — "WOULD SELECTED HAVE HELPED?"** (AI SUMMARY, after
+  SELECTED ENGINE SANITY): joins REAL executed & closed trades
+  (`/api/trades`) with OK advisories by `signalId` — strictly retrospective
+  filtering, no simulated entries. Reports: losses where Selected said
+  NO_TRADE (incl. HIGH-confidence subset), profits that would have been
+  rejected, potential Win Rate / expectancy impact (same trades with
+  NO_TRADE-flagged removed; BREAKEVEN excluded from WR), and a verdict
+  (NEUTRAL / PROMISING / SLIGHTLY POSITIVE / MIXED) derived from the measured
+  expectancy delta. Architect-review hardening: when the close event carries
+  its own `signalId`, the join requires `close.signalId === open.signalId` —
+  guards against `/api/trades`' symbol+timestamp close→open pairing attaching
+  another trade's outcome to the advisory (legacy closes without `signalId`
+  still join as before).
+- Report fetch phase 6 now pulls `/api/memory-integration/status`,
+  `/api/selected/advisories?limit=100`, `/api/trades` via `fetchLimited(…, 2)`
+  (33 endpoints total; concurrency caps preserved).
+
+### Tests
+- `telemetry/tests/unit/SelectedAdvisor.test.js`: +5 Sprint 7 tests (16/16) —
+  new fields on success, metadata→explainability fallback, NOT_AVAILABLE
+  normalization (empty context + no signalId), ERROR normalization; zero-DB-
+  write contract re-asserted.
+- Report smoke tests on the extracted dashboard code: full scenario counts,
+  verdict branches (PROMISING/NEUTRAL/MIXED), null/502/no-join fallbacks,
+  outcome-string + BREAKEVEN handling. esbuild syntax check PASS.
+- Regression: Selected Engine trio 25/25, knowledgeProvenance 7/7.
+
+---
+
 ## SPRINT 6.2: Telemetry stabilization — AI Report v2 (2026-07-15)
 
 Dashboard-only change set (`telemetry/public/index.html`, `generateReport` +

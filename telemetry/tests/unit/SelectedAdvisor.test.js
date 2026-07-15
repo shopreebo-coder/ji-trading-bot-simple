@@ -262,6 +262,116 @@ test("parseData handles TEXT, JSONB-object, and garbage", () => {
   assert.deepEqual(SelectedAdvisor.parseData(null), {});
 });
 
+// ── Sprint 7 Phase 1: observational telemetry fields ─────────────────────────
+
+function fullContextS7(signalId) {
+  const ctx = fullContext(signalId);
+  ctx.metadata = { knowledgeVersion: 5, snapshotVersion: "snap-3" };
+  ctx.explainability = {
+    knowledgeVersions: { max: 5, snapshot: "snap-3" },
+    evidenceSummary: { marketFingerprint: { session: "EU", volatility: "NORMAL" } },
+  };
+  return ctx;
+}
+
+test("S7P1: advisory carries all Sprint 7 Phase 1 fields on success (status=OK)", async () => {
+  const db = fakeDb({ row: tradeOpenRow("sig-s7") });
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: { buildDecisionContext: async ({ signalId }) => fullContextS7(signalId) },
+  });
+
+  advisor.onTradeOpen({ symbol: "EUR_USD", side: "buy" });
+  await wait(60);
+
+  const a = advisor.getAdvisories()[0];
+  assert.equal(a.status, "OK", "normalized status");
+  assert.deepEqual(a.selectedRankingTop3, a.selectedRanking, "explicit top3 field mirrors selectedRanking");
+  assert.equal(a.selectedRankingTop3.length, 3);
+  assert.equal(a.knowledgeVersion, 5, "knowledgeVersion from ctx.metadata");
+  assert.equal(a.knowledgeSnapshot, "snap-3", "knowledgeSnapshot from ctx.metadata");
+  assert.deepEqual(a.marketFingerprint, { session: "EU", volatility: "NORMAL" });
+  assert.ok(!Number.isNaN(Date.parse(a.selectedDecisionTime)), "selectedDecisionTime is a valid ISO timestamp");
+  assert.ok(a.decisionLatencyMs >= 0, "decision captured after the observed open");
+  // legacy fields untouched (payload backward compatibility)
+  assert.equal(a.selectedEvidenceId, "deadbeef");
+  assert.equal(a.selectedReason, "consensus=TRADE (2/3 decided agree, 75%)");
+  assert.equal(a.advisor.status, "OK");
+  // ADVISOR CONTRACT: still zero writes.
+  assert.equal(db.calls.run, 0);
+  assert.equal(db.calls.exec, 0);
+});
+
+test("S7P1: knowledgeVersion/knowledgeSnapshot fall back to explainability when metadata is absent", async () => {
+  const db = fakeDb({ row: tradeOpenRow("sig-s7b") });
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: { buildDecisionContext: async ({ signalId }) => {
+      const ctx = fullContextS7(signalId);
+      delete ctx.metadata;
+      return ctx;
+    } },
+  });
+
+  advisor.onTradeOpen({ symbol: "EUR_USD", side: "buy" });
+  await wait(60);
+
+  const a = advisor.getAdvisories()[0];
+  assert.equal(a.knowledgeVersion, 5, "fallback to explainability.knowledgeVersions.max");
+  assert.equal(a.knowledgeSnapshot, "snap-3", "fallback to explainability.knowledgeVersions.snapshot");
+});
+
+test("S7P1: no DecisionContext ⇒ normalized status=NOT_AVAILABLE (empty context)", async () => {
+  const db = fakeDb({ row: tradeOpenRow("sig-s7c") });
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: { buildDecisionContext: async ({ signalId }) => emptyContext(signalId) },
+  });
+
+  advisor.onTradeOpen({ symbol: "EUR_USD", side: "buy" });
+  await wait(120);
+
+  const a = advisor.getAdvisories()[0];
+  assert.equal(a.status, "NOT_AVAILABLE");
+  assert.equal(a.advisor.status, "EMPTY_CONTEXT", "detailed status preserved");
+  assert.equal(a.knowledgeVersion, null);
+  assert.equal(a.knowledgeSnapshot, null);
+  assert.equal(a.marketFingerprint, null);
+  assert.deepEqual(a.selectedRankingTop3, []);
+  assert.ok(!Number.isNaN(Date.parse(a.selectedDecisionTime)));
+});
+
+test("S7P1: no signalId ⇒ normalized status=NOT_AVAILABLE (no signal)", async () => {
+  const db = fakeDb({ row: null });
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: { buildDecisionContext: async () => fullContextS7("x") },
+  });
+
+  advisor.onTradeOpen({ symbol: "EUR_USD", side: "buy" });
+  await wait(120);
+
+  const a = advisor.getAdvisories()[0];
+  assert.equal(a.status, "NOT_AVAILABLE");
+  assert.equal(a.advisor.status, "NO_SIGNAL_ID", "detailed status preserved");
+});
+
+test("S7P1: exception ⇒ normalized status=ERROR", async () => {
+  const db = fakeDb({ row: tradeOpenRow("sig-s7e") });
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: { buildDecisionContext: async () => { throw new Error("boom"); } },
+  });
+
+  advisor.onTradeOpen({ symbol: "EUR_USD", side: "buy" });
+  await wait(120);
+
+  const a = advisor.getAdvisories()[0];
+  assert.equal(a.status, "ERROR");
+  assert.equal(a.advisor.status, "ERROR");
+  assert.equal(a.advisor.note, "boom");
+});
+
 // ── 11. Malformed input never throws ──────────────────────────────────────────
 test("onTradeOpen with missing/malformed args never throws", async () => {
   const db = fakeDb({ row: null });

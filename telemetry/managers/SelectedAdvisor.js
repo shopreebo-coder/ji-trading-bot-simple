@@ -176,14 +176,30 @@ class SelectedAdvisor {
   }
 
   _record(job, ctx, attemptIdx, status, note) {
+    const now = new Date();
+    // Sprint 7 Phase 1 — normalized OBSERVATIONAL status (purely additive):
+    //   OK            — a DecisionContext existed and its opinion was attached
+    //   NOT_AVAILABLE — no DecisionContext could be built for this trade
+    //                   (no signalId recovered, or the context came back empty)
+    //   ERROR         — an exception occurred (swallowed; trading unaffected)
+    const normalizedStatus =
+      status === "OK" ? "OK" : status === "ERROR" ? "ERROR" : "NOT_AVAILABLE";
+    const rankingTop3 = ctx && Array.isArray(ctx.ranking)
+      ? ctx.ranking.slice(0, 3).map((r) => ({
+          source: r.source, kind: r.kind,
+          confidence: r.confidence ?? null, expectancy: r.expectancy ?? null,
+        }))
+      : [];
     const advisory = {
       // ── identity ──
       signalId:   job.signalId || null,
       symbol:     job.symbol,
       side:       job.side,
       observedAt: new Date(job.observedAt).toISOString(),
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       attempt:    attemptIdx + 1,
+      // ── Sprint 7 Phase 1: normalized observational status ──
+      status: normalizedStatus,
       // ── the Selected Engine's OPINION (advisory only — never acted upon) ──
       selectedDecision:  ctx ? ctx.consensus : null,          // TRADE / NO_TRADE / SPLIT / ABSTAIN / NO_DATA
       selectedConsensus: ctx ? {
@@ -198,15 +214,31 @@ class SelectedAdvisor {
         tier:    ctx.confidence.tier    ?? null,
         average: ctx.confidence.average ?? null,
       } : null,
-      selectedRanking: ctx && Array.isArray(ctx.ranking)
-        ? ctx.ranking.slice(0, 3).map((r) => ({
-            source: r.source, kind: r.kind,
-            confidence: r.confidence ?? null, expectancy: r.expectancy ?? null,
-          }))
-        : [],
+      selectedRanking: rankingTop3,
+      // Sprint 7 Phase 1 explicit field name (same content as selectedRanking,
+      // which is kept for backward compatibility of the advisories payload):
+      selectedRankingTop3: rankingTop3,
       selectedEvidenceId: ctx && ctx.evidenceTrace ? (ctx.evidenceTrace.checksum || null) : null,
       selectedReason:     ctx ? (ctx.selectedReason || null) : null,
       contextId:          ctx ? (ctx.id || null) : null,
+      // ── Sprint 7 Phase 1: knowledge/market provenance of the opinion ──
+      knowledgeVersion: ctx
+        ? ((ctx.metadata && ctx.metadata.knowledgeVersion != null ? ctx.metadata.knowledgeVersion : null)
+           ?? (ctx.explainability && ctx.explainability.knowledgeVersions
+                ? ctx.explainability.knowledgeVersions.max ?? null : null))
+        : null,
+      knowledgeSnapshot: ctx
+        ? ((ctx.metadata && ctx.metadata.snapshotVersion != null ? ctx.metadata.snapshotVersion : null)
+           ?? (ctx.explainability && ctx.explainability.knowledgeVersions
+                ? ctx.explainability.knowledgeVersions.snapshot ?? null : null))
+        : null,
+      marketFingerprint: ctx && ctx.explainability && ctx.explainability.evidenceSummary
+        ? (ctx.explainability.evidenceSummary.marketFingerprint ?? null)
+        : null,
+      // When the Selected opinion was captured (strictly AFTER the live trade
+      // decision — never on the trading path) + how long after the open.
+      selectedDecisionTime: now.toISOString(),
+      decisionLatencyMs: now.getTime() - job.observedAt,
       // ── advisor bookkeeping ──
       advisor: { status, note: note || null },
     };

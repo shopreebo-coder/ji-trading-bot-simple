@@ -671,6 +671,7 @@ function buildReportV2(d){
     shA, shB, shC, shD, exitLab, research,
     knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
     selStatus, selContext, pipeline, healthz, memInteg,
+    advisories, trades,
     failures, timings, prev,
   } = d;
   const L = [];
@@ -680,7 +681,7 @@ function buildReportV2(d){
   push(
     "FOREX ENGINE PRO — AI COMPLETE ANALYSIS REPORT v2",
     `Generated: ${ts}`,
-    "Scope: LIVE BOT + SHADOW LAB + KNOWLEDGE LAYER + SELECTED ENGINE + PIPELINE HEALTH + AI SUMMARY",
+    "Scope: LIVE BOT + SHADOW LAB + KNOWLEDGE LAYER + SELECTED ENGINE + SELECTED ADVISOR + PIPELINE HEALTH + AI SUMMARY",
     "Mode: READ-ONLY (assembled client-side from existing telemetry endpoints)",
   );
 
@@ -1024,6 +1025,43 @@ function buildReportV2(d){
     `  [status] knowledge domains visible: [${(selStatus.knowledgeDomains||[]).join(", ")}]  knowledge version ${rv(selStatus.knowledgeVersion)}`,
   );
 
+  // ════════ SELECTED ADVISOR ANALYSIS (Sprint 7 Phase 1 — observational only) ════════
+  push(...rptHdr("SELECTED ADVISOR ANALYSIS"));
+  const advList = (advisories && Array.isArray(advisories.advisories)) ? advisories.advisories : [];
+  // Advisories recorded before Sprint 7 Phase 1 lack the normalized `status`
+  // field — derive it from the detailed advisor.status for backward compat.
+  const advStatusOf = (a) => a.status
+    || (a.advisor && a.advisor.status === "OK" ? "OK"
+        : a.advisor && a.advisor.status === "ERROR" ? "ERROR" : "NOT_AVAILABLE");
+  push("  Mode: OBSERVATIONAL ONLY — opinions recorded strictly AFTER each Live Bot decision; the advisor never influences trading.");
+  if (advisories) push(`  Advisor enabled (SELECTED_ADVISOR): ${rv(advisories.advisorEnabled)}  observed opens: ${rv(advisories.status?.counters?.observed)}  full advisories: ${rv(advisories.status?.counters?.advisories)}  stubs: ${rv(advisories.status?.counters?.stubs)}  swallowed errors: ${rv(advisories.status?.counters?.errors)}`);
+  if (!advList.length){
+    push("  N/A — advisory ring is empty (in-memory, resets on restart; fills as live trades open; non-stub opinions require SHADOW_LAB_RESEARCH=on).");
+  } else {
+    const advOk = advList.filter(a=>advStatusOf(a)==="OK");
+    push(...rptSub("STATUS BREAKDOWN"));
+    push(`  OK (opinion attached): ${advOk.length}   NOT_AVAILABLE (no DecisionContext): ${advList.filter(a=>advStatusOf(a)==="NOT_AVAILABLE").length}   ERROR: ${advList.filter(a=>advStatusOf(a)==="ERROR").length}   (window: last ${advList.length})`);
+    push(...rptSub("CONFIDENCE DISTRIBUTION"));
+    const advTier = t => advOk.filter(a=>a.selectedConfidence && a.selectedConfidence.tier===t).length;
+    push(`  HIGH: ${advTier("HIGH")}   MEDIUM: ${advTier("MEDIUM")}   LOW: ${advTier("LOW")}`);
+    push(...rptSub("SELECTED DECISIONS"));
+    const advDec = v => advOk.filter(a=>a.selectedDecision===v).length;
+    push(`  TRADE: ${advDec("TRADE")}   NO_TRADE: ${advDec("NO_TRADE")}   SPLIT: ${advDec("SPLIT")}   ABSTAIN: ${advDec("ABSTAIN")}`);
+    push(...rptSub("AGREEMENT WITH LIVE BOT"));
+    // Every advisory corresponds to a trade the Live Bot EXECUTED, so
+    // agreement = Selected also said TRADE (among decided TRADE/NO_TRADE opinions).
+    const advDecided = advOk.filter(a=>a.selectedDecision==="TRADE" || a.selectedDecision==="NO_TRADE");
+    const advAgree = advDecided.filter(a=>a.selectedDecision==="TRADE").length;
+    push(advDecided.length
+      ? `  ${advAgree}/${advDecided.length} decided opinions agreed with the Live Bot (${(advAgree/advDecided.length*100).toFixed(1)}%).`
+      : "  N/A — no decided (TRADE/NO_TRADE) opinions in the window yet.");
+    push(...rptSub("AVERAGE CONSENSUS"));
+    const advScores = advOk.map(a=>a.selectedConsensus ? a.selectedConsensus.agreementScore : null).filter(v=>v!=null && !isNaN(Number(v)));
+    push(advScores.length
+      ? `  Average agreementScore: ${(advScores.reduce((s,v)=>s+Number(v),0)/advScores.length).toFixed(1)}% across ${advScores.length} opinion(s).`
+      : "  N/A — no consensus scores available.");
+  }
+
   // ════════ PIPELINE HEALTH ════════
   push(...rptHdr("PIPELINE HEALTH"));
   push(...rptSub("INGESTION (LIVE SIGNAL PIPELINE)"));
@@ -1185,6 +1223,63 @@ function buildReportV2(d){
     push(...sane);
   } else push("  N/A — no DecisionContext available yet.");
 
+  push(...rptSub("WOULD SELECTED HAVE HELPED?"));
+  {
+    const wl = [];
+    // Sprint 7 Phase 1: join REAL executed & closed trades with advisor
+    // opinions by signalId. STRICTLY retrospective filtering of trades the
+    // bot actually took — NO simulated entries are ever added.
+    const advBySignal = {};
+    for (const a of advList){
+      if (a.signalId && advStatusOf(a)==="OK" && !advBySignal[a.signalId]) advBySignal[a.signalId] = a;
+    }
+    const joined = [];
+    for (const t of (Array.isArray(trades) ? trades : [])){
+      if (!t || !t.open || !t.close) continue;             // only closed, real trades
+      // /api/trades pairs close→open by symbol + timestamp; when the close
+      // event carries its own signalId, require an exact match to avoid
+      // attributing another trade's outcome to this advisory.
+      if (t.close.signalId && t.open.signalId && t.close.signalId !== t.open.signalId) continue;
+      const a = t.open.signalId ? advBySignal[t.open.signalId] : null;
+      if (!a) continue;                                     // no Selected opinion for this trade
+      const d = t.close;
+      const p = Number(d.profitPips);
+      const outcome = d.outcome ? String(d.outcome).toUpperCase()
+        : (isNaN(p) ? null : (p < 0 ? "LOSS" : (p <= 1 ? "BREAKEVEN" : "WIN")));
+      if (!outcome) continue;
+      joined.push({ outcome, pips: isNaN(p) ? null : p,
+        decision: a.selectedDecision,
+        tier: a.selectedConfidence ? a.selectedConfidence.tier : null });
+    }
+    if (!joined.length){
+      wl.push("  N/A — no closed trades could be joined with Selected opinions yet (in-memory advisory ring resets on restart; needs SHADOW_LAB_RESEARCH=on for non-stub opinions).");
+    } else {
+      const jWins   = joined.filter(j=>j.outcome==="WIN");
+      const jLosses = joined.filter(j=>j.outcome==="LOSS");
+      const lossesNoTrade     = jLosses.filter(j=>j.decision==="NO_TRADE");
+      const lossesNoTradeHigh = lossesNoTrade.filter(j=>j.tier==="HIGH");
+      const winsRejected      = jWins.filter(j=>j.decision==="NO_TRADE");
+      wl.push(`  Basis: ${joined.length} REAL executed & closed trade(s) with a Selected opinion — retrospective filter only, no simulated entries.`);
+      wl.push(`  Losses where Selected said NO_TRADE: ${lossesNoTrade.length}/${jLosses.length}${jLosses.length?` (${(lossesNoTrade.length/jLosses.length*100).toFixed(1)}%)`:""} — of which HIGH confidence: ${lossesNoTradeHigh.length}`);
+      wl.push(`  Profits that would have been rejected (WIN but Selected said NO_TRADE): ${winsRejected.length}/${jWins.length}`);
+      const kept = joined.filter(j=>j.decision!=="NO_TRADE");
+      const wrOf  = (arr)=>{ const w=arr.filter(j=>j.outcome==="WIN").length, l=arr.filter(j=>j.outcome==="LOSS").length; return (w+l) ? (w/(w+l)*100) : null; };
+      const expOf = (arr)=>{ const withP=arr.filter(j=>j.pips!=null); return withP.length ? withP.reduce((s,j)=>s+j.pips,0)/withP.length : null; };
+      const wr0=wrOf(joined), wr1=wrOf(kept), e0=expOf(joined), e1=expOf(kept);
+      wl.push(`  Potential Win Rate impact (same trades, NO_TRADE-flagged removed): ${wr0==null?"N/A":wr0.toFixed(1)+"%"} -> ${wr1==null?"N/A":wr1.toFixed(1)+"%"}${(wr0!=null&&wr1!=null)?` (${wr1-wr0>=0?"+":""}${(wr1-wr0).toFixed(1)} pp)`:""}`);
+      wl.push(`  Potential Expectancy impact (avg pips/trade): ${e0==null?"N/A":e0.toFixed(2)} -> ${e1==null?"N/A":e1.toFixed(2)}${(e0!=null&&e1!=null)?` (${e1-e0>=0?"+":""}${(e1-e0).toFixed(2)})`:""}`);
+      wl.push(`  Verdict: ${
+        (lossesNoTrade.length===0 && winsRejected.length===0)
+          ? "NEUTRAL — Selected agreed with every executed trade in this window."
+          : (e0!=null && e1!=null && e1>e0 && lossesNoTradeHigh.length>0)
+            ? "PROMISING — filtering Selected NO_TRADE trades would have improved expectancy, incl. HIGH-confidence loss flags."
+            : (e0!=null && e1!=null && e1>e0)
+              ? "SLIGHTLY POSITIVE — expectancy would have improved, but without HIGH-confidence loss flags yet."
+              : "MIXED — filtering would not have improved expectancy in this window; more joined trades needed for a reliable read."}`);
+    }
+    push(...wl);
+  }
+
   push(...rptSub("NEXT SPRINT RECOMMENDATIONS"));
   {
     const rec = [];
@@ -1299,8 +1394,12 @@ function ExportTab(){
         "/api/selected/status","/api/selected/context",
         "/api/pipeline-audit","/api/healthz/persistence",
       ], 2);
-      setStatus("Fetching… (6/6) memory integration");
-      const memInteg = await safe("/api/memory-integration/status");
+      setStatus("Fetching… (6/6) memory integration + selected advisor");
+      const [memInteg, advisories, trades] = await fetchLimited([
+        "/api/memory-integration/status",
+        "/api/selected/advisories?limit=100",
+        "/api/trades",
+      ], 2);
 
       setStatus("Assembling report…");
       let prev = null;
@@ -1313,6 +1412,7 @@ function ExportTab(){
         shA, shB, shC, shD, exitLab, research,
         knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
         selStatus, selContext, pipeline, healthz, memInteg,
+        advisories, trades,
         failures, timings, prev,
       });
 
@@ -1392,7 +1492,7 @@ function ExportTab(){
           <div className="sec-divider"/>
           <div className="sec-label">AI Complete Analysis Report v2</div>
           <div style={{color:"#8b949e",fontSize:11,marginBottom:10}}>
-            One full architectural report (<code style={{color:"#79c0ff"}}>.txt</code>): LIVE BOT (unchanged summary) + SHADOW LAB (engines A–D, ranking, virtual performance, Exit Lab) + KNOWLEDGE LAYER (artifacts, snapshots, growth) + SELECTED ENGINE (DecisionContext, consensus, evidence trace) + PIPELINE HEALTH + rule-based AI SUMMARY with next-sprint recommendations. Read-only — assembled from existing endpoints.
+            One full architectural report (<code style={{color:"#79c0ff"}}>.txt</code>): LIVE BOT (unchanged summary) + SHADOW LAB (engines A–D, ranking, virtual performance, Exit Lab) + KNOWLEDGE LAYER (artifacts, snapshots, growth) + SELECTED ENGINE (DecisionContext, consensus, evidence trace) + SELECTED ADVISOR ANALYSIS (observational opinions per live trade) + PIPELINE HEALTH + rule-based AI SUMMARY (incl. "WOULD SELECTED HAVE HELPED?") with next-sprint recommendations. Read-only — assembled from existing endpoints.
           </div>
           <div style={{display:"flex",gap:10,marginBottom:16}}>
             <button className="btn primary" onClick={generateReport} disabled={loading}>
