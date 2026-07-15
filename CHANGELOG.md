@@ -6,6 +6,61 @@ additive.
 
 ---
 
+## Selected Advisor — advisor-only Live Bot integration (2026-07-15)
+
+Connects the (already existing, read-only) Selected Engine to the live trade
+stream as a **PURE ADVISORY layer**. Zero change to bot logic, entry/exit,
+risk, TP/SL, trailing, cooldowns, thresholds or config — `index.js` untouched,
+no existing endpoint modified, no Shadow Lab / Knowledge / pipeline / DB-schema
+change, **no DB writes** (only read-only `SELECT`s). If the Selected Engine
+fails, the Live Bot behaves exactly as before.
+
+### Added
+- **`telemetry/managers/SelectedAdvisor.js`** — advisor-only bridge
+  (LiveMemoryIntegration pattern). On a live trade open observed by server.js
+  (stdout `Trade -> SYMBOL SIDE`), on detached **unref'd timers**
+  (10s/25s/60s retries): recovers the trade's `signalId` from the append-only
+  `events` table (read-only `db.get`, dual TEXT/JSONB parse, 120s stale-attach
+  guard), builds the Selected Engine's DecisionContext for that **exact**
+  signal (always explicit `signalId`, never latest), and records the opinion
+  `{signalId, symbol, side, selectedDecision, selectedConsensus,
+  selectedConfidence, selectedRanking (top-3), selectedEvidenceId
+  (evidence-trace checksum), contextId, selectedReason, advisor.status}` into
+  a bounded **in-memory** ring (100). Every path try/catch — `onTradeOpen`
+  can never throw into the stdout parser.
+- **`server.js` wiring (additive only)**: `SELECTED_ADVISOR` flag (default
+  **ON**, `off` = kill switch restoring prior behavior exactly), instance next
+  to `selectedEngine`, ONE best-effort hook line after
+  `memoryIntegration.recordTradeOpen`, `selectedAdvisor.stop()` in
+  `gracefulExit`.
+- **NEW endpoint `GET /api/selected/advisories?limit=`** — newest-first
+  in-memory advisory list + advisor status/counters. Purely additive.
+- **`telemetry/tests/unit/SelectedAdvisor.test.js`** — 11 tests (mock db +
+  mock engine): advisory shape, empty-context retry→stub, engine-throw and
+  db-throw swallowed, missing-event→`NO_SIGNAL_ID`, stale-event guard,
+  flag-off complete no-op, `stop()` cancels timers, ring bound, TEXT/JSONB
+  parse, malformed args.
+
+### Operational note
+- Meaningful (non-stub) advisories require `SHADOW_LAB_RESEARCH=on` on
+  Railway — the DecisionContext is built from `shadow_signals`, populated by
+  the research reconciler. With research off every advisory is an
+  `EMPTY_CONTEXT` stub (harmless: a few read-only SELECTs per trade).
+
+### Verification
+- New suite 11/11 PASS. Full regression green: Sprint 1 107/107, Sprint 2
+  169/169, Sprint 3 87/87 + mm_stress 14/14, Sprint 4 18/18 + mi_process 3/3,
+  autoMigrate 4/4, Sprint 5 23/23, Sprint 6 27/27, Selected Engine 25/25,
+  schema 11/11, smoke 8/8 (pre-existing pool-hang-after-pass quirk on the
+  last two, documented in replit.md).
+- Architect review: **PASS** — zero-write path confirmed by inspection
+  (advisor uses only `db.get`; `buildDecisionContext` read-only end to end),
+  no throw path into `handleBotLine`, retry schedule (10s/35s/95s cumulative)
+  fits inside the 120s stale guard, diff strictly additive (+46/−1 across
+  `server.js` + barrel, 2 new files).
+
+---
+
 ## AI Complete Analysis Report v2 — Dashboard Export (2026-07-14)
 
 One-click, **client-side only** extension of the Analysis Report in the

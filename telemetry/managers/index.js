@@ -21,6 +21,7 @@ const { ShadowLabManager, SOURCE_EVENT_TYPES, ENGINE_BY_TYPE, CURSOR_TYPE } = re
 const { createProvenance, confidenceLevel, configHash, CONFIDENCE_THRESHOLDS, SYSTEM_VERSION } = require("./shadowLabProvenance");
 const { KnowledgeManager, KnowledgeRepository, ARTIFACTS: KNOWLEDGE_ARTIFACTS } = require("./KnowledgeManager");
 const { SelectedEngineManager } = require("./SelectedEngineManager");
+const { SelectedAdvisor, DEFAULT_ATTEMPT_DELAYS_MS, DEFAULT_STALE_MS, DEFAULT_RING_SIZE } = require("./SelectedAdvisor");
 
 module.exports = {
   RuntimeDomainManager,
@@ -56,4 +57,9 @@ module.exports = {
   KNOWLEDGE_ARTIFACTS,
   // Selected Engine — read-only intelligence orchestration
   SelectedEngineManager,
+  // Selected Advisor — advisor-only bridge (live telemetry → Selected Engine opinion)
+  SelectedAdvisor,
+  DEFAULT_ATTEMPT_DELAYS_MS,
+  DEFAULT_STALE_MS,
+  DEFAULT_RING_SIZE,
 };

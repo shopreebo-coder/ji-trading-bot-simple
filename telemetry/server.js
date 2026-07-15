@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -64,6 +64,23 @@ const SELECTED_ENGINE_ENABLED = (process.env.SELECTED_ENGINE || "off").toLowerCa
 const selectedEngine = new SelectedEngineManager({
   db,
   shadowLab: shadowLabResearch, // read-only expectancy provider (optional)
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+
+// ── SHADOW OS v2 — Selected Advisor (ADVISOR-ONLY, flag-gated) ─────────────────
+// Connects the Selected Engine to the live trade stream as a PURE ADVISORY
+// layer: after a live trade open is observed, it (on detached, unref'd timers)
+// recovers the signalId from the events table (read-only SELECT), builds the
+// Selected Engine's DecisionContext for that exact signal, and attaches the
+// opinion to an in-memory ring. It NEVER blocks/alters/delays any trade,
+// NEVER writes to the database, and NEVER throws to the trading path — if the
+// Selected Engine fails, the Live Bot behaves exactly as before.
+// Kill switch: SELECTED_ADVISOR=off restores prior behavior exactly.
+const SELECTED_ADVISOR_ENABLED = (process.env.SELECTED_ADVISOR || "on").toLowerCase() !== "off";
+const selectedAdvisor = new SelectedAdvisor({
+  enabled: SELECTED_ADVISOR_ENABLED,
+  db,
+  selectedEngine,
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
@@ -219,6 +236,7 @@ function handleBotLine(raw) {
     broadcastSSE({ source: "live", type: "trade_opened", symbol: sym, side: side.toLowerCase() });
     console.log(`[SHADOW M DIAG] handleBotLine detected trade_open: ${sym} ${side} | server PID=${process.pid}`);
     memoryIntegration.recordTradeOpen({ symbol: sym, side }); // Sprint 4 — best-effort, never throws
+    selectedAdvisor.onTradeOpen({ symbol: sym, side: side.toLowerCase() }); // ADVISOR-only — best-effort, never throws, never influences the trade
     return;
   }
 
@@ -3247,6 +3265,26 @@ app.get("/api/selected/context/:id", async (req, res) => {
   }
 });
 
+// GET /api/selected/advisories?limit=50 — ADVISOR-only opinions attached to live
+// trade opens (newest first). In-memory only — nothing here is persisted and
+// nothing here ever influenced the trade. NEW additive endpoint; no existing
+// endpoint is modified.
+app.get("/api/selected/advisories", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 1000);
+    const advisories = selectedAdvisor.getAdvisories(limit);
+    res.json({
+      ok: true,
+      advisorEnabled: SELECTED_ADVISOR_ENABLED,
+      status: selectedAdvisor.getStatus(),
+      count: advisories.length,
+      advisories,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── SHADOW OS v2 — Sprint 4: graceful shutdown ────────────────────────────────
 // Railway sends SIGTERM on redeploy. Pre-Sprint-4 the process died instantly
 // (safe — event replay rebuilds state); with the memory flag ON we now flush
@@ -3264,6 +3302,7 @@ async function gracefulExit(signal) {
   try {
     if (_botProc) { try { _botProc.kill("SIGTERM"); } catch (_) {} }
     try { selectedEngine.stop(); } catch (_) {} // read-only, unref'd — stop for symmetry
+    try { selectedAdvisor.stop(); } catch (_) {} // advisor-only, unref'd timers — stop for symmetry
     await memoryIntegration.gracefulShutdown({ timeoutMs: 4000, reason: signal });
   } catch (err) {
     console.error("[SERVER] Graceful shutdown error:", err.message);
