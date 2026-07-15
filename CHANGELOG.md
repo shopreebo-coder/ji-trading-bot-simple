@@ -6,6 +6,42 @@ additive.
 
 ---
 
+## BUGFIX: dashboard report crash "(syms || []).map is not a function" (2026-07-15)
+
+Dashboard-only fix (`telemetry/public/index.html`, +15/−2). Zero server change,
+zero API-contract change, zero Live Bot / Advisor / Engine / Knowledge /
+Shadow Lab impact.
+
+### Fixed
+- **Root cause:** `GET /api/symbols` did NOT change its contract — it always
+  returns a JSON array. But the report's `safe()` fetch helper never checked
+  `r.ok`, so any HTTP-error response **with a JSON body** (most plausibly a
+  Railway edge 502 document `{"status":"error","code":502,…}` when the heavy
+  10k-event `/api/symbols` scan times out) was parsed and passed through as
+  data. The truthy non-array object then crashed at the first unguarded array
+  consumer in `buildReportV2()` — exactly `(syms||[]).map`.
+- `safe()` now treats non-2xx as absent data (`null` → rendered as N/A):
+  status ≠ 404 is recorded in FAILURES; **404 is excluded** (expected
+  "knowledge artifact not built yet" contract previously absorbed by
+  `knParse` as `ok:false` — keeps the `failures.length <= 5` baseline-save
+  guard semantics identical).
+- Belt-and-braces: `(syms||[]).map` → `(Array.isArray(syms)?syms:[]).map`.
+- `generateSnapshot()` and the global `api()` helper are **byte-identical**
+  (changing `api()` would risk regressions in every dashboard tab that reads
+  `{ok:false}` JSON bodies).
+
+### Verification
+- Node smoke tests of the ACTUAL extracted code: `buildReportV2` with
+  syms = 502-error-object / null / valid array → no crash, correct rendering;
+  `safe()` against mocked 502-JSON / 404-JSON / 500-HTML / 200 responses →
+  correct null/failure semantics. esbuild syntax check of the whole dashboard
+  script: PASS.
+- Architect review: **PASS** — diagnosis confirmed (no route shadowing, no
+  middleware, `db.all` always returns an array; no report section relied on
+  non-2xx JSON bodies; `/api/healthz/persistence` degrades inside a 200 body).
+
+---
+
 ## Selected Advisor — advisor-only Live Bot integration (2026-07-15)
 
 Connects the (already existing, read-only) Selected Engine to the live trade

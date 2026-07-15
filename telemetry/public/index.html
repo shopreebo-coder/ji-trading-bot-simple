@@ -695,7 +695,7 @@ function buildReportV2(d){
     "","TODAY BLOCKS",
     ...Object.entries(today?.blockCounts||{}).map(([k,v])=>`  ${k}: ${v}`),
     "","SYMBOL PERFORMANCE",
-    ...(syms||[]).map(s=>`  ${s.symbol}: ${s.trades} trades, ${s.winRate}% WR, avg ${s.avgProfit}p`),
+    ...(Array.isArray(syms)?syms:[]).map(s=>`  ${s.symbol}: ${s.trades} trades, ${s.winRate}% WR, avg ${s.avgProfit}p`),
     "","FILTER COST (BLOCKED OUTCOMES)",
     ...((blocked&&blocked.summary)||[]).map(b=>`  ${b.blockType}: ${b.total} blocked, ${b.movedPct}% moved, avg ${b.avgMovePips}p`),
     "","TRADE QUALITY",
@@ -1213,7 +1213,20 @@ function ExportTab(){
       const timings  = {};
       const safe = async (path) => {
         const s = Date.now();
-        try { const r = await fetch(path); const j = await r.json(); timings[path] = Date.now()-s; return j; }
+        try {
+          const r = await fetch(path);
+          // Non-2xx responses (e.g. proxy 502 JSON error documents) must NOT be
+          // treated as data — they crash array consumers like (syms||[]).map.
+          // 404 is an EXPECTED contract (knowledge artifact not built yet) —
+          // treat as absent data (N/A) without counting it as a failure, so the
+          // baseline-save guard (failures.length <= 5) keeps its old semantics.
+          if (!r.ok) {
+            timings[path] = Date.now()-s;
+            if (r.status !== 404) failures.push(`${path} — HTTP ${r.status}`);
+            return null;
+          }
+          const j = await r.json(); timings[path] = Date.now()-s; return j;
+        }
         catch(e){ timings[path] = Date.now()-s; failures.push(`${path} — ${e.message}`); return null; }
       };
 
