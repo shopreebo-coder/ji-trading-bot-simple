@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler } = require("./managers");
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -81,6 +81,26 @@ const selectedAdvisor = new SelectedAdvisor({
   enabled: SELECTED_ADVISOR_ENABLED,
   db,
   selectedEngine,
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+
+// ── SHADOW OS v2 — Sprint 7.2: Telemetry Reconciler (TELEMETRY-ONLY, flag-gated) ──
+// Closes the LARGEST telemetry blind spot: trades closed ON THE OANDA SIDE
+// (TP fills, SL fills — including the v39.4 MFE-floor SL, whose designed
+// mechanism IS an OANDA SL fill — manual closes, margin closeouts, closes while
+// the bot was down) never emitted trade_close. This manager polls OANDA's
+// READ-ONLY closed-trades endpoint (unref'd 60s timer) and emits a synthetic
+// trade_close (synthetic:true, captureMethod:"oanda_reconciler", oandaTradeId)
+// for every close the live bot missed. GET-only vs OANDA; writes ONLY events
+// rows; NEVER touches the trading path. Grace delay (3 min) prevents
+// double-emitting closes whose native logEvent write is still in flight;
+// first-run baseline=NOW prevents backfilling historical closes as synthetic.
+// Kill switch: TELEMETRY_RECONCILER=off → complete no-op (default ON — the
+// blind spot is the Sprint 7.2 objective; SELECTED_ADVISOR precedent).
+const TELEMETRY_RECONCILER_ENABLED = (process.env.TELEMETRY_RECONCILER || "on").toLowerCase() !== "off";
+const telemetryReconciler = new TelemetryReconciler({
+  db,
+  logEvent,
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
@@ -2049,7 +2069,9 @@ app.get("/api/pipeline-audit", async (req, res) => {
     note:      `buy_check events — expected ${expectedAtGate} from arithmetic; leakage=${silentLeakage}`,
   });
   waterfall.push({ stage: "Gate Pass → Trade Open",  blocks: gateBlocks, survivors: tradeOpens, note: "trade_open events" });
-  waterfall.push({ stage: "Trade Closed (bot)",       blocks: null,       survivors: tradeCloses, note: "trade_close events (OANDA SL/TP not captured)" });
+  waterfall.push({ stage: "Trade Closed (bot)",       blocks: null,       survivors: tradeCloses, note: TELEMETRY_RECONCILER_ENABLED
+    ? "trade_close events (OANDA SL/TP closes captured via telemetry reconciler since Sprint 7.2)"
+    : "trade_close events (TELEMETRY_RECONCILER=off — OANDA SL/TP closes NOT captured)" });
 
   // ── Dominant blocker identification ─────────────────────────────────────
   const blockMap = { cooldown, openTrade, correlation, disabled, spread, candleM5, exhaustion, spreadEdge, candleM1, pullback, margin, defense };
@@ -2149,7 +2171,12 @@ app.get("/api/pipeline-audit", async (req, res) => {
     findings.push({ severity: "HIGH", classification: "STRATEGY ISSUE", finding: `pullback_block is the terminal pre-gate filter with ${pullback} blocks and 0 checks. Structural contradiction: M5 momentum conditions require price movement that inherently places M1 price >1.5p from EMA9.` });
   if (totalBlocks > 0)
     findings.push({ severity: "INFO", classification: "SAFE", finding: `${totalBlocks} total pre-filter blocks confirms bot IS running and evaluating signals. Dominant blocker: ${dominantBlocker ? dominantBlocker[0] + " (" + dominantBlocker[1] + ")" : "none"}.` });
-  findings.push({ severity: "INFO", classification: "TELEMETRY BUG", finding: "OANDA SL/TP exits are NOT captured in telemetry. Trades closed by OANDA SL/TP orders do not emit trade_close events — this is the largest telemetry blind spot." });
+  if (TELEMETRY_RECONCILER_ENABLED) {
+    const _trStats = telemetryReconciler.getStats();
+    findings.push({ severity: "INFO", classification: "SAFE", finding: `OANDA-side closes (SL/TP/manual/margin) are captured by the telemetry reconciler (Sprint 7.2) as synthetic trade_close events. Reconciler: credsPresent=${_trStats.credsPresent} polls=${_trStats.pollCount} nativeMatched=${_trStats.nativeMatched} syntheticWritten=${_trStats.syntheticWritten}. See /api/telemetry/health.` });
+  } else {
+    findings.push({ severity: "INFO", classification: "TELEMETRY BUG", finding: "TELEMETRY_RECONCILER=off — OANDA SL/TP exits are NOT captured in telemetry. Trades closed by OANDA SL/TP orders do not emit trade_close events — this is the largest telemetry blind spot." });
+  }
   findings.push({ severity: "INFO", classification: "SAFE", finding: "open_trade_block, candle_block events are newly added in this build. They were previously silent — will appear in future runs after Railway redeploys." });
 
   res.json({
@@ -3344,6 +3371,70 @@ app.get("/", async (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+// ── API: GET /api/telemetry/health — Sprint 7.2 completeness counters ─────────
+// ALWAYS registered (flag-independent, purely additive, read-only).
+// expected  = captured + currently-known-missing (OANDA closes past baseline that
+//             have no trade_close event yet — inside grace or awaiting retry)
+// captured  = all trade_close events (native software exits + synthetic reconciler)
+// missing   = snapshot of closes known to exist at OANDA with no event yet
+// completeness% = captured / expected. DB pairing block works even with the
+// reconciler off or OANDA creds absent (estimate from opens/closes/live-open).
+app.get("/api/telemetry/health", async (req, res) => {
+  try {
+    const date   = req.query.date ? parseDate(req.query.date) : undefined;
+    const closes = await queryEvents({ type: "trade_close", date, limit: 5000 });
+    const opens  = await queryEvents({ type: "trade_open",  date, limit: 5000 });
+
+    const synthetic = closes.filter(c => c.data && c.data.captureMethod === "oanda_reconciler");
+    const native    = closes.length - synthetic.length;
+
+    const syntheticByReason = {};
+    for (const s of synthetic) {
+      const r = (s.data && s.data.reason) || "UNKNOWN";
+      syntheticByReason[r] = (syntheticByReason[r] || 0) + 1;
+    }
+
+    const rStats = telemetryReconciler.getStats();
+    // Missing snapshot: closes OANDA reports but no event exists yet — inside
+    // the grace window OR failed reconciliation awaiting retry next poll.
+    const missing  = (rStats.pendingWithinGrace || 0) + (rStats.pendingRetry || 0);
+    const captured = closes.length;
+    const expected = captured + missing;
+    // HONEST completeness: a dormant reconciler (flag off / OANDA creds absent)
+    // cannot see missed closes — report null (UNKNOWN), never a fake 100%.
+    const dormant = !TELEMETRY_RECONCILER_ENABLED || !rStats.credsPresent;
+    const completeness = dormant ? null : (expected > 0
+      ? parseFloat(((captured / expected) * 100).toFixed(2))
+      : 100);
+
+    // DB-only pairing estimate (works without OANDA): opens that have neither a
+    // close event nor a currently-open live position are unaccounted for.
+    const liveOpenNow = Object.keys(live.openTrades || {}).length;
+    const unaccountedOpens = Math.max(0, opens.length - closes.length - liveOpenNow);
+
+    res.json({
+      generated: new Date().toISOString(),
+      window:    date || "all",
+      expected_trade_closes:      expected,
+      captured_trade_closes:      captured,
+      missing_trade_closes:       missing,
+      telemetry_completeness_pct: completeness,
+      breakdown: { native, synthetic: synthetic.length, syntheticByReason },
+      dbPairing: {
+        tradeOpens:       opens.length,
+        tradeCloses:      closes.length,
+        liveOpenNow,
+        unaccountedOpens,
+        note: "unaccountedOpens>0 with reconciler ON usually means pre-Sprint-7.2 history (baseline pins reconciliation scope to deployment time)",
+      },
+      reconciler: { flagEnabled: TELEMETRY_RECONCILER_ENABLED, ...rStats },
+    });
+  } catch (err) {
+    // Express 4 async-handler gotcha — NEVER let this endpoint reject
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[SERVER] API on :${PORT}  DB: ${DB_PATH}`);
@@ -3364,5 +3455,12 @@ app.listen(PORT, () => {
   if (SELECTED_ENGINE_ENABLED) {
     console.log("[SERVER] SELECTED_ENGINE=on — starting selected engine (read-only)");
     selectedEngine.start().catch(err => console.error("[SERVER] selectedEngine.start:", err.message));
+  }
+  // Sprint 7.2: telemetry reconciler — default ON; TELEMETRY_RECONCILER=off = complete no-op.
+  if (TELEMETRY_RECONCILER_ENABLED) {
+    console.log("[SERVER] TELEMETRY_RECONCILER=on — starting OANDA close reconciler (read-only vs OANDA, telemetry-only writes)");
+    telemetryReconciler.start().catch(err => console.error("[SERVER] telemetryReconciler.start:", err.message));
+  } else {
+    console.log("[SERVER] TELEMETRY_RECONCILER=off — OANDA-side closes will NOT be captured (pre-7.2 behavior)");
   }
 });

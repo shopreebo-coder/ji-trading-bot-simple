@@ -671,7 +671,7 @@ function buildReportV2(d){
     shA, shB, shC, shD, exitLab, research,
     knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
     selStatus, selContext, pipeline, healthz, memInteg,
-    advisories, trades,
+    advisories, trades, telemetryHealth,
     failures, timings, prev,
   } = d;
   const L = [];
@@ -1132,6 +1132,38 @@ function buildReportV2(d){
   if (research && research.researchEnabled===false) warns.push("  [FLAG] SHADOW_LAB_RESEARCH is OFF — research reconciler is not appending new research rows.");
   push(...(warns.length?warns:["  none"]));
 
+  // ════════ TELEMETRY HEALTH (Sprint 7.2 — close-capture completeness) ════════
+  push(...rptHdr("TELEMETRY HEALTH"));
+  if (telemetryHealth){
+    const th = telemetryHealth, rc = th.reconciler || {};
+    push(...rptSub("CLOSE-CAPTURE COMPLETENESS"));
+    push(
+      `  Expected trade closes: ${rv(th.expected_trade_closes)}`,
+      `  Captured trade closes: ${rv(th.captured_trade_closes)}  (native software exits: ${rv(th.breakdown?.native)}, synthetic via OANDA reconciler: ${rv(th.breakdown?.synthetic)})`,
+      `  Missing trade closes:  ${rv(th.missing_trade_closes)}`,
+      `  Completeness:          ${th.telemetry_completeness_pct==null ? "UNKNOWN (reconciler dormant — flag off or no OANDA creds)" : th.telemetry_completeness_pct+"%"}`,
+    );
+    const sbr = (th.breakdown && th.breakdown.syntheticByReason) || {};
+    const sbrKeys = Object.keys(sbr);
+    if (sbrKeys.length){
+      push("  Synthetic closes by reason:");
+      for (const k of sbrKeys) push(`    ${k}: ${sbr[k]}`);
+    }
+    push(...rptSub("RECONCILER (TELEMETRY_RECONCILER)"));
+    push(
+      `  Flag: ${rc.flagEnabled===false?"OFF":"ON"}  running: ${rv(rc.enabled)}  OANDA creds: ${rv(rc.credsPresent)}  polls: ${rv(rc.pollCount)}`,
+      `  Native-matched: ${rv(rc.nativeMatched)}  synthetic written: ${rv(rc.syntheticWritten)}  pending (grace window): ${rv(rc.pendingWithinGrace)}  reconcile errors: ${rv(rc.reconcileErrors)}`,
+      `  Baseline (scope start): ${rv(rc.baseline)}  last poll: ${rv(rc.lastPollAt)}  last error: ${rv(rc.lastError)}`,
+      `  DB pairing: opens=${rv(th.dbPairing?.tradeOpens)} closes=${rv(th.dbPairing?.tradeCloses)} live open now=${rv(th.dbPairing?.liveOpenNow)} unaccounted opens (pre-7.2 history)=${rv(th.dbPairing?.unaccountedOpens)}`,
+    );
+    if (rc.flagEnabled === false)
+      push("  [WARN] TELEMETRY_RECONCILER is OFF — OANDA-side closes (SL/TP/manual/margin closeout) are NOT captured.");
+    else if (rc.credsPresent === false)
+      push("  [WARN] OANDA credentials absent in the server environment — reconciler dormant; completeness derived from DB only.");
+    if (typeof th.telemetry_completeness_pct === "number" && th.telemetry_completeness_pct < 100)
+      push(`  [WARN] Completeness ${th.telemetry_completeness_pct}% < 100% — ${rv(th.missing_trade_closes)} close(s) awaiting reconciliation (grace window or error retry).`);
+  } else push("  N/A — /api/telemetry/health unavailable.");
+
   // ════════ AI SUMMARY (rule-based, deterministic) ════════
   push(...rptHdr("AI SUMMARY"));
   push("(Deterministic rule-based synthesis — no external AI calls. Compare-to-previous uses the last report generated in this browser.)");
@@ -1394,11 +1426,12 @@ function ExportTab(){
         "/api/selected/status","/api/selected/context",
         "/api/pipeline-audit","/api/healthz/persistence",
       ], 2);
-      setStatus("Fetching… (6/6) memory integration + selected advisor");
-      const [memInteg, advisories, trades] = await fetchLimited([
+      setStatus("Fetching… (6/6) memory integration + selected advisor + telemetry health");
+      const [memInteg, advisories, trades, telemetryHealth] = await fetchLimited([
         "/api/memory-integration/status",
         "/api/selected/advisories?limit=100",
         "/api/trades",
+        "/api/telemetry/health",
       ], 2);
 
       setStatus("Assembling report…");
@@ -1412,7 +1445,7 @@ function ExportTab(){
         shA, shB, shC, shD, exitLab, research,
         knStatus, knArtifacts, knSnapshots, knConfidence, knExpectancy, knExperiments, knFingerprints, knPatterns,
         selStatus, selContext, pipeline, healthz, memInteg,
-        advisories, trades,
+        advisories, trades, telemetryHealth,
         failures, timings, prev,
       });
 

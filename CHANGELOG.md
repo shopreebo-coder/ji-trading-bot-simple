@@ -6,6 +6,102 @@ additive.
 
 ---
 
+## SPRINT 7.2: TELEMETRY COMPLETENESS — capture EVERY position close (2026-07-15)
+
+Closes the LARGEST telemetry blind spot (confirmed real, not a false alarm):
+`index.js` emits `trade_close` ONLY at its 5 software exit points. Trades
+closed ON THE OANDA SIDE — TP fills, SL fills (**including the v39.4 MFE-floor
+SL, whose DESIGNED exit mechanism IS an OANDA SL fill**), manual/broker closes,
+margin closeouts, and closes while the bot/server was down — NEVER produced a
+`trade_close` event. `index.js` remains FROZEN; everything below is additive.
+
+### Added
+- **`telemetry/managers/TelemetryReconciler.js`** (~450L) — polls OANDA's
+  READ-ONLY closed-trades endpoint (`GET /v3/accounts/{id}/trades?state=CLOSED`,
+  unref'd 60s timer) and emits a synthetic `trade_close`
+  (`synthetic:true, captureMethod:"oanda_reconciler", oandaTradeId, realizedPL`)
+  for every close the live bot missed. Flows to ShadowM/Knowledge/report
+  naturally. Flag `TELEMETRY_RECONCILER` **default ON** (`off` = kill switch,
+  complete no-op). GET-only vs OANDA; writes ONLY events rows; NEVER touches
+  the trading path; poll loop never throws.
+  - Dedupe (per OANDA trade, in order): (1) `oandaTradeId` exact,
+    (2) signalId-first — recover signalId from `trade_open` (symbol + openTime
+    ±180s), match existing `trade_close` carrying it, (3) symbol + closeTime
+    ±90s window consumed one-to-one, (4) no match → synthetic emit.
+  - **Grace delay 3 min** (`logEvent` is fire-and-forget async — without it,
+    every bot-closed trade would double-emit) and **first-run baseline = NOW**
+    (no historical backfill flood) — both architect-mandated.
+  - Close reason from the ORDER_FILL transaction `reason` field:
+    `STOP LOSS (OANDA)`, `TAKE PROFIT (OANDA)`, `TRAILING STOP (OANDA)`,
+    `MANUAL/BROKER CLOSE (OANDA)`, `MARGIN CLOSEOUT (OANDA)`, …
+  - Honest nulls: bot-only fields (`mfe`, `mae`, `peak`, exit efficiency, …)
+    are `null`, never fabricated 0. Field names match `buildClosePayload`.
+  - Partial closes: OANDA keeps the trade OPEN until the final fill → exactly
+    ONE aggregate synthetic close per trade (no winrate double-counting).
+  - Cursor/baseline persisted as `telemetry_reconciler_cursor` events rows
+    (shadowm_cursor precedent, zero migration); dedupe Set rebuilt on restart.
+- **`GET /api/telemetry/health`** (always registered, try/catch-wrapped) —
+  completeness counters: `expected_trade_closes`, `captured_trade_closes`,
+  `missing_trade_closes`, `telemetry_completeness_pct`, native/synthetic
+  breakdown + `syntheticByReason`, DB pairing estimate (opens vs closes vs
+  live-open-now), full reconciler stats.
+- **AI Report v2: new TELEMETRY HEALTH section** (after PIPELINE HEALTH) —
+  the 4 completeness counters, synthetic-close reason breakdown, reconciler
+  status/baseline/errors, DB pairing; WARN lines when the flag is off, creds
+  are absent, or completeness < 100%.
+- **`telemetry/tests/integration/telemetryReconciler.test.js`** — 17 pass,
+  mock OANDA client (no network), injectable clock, manual polls: TP / SL
+  (short, pip sign) / manual / margin / JPY multiplier / partial-aggregate;
+  native no-dup via signalId AND via time-window; grace-window late-native
+  write (no double-emit); first-run baseline (no backfill); restart dedupe
+  rebuild; OANDA outage (never throws, zero writes); honest-null assertions;
+  cross-poll re-consumption (incl. restart restore of consumed ids).
+
+### Post-review hardening (Architect verdict: PASS; all 3 findings addressed)
+- **Cross-poll re-consumption gap CLOSED**: the time-window consumption set is
+  now INSTANCE-level and persisted — each cursor row carries the native-close
+  event ids consumed that poll (`consumedEventIds`), and `_restore()` unions
+  the last 50 cursor rows back into the set. A native close matched to trade A
+  in poll N can never absorb trade B in poll N+1 or after a restart (trade B's
+  close would have been silently lost). Locked by new test 14.
+- **Honest completeness when dormant**: `/api/telemetry/health` now returns
+  `telemetry_completeness_pct: null` when the reconciler cannot see missed
+  closes (flag off or OANDA creds absent) — never a fake 100%. The report
+  prints "UNKNOWN (reconciler dormant)". New `pendingRetry` stat (eligible
+  trades whose reconcile failed this poll) is folded into
+  `missing_trade_closes`, and a successful poll no longer wipes `lastError`
+  set by per-trade reconcile failures within the same poll.
+- **50-close cap documented** (accepted limitation): OANDA returns the newest
+  50 closed trades per poll (covers MAX_DAILY_TRADES=50); after a multi-day
+  outage with >50 closes past baseline, the oldest ones are unrecoverable —
+  documented as a replit.md gotcha.
+
+### Changed
+- **`telemetry/server.js`** (additive wiring): TelemetryReconciler import +
+  instance + flag; start in `app.listen` block; `/api/telemetry/health`
+  endpoint; the two hardcoded "OANDA SL/TP exits are NOT captured" warnings
+  (pipeline-audit waterfall note + findings) are now DYNAMIC on the flag —
+  with the reconciler ON they report capture as fixed with live stats.
+- **`telemetry/managers/index.js`** — barrel export (TelemetryReconciler,
+  buildDefaultOandaClient, RECONCILER_CURSOR_TYPE, RECONCILER_REASON_MAP).
+
+### Verified
+- Full regression, all suites green: Sprint 1 (107), Sprint 3 (87 + 14
+  stress), Sprint 4/4.1 (18+3+4), Sprint 5 (23), Sprint 6 (27), Selected
+  Engine (25), Selected Advisor (16), smoke (8, expected file-timeout hang),
+  new reconciler suite (17). `node --check` clean on all edited files.
+
+### Operational notes
+- Meaningful synthetic closes require OANDA creds in the server env
+  (`OANDA_API_KEY`, `OANDA_ACCOUNT_ID`, `OANDA_ENV`) — the same env the
+  supervisor already passes to the bot. Without creds the reconciler is
+  dormant and `/api/telemetry/health` still serves DB-derived counters.
+- Baseline pins reconciliation scope to first-deployment time: pre-7.2
+  history is intentionally NOT backfilled (sacred constraint — no flood of
+  synthetic events into accumulated knowledge).
+
+---
+
 ## SPRINT 7.1: STABILIZATION — bug fixes + validation only (2026-07-15)
 
 Single-file production change (`telemetry/server.js`, 3 hunks) + one new test

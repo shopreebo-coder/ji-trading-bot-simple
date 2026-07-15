@@ -22,6 +22,7 @@ const { createProvenance, confidenceLevel, configHash, CONFIDENCE_THRESHOLDS, SY
 const { KnowledgeManager, KnowledgeRepository, ARTIFACTS: KNOWLEDGE_ARTIFACTS } = require("./KnowledgeManager");
 const { SelectedEngineManager } = require("./SelectedEngineManager");
 const { SelectedAdvisor, DEFAULT_ATTEMPT_DELAYS_MS, DEFAULT_STALE_MS, DEFAULT_RING_SIZE } = require("./SelectedAdvisor");
+const { TelemetryReconciler, buildDefaultOandaClient, CURSOR_TYPE: RECONCILER_CURSOR_TYPE, REASON_MAP: RECONCILER_REASON_MAP } = require("./TelemetryReconciler");
 
 module.exports = {
   RuntimeDomainManager,
@@ -62,4 +63,9 @@ module.exports = {
   DEFAULT_ATTEMPT_DELAYS_MS,
   DEFAULT_STALE_MS,
   DEFAULT_RING_SIZE,
+  // Sprint 7.2 — Telemetry Reconciler (OANDA-side close capture, telemetry-only)
+  TelemetryReconciler,
+  buildDefaultOandaClient,
+  RECONCILER_CURSOR_TYPE,
+  RECONCILER_REASON_MAP,
 };
