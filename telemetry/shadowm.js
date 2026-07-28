@@ -274,6 +274,21 @@ class ShadowM {
     logEvent({ type: "shadowm_startup", module: "exit_lab", restored: this._active.size });
   }
 
+  async getAdvisory(state = {}) {
+    const t = this._active.get(state.signalId) ||
+      [...this._active.values()].find(x => x.symbol === state.symbol);
+    if (!t) return { action: "HOLD" };
+    const pips = typeof state.pips === "number" ? state.pips : 0;
+    const mfe = typeof state.mfe === "number" ? Math.max(t.mfe, state.mfe) : t.mfe;
+    const minutes = typeof state.minutesOpen === "number" ? state.minutesOpen : 0;
+    _checkStrategies(t, pips, mfe, minutes, state.timestamp || new Date().toISOString());
+    if (t.strategies.breakeven.triggered) return { action: "MOVE_BE" };
+    if (t.strategies.profitProtect.triggered || t.strategies.atrTrail.triggered) return { action: "MOVE_SL" };
+    if (t.strategies.tpExtended.triggered) return { action: "TAKE_PARTIAL" };
+    if (t.strategies.time1h.triggered || t.strategies.time2h.triggered || t.strategies.time4h.triggered) return { action: "REQUEST_CLOSE" };
+    return { action: "HOLD" };
+  }
+
   // ── Restore state after process restart ──────────────────────────────────
   async _restore() {
     try {

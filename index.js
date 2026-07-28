@@ -1,6 +1,8 @@
 require("dotenv").config();
 const axios  = require("axios");
 const crypto = require("crypto"); // signalId generation — TELEMETRY ONLY
+const { CooperativeManager } = require("./telemetry/managers/CooperativeManager");
+const cooperativeManager = new CooperativeManager();
 
 // Telemetry — loaded with fallback so bot works even without better-sqlite3
 let logEvent = () => {};
@@ -49,6 +51,25 @@ const headers = {
   Authorization: `Bearer ${API_KEY}`,
   "Content-Type": "application/json",
 };
+
+const COOPERATIVE_URL = `http://127.0.0.1:${process.env.PORT || 3001}`;
+async function cooperativeEntry(signal) {
+  try {
+    const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/entry`, signal, { timeout: 1500 });
+    return cooperativeManager.decideEntry(response.data?.decision);
+  } catch (_) {
+    return "ABSTAIN";
+  }
+}
+
+async function cooperativeAdvisory(state) {
+  try {
+    const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/advisory`, state, { timeout: 1500 });
+    return cooperativeManager.decideManagement("HOLD", response.data?.action);
+  } catch (_) {
+    return "HOLD";
+  }
+}
 
 let dailyTrades  = 0;
 let lastTradeDay = new Date().getUTCDate();
@@ -912,6 +933,16 @@ async function manageTrades() {
         });
       }
 
+      const cooperativeAction = await cooperativeAdvisory({
+        tradeId: trade.id,
+        signalId: tradeSignalId[trade.id] || null,
+        symbol,
+        side,
+        pips: parseFloat(pips.toFixed(2)),
+        mfe: parseFloat(peak.toFixed(2)),
+        minutesOpen: parseFloat(minutesOpen.toFixed(2)),
+      });
+
       // ── POST-ENTRY FAILURE DETECTION — TELEMETRY ONLY ────────────────────
       // Fires once if trade drops >1.5 pips adverse within first 3 minutes.
       if (minutesOpen < 3 && pips < -1.5 && !tradePostEntryLogged[trade.id]) {
@@ -1098,7 +1129,7 @@ async function manageTrades() {
 
       // ── BREAK EVEN — triggers at +2 pips, moves SL to +0.5 pip above entry ─
       // Sprint 8: activation threshold lowered 3 → 2 (SL offset unchanged)
-      if (pips >= 2) {
+      if (pips >= 2 || cooperativeAction === "MOVE_BE") {
         const breakEven =
           side === "buy"
             ? openPrice + 0.5 * pipMult
@@ -1168,7 +1199,7 @@ async function manageTrades() {
       //   OANDA closes at floor SL when price reverses to it.
       //   Software safety-net exit if price gaps below floor between ticks.
       // DOES NOT MODIFY: initial SL, initial TP, entry logic, EMA, filters, risk, sizing.
-      if (peak >= 2.0) {
+      if (peak >= 2.0 || cooperativeAction === "MOVE_SL") {
         const floorProfit = parseFloat((Math.max(0, peak * 0.50)).toFixed(4));
         const floorPrice  = side === "buy"
           ? parseFloat((openPrice + floorProfit * pipMult).toFixed(5))
@@ -1993,6 +2024,9 @@ async function strategy(symbol) {
         console.log(`[SHADOW_GATE] BUY ${symbol} BLOCKED — ${_gBuy.reason}`);
         return;
       }
+      if (await cooperativeEntry({ signalId, symbol, side: "buy", conditionMap: _buyCondMap, entryGate: _entryGate }) === "NO_TRADE") {
+        return;
+      }
       // ── END SHADOW GATE ─────────────────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _buyPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
@@ -2072,6 +2106,9 @@ async function strategy(symbol) {
       });
       if (_gSell.blocked) {
         console.log(`[SHADOW_GATE] SELL ${symbol} BLOCKED — ${_gSell.reason}`);
+        return;
+      }
+      if (await cooperativeEntry({ signalId, symbol, side: "sell", conditionMap: _sellCondMap, entryGate: _entryGate }) === "NO_TRADE") {
         return;
       }
       // ── END SHADOW GATE ─────────────────────────────────────────────────

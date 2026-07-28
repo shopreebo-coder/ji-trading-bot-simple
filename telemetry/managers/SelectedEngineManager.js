@@ -657,6 +657,22 @@ class SelectedEngineManager {
     };
   }
 
+  /**
+   * Minimal cooperative entry query. Existing recorded contexts remain the
+   * source of truth; missing data deliberately abstains.
+   */
+  async evaluateEntry(signal = {}) {
+    try {
+      const ctx = await this.buildDecisionContext({ signalId: signal.signalId || signal.signal_id });
+      const decision = ctx && (ctx.consensus === "TRADE" || ctx.consensus === "NO_TRADE")
+        ? ctx.consensus
+        : "ABSTAIN";
+      return { decision, contextId: ctx?.id || null };
+    } catch (_) {
+      return { decision: "ABSTAIN", contextId: null };
+    }
+  }
+
   async listEngines() {
     const engines = await this._loadEngines();
     return engines.map((d) => ({ ...d.plugin.metadata(), custom: d.custom }));

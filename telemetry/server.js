@@ -20,7 +20,8 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager, CooperativeManager } = require("./managers");
+const cooperativeManager = new CooperativeManager();
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -3359,6 +3360,35 @@ app.get("/api/selected/advisories", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/cooperative/entry", express.json(), async (req, res) => {
+  try {
+    const result = SELECTED_ENGINE_ENABLED
+      ? await selectedEngine.evaluateEntry(req.body || {})
+      : { decision: "ABSTAIN", contextId: null };
+    res.json({ ok: true, decision: cooperativeManager.decideEntry(result.decision), contextId: result.contextId });
+  } catch (_) {
+    res.json({ ok: true, decision: "ABSTAIN", contextId: null });
+  }
+});
+
+app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
+  try {
+    const shadow = await shadowM.getAdvisory(req.body || {});
+    const finalAction = cooperativeManager.decideManagement("HOLD", shadow.action);
+    logEvent({
+      type: "cooperative_decision",
+      timestamp: new Date().toISOString(),
+      tradeId: req.body?.tradeId || null,
+      liveAction: "HOLD",
+      shadowAction: shadow.action,
+      finalAction,
+    });
+    res.json({ ok: true, action: finalAction });
+  } catch (_) {
+    res.json({ ok: true, action: "HOLD" });
   }
 });
 
