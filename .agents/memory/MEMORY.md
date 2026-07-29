@@ -6,3 +6,4 @@
 - [Dashboard report conventions](dashboard-report-conventions.md) — winrate units differ (knowledge artifacts = 0–1 fraction, lab endpoints = percent); test dashboard JSX via esbuild extract, never by running server.js.
 - [Reconciler & telemetry-metric patterns](reconciler-telemetry-patterns.md) — time-window dedupe consumption must persist across polls/restarts; completeness metrics must be UNKNOWN (not 100%) when the measurer is dormant.
 - [Module status DB binding](module-status-db-binding.md) — db adapter parameters are variadic; passing [] as one parameter makes guarded dashboard counters appear as zero.
+- [Live AI cooperation policy](live-ai-cooperation-policy.md) — Selected Engine may block only HIGH-confidence NO_TRADE; Shadow M advises while Live Exit remains authoritative.
