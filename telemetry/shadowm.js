@@ -277,16 +277,52 @@ class ShadowM {
   async getAdvisory(state = {}) {
     const t = this._active.get(state.signalId) ||
       [...this._active.values()].find(x => x.symbol === state.symbol);
-    if (!t) return { action: "HOLD" };
+    if (!t) return {
+      action: "HOLD",
+      evidence: { tracked: false, reason: "trade is not currently tracked by Shadow M" },
+    };
     const pips = typeof state.pips === "number" ? state.pips : 0;
     const mfe = typeof state.mfe === "number" ? Math.max(t.mfe, state.mfe) : t.mfe;
     const minutes = typeof state.minutesOpen === "number" ? state.minutesOpen : 0;
     _checkStrategies(t, pips, mfe, minutes, state.timestamp || new Date().toISOString());
-    if (t.strategies.breakeven.triggered) return { action: "MOVE_BE" };
-    if (t.strategies.profitProtect.triggered || t.strategies.atrTrail.triggered) return { action: "MOVE_SL" };
-    if (t.strategies.tpExtended.triggered) return { action: "TAKE_PARTIAL" };
-    if (t.strategies.time1h.triggered || t.strategies.time2h.triggered || t.strategies.time4h.triggered) return { action: "REQUEST_CLOSE" };
-    return { action: "HOLD" };
+    let action = "HOLD";
+    if (t.strategies.breakeven.triggered) action = "MOVE_BE";
+    else if (t.strategies.profitProtect.triggered || t.strategies.atrTrail.triggered) action = "MOVE_SL";
+    else if (t.strategies.tpExtended.triggered) action = "TAKE_PARTIAL";
+    else if (t.strategies.time1h.triggered || t.strategies.time2h.triggered || t.strategies.time4h.triggered) action = "REQUEST_CLOSE";
+
+    let knowledge = { activeArtifacts: null, latestSnapshot: null };
+    try {
+      const [artifacts, snapshot] = await Promise.all([
+        db.get("SELECT COUNT(*) AS n FROM knowledge_artifacts WHERE superseded_at IS NULL"),
+        db.get("SELECT id, manifest_checksum, created_at FROM knowledge_snapshots ORDER BY created_at DESC, id DESC LIMIT 1"),
+      ]);
+      knowledge = {
+        activeArtifacts: Number(artifacts?.n ?? 0),
+        latestSnapshot: snapshot
+          ? { id: snapshot.id, checksum: snapshot.manifest_checksum || null, createdAt: snapshot.created_at || null }
+          : null,
+      };
+    } catch (_) {}
+
+    return {
+      action,
+      evidence: {
+        tracked: true,
+        signalId: t.signalId,
+        mfe,
+        mae: t.mae,
+        pips,
+        minutesOpen: minutes,
+        marketStructure: state.marketStructure || null,
+        volatility: state.volatilityBucket || null,
+        historicalExits: t.strategyRanking || [],
+        triggeredStrategies: Object.entries(t.strategies)
+          .filter(([, value]) => value.triggered)
+          .map(([name, value]) => ({ name, exitPips: value.exitPips, exitTime: value.exitTime })),
+        knowledge,
+      },
+    };
   }
 
   // ── Restore state after process restart ──────────────────────────────────

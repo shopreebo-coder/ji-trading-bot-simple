@@ -207,6 +207,24 @@ class SelectedEngineManager {
     }
   }
 
+  /** Latest recorded opinion per discovered engine for a live candidate. */
+  async _getLatestEvals() {
+    try {
+      const rows = await this.db.all(
+        "SELECT * FROM shadow_engine_evals ORDER BY id DESC"
+      );
+      const latest = new Map();
+      for (const row of rows || []) {
+        const key = String(row.engine_id);
+        if (!latest.has(key)) latest.set(key, row);
+      }
+      return [...latest.values()];
+    } catch (e) {
+      this._error(`[SELECTED] _getLatestEvals failed: ${e.message}`);
+      return [];
+    }
+  }
+
   async _getOutcome(signalId) {
     try {
       return await this.db.get(
@@ -233,14 +251,16 @@ class SelectedEngineManager {
    */
   async buildDecisionContext(args = {}) {
     const generated = new Date().toISOString();
-    const signal = await this._getSignal(args.signalId);
+    const signal = args.signal
+      ? { ...args.signal, signal_id: args.signal.signal_id || args.signal.signalId }
+      : await this._getSignal(args.signalId);
     if (!signal) return this._emptyContext(generated, args.signalId);
 
     const sid = signal.signal_id;
     const symbol = signal.symbol || null;
 
     const [evals, outcome, engines, knowledge] = await Promise.all([
-      this._getEvals(sid),
+      args.signal ? this._getLatestEvals() : this._getEvals(sid),
       this._getOutcome(sid),
       this._loadEngines(),
       this.loadKnowledge(),
@@ -663,13 +683,45 @@ class SelectedEngineManager {
    */
   async evaluateEntry(signal = {}) {
     try {
-      const ctx = await this.buildDecisionContext({ signalId: signal.signalId || signal.signal_id });
+      const ctx = await this.buildDecisionContext({
+        signal: {
+          ...signal,
+          signal_id: signal.signalId || signal.signal_id || `candidate:${signal.symbol || "unknown"}:${signal.side || "unknown"}`,
+          created_at: signal.created_at || new Date().toISOString(),
+        },
+      });
       const decision = ctx && (ctx.consensus === "TRADE" || ctx.consensus === "NO_TRADE")
         ? ctx.consensus
         : "ABSTAIN";
-      return { decision, contextId: ctx?.id || null };
+      const confidenceScore = ctx?.confidence?.average ?? null;
+      return {
+        decision,
+        contextId: ctx?.id || null,
+        confidenceScore,
+        confidenceTier: ctx?.confidence?.tier || null,
+        explanation: ctx?.selectedReason || null,
+        evidence: ctx?.evidenceTrace || null,
+        expectancy: ctx?.expectancy?.all || null,
+        riskAssessment: {
+          symbol: signal.symbol || null,
+          side: signal.side || null,
+          spread: signal.spread ?? null,
+          atrPips: signal.atrPips ?? null,
+          volatilityBucket: signal.volatilityBucket || null,
+          marketState: ctx?.market?.dominant || null,
+        },
+      };
     } catch (_) {
-      return { decision: "ABSTAIN", contextId: null };
+      return {
+        decision: "ABSTAIN",
+        contextId: null,
+        confidenceScore: null,
+        confidenceTier: null,
+        explanation: "selected engine unavailable",
+        evidence: null,
+        expectancy: null,
+        riskAssessment: null,
+      };
     }
   }
 

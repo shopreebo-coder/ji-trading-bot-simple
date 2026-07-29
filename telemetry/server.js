@@ -22,6 +22,9 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
 const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager, CooperativeManager } = require("./managers");
 const cooperativeManager = new CooperativeManager();
+const COOP_ENTRY_ENABLED = (process.env.COOP_ENTRY_ENABLED || "on").toLowerCase() === "on";
+const COOP_ENTRY_HIGH_CONFIDENCE = Number.isFinite(Number(process.env.COOP_ENTRY_HIGH_CONFIDENCE))
+  ? Number(process.env.COOP_ENTRY_HIGH_CONFIDENCE) : 0.8;
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -61,7 +64,10 @@ const knowledge = new KnowledgeManager({
 // adding Engine E/F/G or a new domain needs zero changes here. The flag defaults
 // OFF: when off the background refresh NEVER starts (complete no-op). The
 // read-only endpoints below are always registered and report `selectedEnabled`.
-const SELECTED_ENGINE_ENABLED = (process.env.SELECTED_ENGINE || "off").toLowerCase() === "on";
+// Cooperation is enabled by default in production; SELECTED_ENGINE=off remains
+// the explicit kill switch. The engine is read-only and entry policy remains
+// fail-open when its evidence is unavailable.
+const SELECTED_ENGINE_ENABLED = (process.env.SELECTED_ENGINE || "on").toLowerCase() === "on";
 const selectedEngine = new SelectedEngineManager({
   db,
   shadowLab: shadowLabResearch, // read-only expectancy provider (optional)
@@ -3365,19 +3371,51 @@ app.get("/api/selected/advisories", async (req, res) => {
 
 app.post("/api/cooperative/entry", express.json(), async (req, res) => {
   try {
-    const result = SELECTED_ENGINE_ENABLED
+    const result = SELECTED_ENGINE_ENABLED && COOP_ENTRY_ENABLED
       ? await selectedEngine.evaluateEntry(req.body || {})
-      : { decision: "ABSTAIN", contextId: null };
-    res.json({ ok: true, decision: cooperativeManager.decideEntry(result.decision), contextId: result.contextId });
+      : { decision: "ABSTAIN", contextId: null, explanation: "cooperation disabled" };
+    const policy = cooperativeManager.entryPolicy(result, {
+      highConfidence: COOP_ENTRY_HIGH_CONFIDENCE,
+    });
+    const blocked = policy.action === "BLOCK";
+    logEvent({
+      type: "cooperative_entry_decision",
+      signalId: req.body?.signalId || null,
+      symbol: req.body?.symbol || null,
+      side: req.body?.side || null,
+      selectedDecision: policy.decision,
+      policyAction: policy.action,
+      blocked,
+      confidenceScore: policy.confidenceScore,
+      confidenceTier: policy.confidenceTier,
+      contextId: result.contextId || null,
+      explanation: result.explanation || null,
+      expectancy: result.expectancy || null,
+      riskAssessment: result.riskAssessment || null,
+    });
+    res.json({
+      ok: true,
+      decision: policy.decision,
+      policyAction: policy.action,
+      blocked,
+      contextId: result.contextId || null,
+      confidenceScore: policy.confidenceScore,
+      confidenceTier: policy.confidenceTier,
+      explanation: result.explanation || null,
+      evidence: result.evidence || null,
+      expectancy: result.expectancy || null,
+      riskAssessment: result.riskAssessment || null,
+    });
   } catch (_) {
-    res.json({ ok: true, decision: "ABSTAIN", contextId: null });
+    res.json({ ok: true, decision: "ABSTAIN", policyAction: "FAILSAFE_ALLOW", blocked: false, contextId: null });
   }
 });
 
 app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
   try {
     const shadow = await shadowM.getAdvisory(req.body || {});
-    const finalAction = cooperativeManager.decideManagement("HOLD", shadow.action);
+    const policy = cooperativeManager.managementPolicy(shadow);
+    const finalAction = cooperativeManager.decideManagement("HOLD", policy.action);
     logEvent({
       type: "cooperative_decision",
       timestamp: new Date().toISOString(),
@@ -3385,10 +3423,12 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       liveAction: "HOLD",
       shadowAction: shadow.action,
       finalAction,
+      advisoryOnly: true,
+      evidence: shadow.evidence || {},
     });
-    res.json({ ok: true, action: finalAction });
+    res.json({ ok: true, action: finalAction, advisoryOnly: true, evidence: shadow.evidence || {} });
   } catch (_) {
-    res.json({ ok: true, action: "HOLD" });
+    res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true } });
   }
 });
 

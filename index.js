@@ -56,9 +56,15 @@ const COOPERATIVE_URL = `http://127.0.0.1:${process.env.PORT || 3001}`;
 async function cooperativeEntry(signal) {
   try {
     const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/entry`, signal, { timeout: 1500 });
-    return cooperativeManager.decideEntry(response.data?.decision);
+    return {
+      action: response.data?.blocked ? "BLOCK" : "ALLOW",
+      decision: response.data?.decision || "ABSTAIN",
+      contextId: response.data?.contextId || null,
+      confidenceScore: response.data?.confidenceScore ?? null,
+      confidenceTier: response.data?.confidenceTier || null,
+    };
   } catch (_) {
-    return "ABSTAIN";
+    return { action: "FAILSAFE_ALLOW", decision: "ABSTAIN", contextId: null };
   }
 }
 
@@ -941,6 +947,15 @@ async function manageTrades() {
         pips: parseFloat(pips.toFixed(2)),
         mfe: parseFloat(peak.toFixed(2)),
         minutesOpen: parseFloat(minutesOpen.toFixed(2)),
+      });
+      logEvent({
+        type: "cooperative_exit_processed",
+        tradeId: trade.id,
+        signalId: tradeSignalId[trade.id] || null,
+        symbol,
+        side,
+        advisoryAction: cooperativeAction,
+        liveEngineProcessed: true,
       });
 
       // ── POST-ENTRY FAILURE DETECTION — TELEMETRY ONLY ────────────────────
@@ -2024,7 +2039,12 @@ async function strategy(symbol) {
         console.log(`[SHADOW_GATE] BUY ${symbol} BLOCKED — ${_gBuy.reason}`);
         return;
       }
-      if (await cooperativeEntry({ signalId, symbol, side: "buy", conditionMap: _buyCondMap, entryGate: _entryGate }) === "NO_TRADE") {
+      const _coopBuy = await cooperativeEntry({
+        signalId, symbol, side: "buy", conditionMap: _buyCondMap, entryGate: _entryGate,
+        spread, atrPips, volatilityBucket: volBkt,
+      });
+      if (_coopBuy.action === "BLOCK") {
+        logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopBuy });
         return;
       }
       // ── END SHADOW GATE ─────────────────────────────────────────────────
@@ -2108,7 +2128,12 @@ async function strategy(symbol) {
         console.log(`[SHADOW_GATE] SELL ${symbol} BLOCKED — ${_gSell.reason}`);
         return;
       }
-      if (await cooperativeEntry({ signalId, symbol, side: "sell", conditionMap: _sellCondMap, entryGate: _entryGate }) === "NO_TRADE") {
+      const _coopSell = await cooperativeEntry({
+        signalId, symbol, side: "sell", conditionMap: _sellCondMap, entryGate: _entryGate,
+        spread, atrPips, volatilityBucket: volBkt,
+      });
+      if (_coopSell.action === "BLOCK") {
+        logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopSell });
         return;
       }
       // ── END SHADOW GATE ─────────────────────────────────────────────────
