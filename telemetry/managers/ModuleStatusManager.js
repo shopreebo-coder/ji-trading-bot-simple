@@ -69,7 +69,7 @@ class ModuleStatusManager {
   // ── guarded primitives ────────────────────────────────────────────────────
   async _count(sql, params = []) {
     try {
-      const row = await this.db.get(sql, params);
+      const row = await this.db.get(sql, ...params);
       return row ? toCount(row.n) : 0;
     } catch (_e) {
       return null; // table absent / query failed — honest null, never fabricated 0
@@ -87,7 +87,7 @@ class ModuleStatusManager {
 
   async _eventTypeCounts() {
     try {
-      const rows = await this.db.all("SELECT type, COUNT(*) AS n FROM events GROUP BY type", []);
+      const rows = await this.db.all("SELECT type, COUNT(*) AS n FROM events GROUP BY type");
       const map = {};
       for (const r of rows || []) map[r.type] = toCount(r.n);
       return map;
@@ -99,7 +99,7 @@ class ModuleStatusManager {
   async _engineEvalCounts() {
     try {
       const rows = await this.db.all(
-        "SELECT engine_id, COUNT(*) AS n FROM shadow_engine_evals GROUP BY engine_id", []);
+        "SELECT engine_id, COUNT(*) AS n FROM shadow_engine_evals GROUP BY engine_id");
       const map = {};
       for (const r of rows || []) map[String(r.engine_id)] = toCount(r.n);
       return map;

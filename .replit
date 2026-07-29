@@ -11,6 +11,27 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Telemetry Dashboard"
+
+[[workflows.workflow]]
+name = "Telemetry Dashboard"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=8083 SHADOW_LAB_RESEARCH=on KNOWLEDGE_LAYER=on SELECTED_ENGINE=on SELECTED_ADVISOR=on TELEMETRY_RECONCILER=on node telemetry/server.js"
+waitForPort = 8083
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
