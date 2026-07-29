@@ -240,17 +240,28 @@ class ModuleStatusManager {
       });
     }
 
-    modules.push({
-      id: "shadow-m", name: "Shadow M — Exit Lab (trade tracker)", tier: "SHADOW RESEARCH",
-      status: (shadowMTrades || 0) > 0 ? STATUS.OBSERVING : STATUS.INSTALLED,
-      connected: true, collectsData: true, influencesLive: false,
-      observations: shadowMTrades ?? 0,
-      stats: shadowMStats && typeof shadowMStats === "object"
-        ? { trackedTrades: shadowMTrades ?? 0, ...this._pick(shadowMStats, ["strategies", "bestStrategy", "open", "closed"]) }
-        : { trackedTrades: shadowMTrades ?? 0 },
-      reason: (shadowMTrades || 0) > 0 ? null : "Waiting for first tracked trade",
-      alsoVisibleIn: "LAB",
-    });
+    {
+      // Shadow M is ACTIVE and influences live when the bot is running.
+      // cooperativeAdvisory() is called on every open-trade management tick;
+      // its result (MOVE_BE / MOVE_SL / etc.) feeds directly into the exit conditions.
+      const shadowMInfluences = botRunning;
+      const shadowMStatus = botRunning
+        ? STATUS.ACTIVE
+        : (shadowMTrades || 0) > 0 ? STATUS.OBSERVING : STATUS.INSTALLED;
+      modules.push({
+        id: "shadow-m", name: "Shadow M — Exit Lab (trade tracker)", tier: "SHADOW RESEARCH",
+        status: shadowMStatus,
+        connected: true, collectsData: true, influencesLive: shadowMInfluences,
+        observations: shadowMTrades ?? 0,
+        stats: shadowMStats && typeof shadowMStats === "object"
+          ? { trackedTrades: shadowMTrades ?? 0, ...this._pick(shadowMStats, ["strategies", "bestStrategy", "open", "closed"]) }
+          : { trackedTrades: shadowMTrades ?? 0 },
+        reason: botRunning
+          ? "Active — advisory cooperation: recommendations (MOVE_BE/MOVE_SL/HOLD) passed to Live Exit Engine every tick"
+          : ((shadowMTrades || 0) > 0 ? null : "Waiting for bot to start and first tracked trade"),
+        alsoVisibleIn: "LAB",
+      });
+    }
 
     {
       const f = this._flagStatus(F.research, STATUS.LEARNING, "SHADOW_LAB_RESEARCH=on");
@@ -289,14 +300,20 @@ class ModuleStatusManager {
     }
 
     {
-      const f = this._flagStatus(F.selectedEngine, STATUS.OBSERVING, "SELECTED_ENGINE=on");
+      const seEnabled = !!(F.selectedEngine && F.selectedEngine.enabled);
+      const ceEnabled = !!(F.coopEntry && F.coopEntry.enabled);
+      // coopEntryActive = true when the entry cooperation hook can block or advise entries.
+      const coopEntryActive = seEnabled && ceEnabled;
+      const f = this._flagStatus(F.selectedEngine, coopEntryActive ? STATUS.ACTIVE : STATUS.OBSERVING, "SELECTED_ENGINE=on");
       const es = engineStatus && typeof engineStatus === "object" ? engineStatus : null;
       modules.push({
         id: "selected-engine", name: "Selected Engine", tier: "INTELLIGENCE",
-        status: f.status,
-        connected: !!(F.selectedEngine && F.selectedEngine.enabled),
-        collectsData: !!(F.selectedEngine && F.selectedEngine.enabled),
-        influencesLive: false,
+        // ACTIVE when cooperation hook is live (can block HIGH-confidence NO_TRADE entries).
+        // OBSERVING when Selected Engine is on but entry cooperation is disabled.
+        status: coopEntryActive ? STATUS.ACTIVE : f.status,
+        connected: seEnabled,
+        collectsData: seEnabled,
+        influencesLive: coopEntryActive,  // accurate: HIGH NO_TRADE blocks placeTrade()
         observations: es && es.ring ? toCount(es.ring.size) : 0,
         stats: es ? {
           running: !!es.running,
@@ -304,8 +321,11 @@ class ModuleStatusManager {
           contextsInRing: es.ring ? toCount(es.ring.size) : 0,
           knowledgeDomains: Array.isArray(es.knowledgeDomains) ? es.knowledgeDomains.length : 0,
           knowledgeVersion: es.knowledgeVersion ?? null,
-        } : {},
-        reason: f.reason || "Read-only endpoints available on demand regardless of flag",
+          coopEntryEnabled: ceEnabled,
+        } : { coopEntryEnabled: ceEnabled },
+        reason: coopEntryActive
+          ? "Active — entry cooperation: HIGH NO_TRADE blocks entry; HIGH TRADE allows; MEDIUM advisory only; fail-open on error"
+          : (f.reason || "SELECTED_ENGINE or COOP_ENTRY_ENABLED is off — cooperation hook inactive"),
         alsoVisibleIn: "SELECTED",
       });
     }

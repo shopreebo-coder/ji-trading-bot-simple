@@ -124,6 +124,7 @@ const moduleStatus = new ModuleStatusManager({
     research:        { enabled: SHADOW_LAB_RESEARCH_ENABLED,  raw: process.env.SHADOW_LAB_RESEARCH },
     knowledge:       { enabled: KNOWLEDGE_LAYER_ENABLED,      raw: process.env.KNOWLEDGE_LAYER },
     selectedEngine:  { enabled: SELECTED_ENGINE_ENABLED,      raw: process.env.SELECTED_ENGINE },
+    coopEntry:       { enabled: COOP_ENTRY_ENABLED,           raw: process.env.COOP_ENTRY_ENABLED },
     selectedAdvisor: { enabled: SELECTED_ADVISOR_ENABLED,     raw: process.env.SELECTED_ADVISOR },
     reconciler:      { enabled: TELEMETRY_RECONCILER_ENABLED, raw: process.env.TELEMETRY_RECONCILER },
   },
@@ -3415,12 +3416,14 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
   try {
     const shadow = await shadowM.getAdvisory(req.body || {});
     const policy = cooperativeManager.managementPolicy(shadow);
-    const finalAction = cooperativeManager.decideManagement("HOLD", policy.action);
+    // Use the actual Live Exit Engine action passed by the bot, not a hardcoded placeholder.
+    const liveAction = String(req.body?.liveAction || "HOLD");
+    const finalAction = cooperativeManager.decideManagement(liveAction, policy.action);
     logEvent({
       type: "cooperative_decision",
       timestamp: new Date().toISOString(),
       tradeId: req.body?.tradeId || null,
-      liveAction: "HOLD",
+      liveAction,              // actual Live Exit Engine intent this tick
       shadowAction: shadow.action,
       finalAction,
       advisoryOnly: true,

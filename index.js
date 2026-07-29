@@ -71,9 +71,11 @@ async function cooperativeEntry(signal) {
 async function cooperativeAdvisory(state) {
   try {
     const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/advisory`, state, { timeout: 1500 });
-    return cooperativeManager.decideManagement("HOLD", response.data?.action);
+    // Pass the actual Live Exit Engine natural action so Shadow M knows the live intent.
+    return cooperativeManager.decideManagement(state.liveAction || "HOLD", response.data?.action);
   } catch (_) {
-    return "HOLD";
+    // Fail-safe: return what Live Engine was going to do anyway.
+    return state?.liveAction || "HOLD";
   }
 }
 
@@ -939,14 +941,29 @@ async function manageTrades() {
         });
       }
 
+      // ── LIVE EXIT ENGINE NATURAL ACTION — for Shadow M cooperation context ──
+      // Read-only evaluation of the same exit conditions used below.
+      // Nothing here changes or executes any exit — it only tells Shadow M what
+      // Live Engine would do on this tick so Shadow M can respond in context.
+      const _liveExitNatural =
+        (peak >= 2.5 && pips < peak - 1.5) ? "REQUEST_CLOSE" :  // PROFIT PROTECTION
+        (peak >= 8   && peak - pips >= 3)   ? "REQUEST_CLOSE" :  // MOMENTUM LOST
+        (pips <= -4)                         ? "REQUEST_CLOSE" :  // EARLY EXIT
+        (minutesOpen >= 6 && pips < 2)       ? "REQUEST_CLOSE" :  // TIME EXIT
+        (pips >= 2)                          ? "MOVE_BE"        :  // BREAK EVEN
+        (peak >= 2.0)                        ? "MOVE_SL"        :  // MFE FLOOR
+        (pips >= 10)                         ? "MOVE_SL"        :  // TRAILING STOP
+                                               "HOLD";
+
       const cooperativeAction = await cooperativeAdvisory({
         tradeId: trade.id,
         signalId: tradeSignalId[trade.id] || null,
         symbol,
         side,
-        pips: parseFloat(pips.toFixed(2)),
-        mfe: parseFloat(peak.toFixed(2)),
-        minutesOpen: parseFloat(minutesOpen.toFixed(2)),
+        pips:         parseFloat(pips.toFixed(2)),
+        mfe:          parseFloat(peak.toFixed(2)),
+        minutesOpen:  parseFloat(minutesOpen.toFixed(2)),
+        liveAction:   _liveExitNatural,   // actual Live Exit Engine intent this tick
       });
       logEvent({
         type: "cooperative_exit_processed",
