@@ -64,3 +64,6 @@ externalPort = 3001
 
 [userenv.shared]
 MAX_OPEN_TRADES = "3"
+
+[nix]
+channel = "stable-25_05"
