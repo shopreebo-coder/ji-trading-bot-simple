@@ -3909,6 +3909,7 @@ function App(){
     setWinrate(wrData);
     setConfirmLag(lagData);
     setTs(new Date().toISOString());
+    refreshSelected().catch(()=>{}); // keep SELECTED tab data current on every 30 s global cycle
   }
 
   async function refreshInsights(){

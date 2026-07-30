@@ -79,6 +79,18 @@ async function cooperativeAdvisory(state) {
   }
 }
 
+// ── SELECTED ENGINE SIGNAL NOTIFY — fire-and-forget ──────────────────────────
+// Called once per signal_detected so Selected Engine ring stays current even
+// when market conditions mean no candidate ever reaches the BUY/SELL gate.
+// NEVER awaited — result is always discarded — has zero effect on trade logic.
+function cooperativeSignal(signalId, symbol, session) {
+  axios.post(
+    `${COOPERATIVE_URL}/api/cooperative/signal`,
+    { signalId, symbol, session },
+    { timeout: 500 }
+  ).catch(() => {}); // best-effort — error is silently dropped
+}
+
 let dailyTrades  = 0;
 let lastTradeDay = new Date().getUTCDate();
 
@@ -1351,6 +1363,9 @@ async function strategy(symbol) {
 
     // SIGNAL_DETECTED — start of evaluation lifecycle
     logEvent({ type: "signal_detected", signalId, symbol, session, hourUTC, dow: evalTime.getUTCDay() });
+    // Inform Selected Engine of this signal cycle — fire-and-forget, never awaited.
+    // Rate-limited server-side (≤1 refresh/30 s); does not block the pipeline.
+    cooperativeSignal(signalId, symbol, session);
 
     // ── COOLDOWN ──────────────────────────────────────────────────────────
     // Reduced 10→5 min: M5/M1 structure doesn't need 10-min lockout;
