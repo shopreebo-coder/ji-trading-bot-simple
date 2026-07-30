@@ -118,6 +118,11 @@ class SelectedEngineManager {
     this._running = false;
     this._lastResult = null;
     this._stats = { builds: 0, lastBuildAt: null, lastError: null };
+    this._diagnostics = {
+      DecisionContext_build_started: 0,
+      DecisionContext_build_success: 0,
+      DecisionContext_build_failed: 0,
+    };
   }
 
   _info(m) { try { this.log.info(m); } catch (_) {} }
@@ -243,13 +248,35 @@ class SelectedEngineManager {
 
   // ── Core: build one DecisionContext ──────────────────────────────────────────
 
+  async buildDecisionContext(args = {}) {
+    this._diagnostics.DecisionContext_build_started += 1;
+    try {
+      const context = await this._buildDecisionContext(args);
+      this._diagnostics.DecisionContext_build_success += 1;
+      return context;
+    } catch (error) {
+      this._diagnostics.DecisionContext_build_failed += 1;
+      this._stats.lastError = error.message || String(error);
+      this._error(`[SELECTED DIAG] DecisionContext_build_failed: ${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        signalId: args?.signal?.signal_id || args?.signal?.signalId || args?.signalId || null,
+        setupId: args?.signal?.setupId || args?.signal?.fingerprint || null,
+        endpoint: null,
+        httpStatus: null,
+        error: error.message || String(error),
+        stack: error.stack || null,
+      })}`);
+      throw error;
+    }
+  }
+
   /**
    * Build a normalized DecisionContext for a signal (defaults to the latest
    * recorded signal). Pure aggregation — reads only, never writes any DB table.
    * @param {{signalId?:string}} [args]
    * @returns {Promise<object>} the DecisionContext (also stored in the ring)
    */
-  async buildDecisionContext(args = {}) {
+  async _buildDecisionContext(args = {}) {
     const generated = new Date().toISOString();
     const signal = args.signal
       ? { ...args.signal, signal_id: args.signal.signal_id || args.signal.signalId }
@@ -667,6 +694,7 @@ class SelectedEngineManager {
         ? { id: knowledge.snapshot.id, checksum: knowledge.snapshot.manifest_checksum || knowledge.snapshot.checksum || null, createdAt: knowledge.snapshot.created_at || null }
         : null,
       stats: this._stats,
+      diagnostics: { ...this._diagnostics },
       telemetry: this._telemetry(latest),
       systemVersion: SYSTEM_VERSION,
       provenance: {
@@ -675,6 +703,10 @@ class SelectedEngineManager {
         configHash: this.provenance.configHash,
       },
     };
+  }
+
+  getDiagnostics() {
+    return { ...this._diagnostics };
   }
 
   /**
@@ -711,7 +743,16 @@ class SelectedEngineManager {
           marketState: ctx?.market?.dominant || null,
         },
       };
-    } catch (_) {
+    } catch (error) {
+      this._error(`[SELECTED DIAG] evaluateEntry failed: ${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        signalId: signal?.signalId || signal?.signal_id || null,
+        setupId: signal?.setupId || signal?.fingerprint || null,
+        endpoint: "/api/cooperative/entry",
+        httpStatus: null,
+        error: error.message || String(error),
+        stack: error.stack || null,
+      })}`);
       return {
         decision: "ABSTAIN",
         contextId: null,

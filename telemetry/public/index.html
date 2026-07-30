@@ -3744,6 +3744,7 @@ function SelectedTab({ data }){
   if(!data) return <div className="content"><div style={{color:"#8b949e"}}>Ładowanie…</div></div>;
   const status  = data.status||{};
   const ctx     = data.context||null;
+  const diagnostics = {...(status.diagnostics||{}), ...(data.contextDiagnostics||{})};
   const enabled = status.selectedEnabled;
   const engines = status.engines||[];
   const tel     = status.telemetry||{};
@@ -3790,6 +3791,16 @@ function SelectedTab({ data }){
           {ctx.selectedReason && <div style={{marginTop:4,color:"#6e7681"}}>{ctx.selectedReason}</div>}
         </div>
       )}
+
+      <div style={{fontSize:11,color:"#6e7681",marginBottom:20,padding:"8px 10px",border:"1px solid #30363d",borderRadius:6}}>
+        Źródło najnowszego kontekstu: <span style={{color:"#79c0ff"}}>{data.contextSource||diagnostics.Dashboard_latestContext_source||"—"}</span>
+        {" · "}timestamp: <span style={{fontFamily:"monospace"}}>{diagnostics.Dashboard_latestContext_timestamp||"—"}</span>
+        {" · "}signal: <span style={{fontFamily:"monospace"}}>{diagnostics.Dashboard_latestContext_signalId||"—"}</span>
+        <div style={{marginTop:4}}>
+          Sygnały: sent {diagnostics.cooperativeSignal_sent??0} · success {diagnostics.cooperativeSignal_success??0} · failed {diagnostics.cooperativeSignal_failed??0}
+          {" · "}builds: started {diagnostics.DecisionContext_build_started??0} · success {diagnostics.DecisionContext_build_success??0} · failed {diagnostics.DecisionContext_build_failed??0}
+        </div>
+      </div>
 
       <div style={{fontSize:13,fontWeight:600,color:"#e6edf3",marginBottom:8}}>Wykryte silniki (plugin, dynamiczne)</div>
       {engines.length===0 ? (
@@ -3909,7 +3920,17 @@ function App(){
     setWinrate(wrData);
     setConfirmLag(lagData);
     setTs(new Date().toISOString());
-    refreshSelected().catch(()=>{}); // keep SELECTED tab data current on every 30 s global cycle
+    refreshSelected().catch((error)=>{
+      console.error("[SELECTED DIAG]", {
+        timestamp: new Date().toISOString(),
+        signalId: null,
+        setupId: null,
+        endpoint: "dashboard.refreshSelected",
+        httpStatus: error?.status || null,
+        error: error?.message || String(error),
+        stack: error?.stack || null,
+      });
+    }); // keep SELECTED tab data current on every 30 s global cycle
   }
 
   async function refreshInsights(){
@@ -3972,7 +3993,12 @@ function App(){
       api("/api/selected/status"),
       api("/api/selected/context"),
     ]);
-    setSelected({ status:st, context: cx && cx.context });
+    setSelected({
+      status:st,
+      context: cx && cx.context,
+      contextDiagnostics: cx && cx.diagnostics,
+      contextSource: cx && cx.source,
+    });
   }
 
   useEffect(()=>{

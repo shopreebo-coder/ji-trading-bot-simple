@@ -73,6 +73,62 @@ const selectedEngine = new SelectedEngineManager({
   shadowLab: shadowLabResearch, // read-only expectancy provider (optional)
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
+const SELECTED_DIAGNOSTICS_STARTED_AT = new Date().toISOString();
+const dashboardLatestContextDiagnostics = {
+  Dashboard_latestContext_timestamp: null,
+  Dashboard_latestContext_signalId: null,
+  Dashboard_latestContext_source: null,
+};
+
+function selectedDiagnosticLog(fields, level = "error") {
+  const payload = {
+    timestamp: new Date().toISOString(),
+    signalId: null,
+    setupId: null,
+    endpoint: null,
+    httpStatus: null,
+    ...fields,
+  };
+  const line = `[SELECTED DIAG] ${JSON.stringify(payload)}`;
+  if (level === "warn") console.warn(line);
+  else console.error(line);
+}
+
+async function selectedCommunicationCounters() {
+  const counters = {
+    cooperativeSignal_sent: 0,
+    cooperativeSignal_success: 0,
+    cooperativeSignal_failed: 0,
+  };
+  try {
+    const rows = await db.all(
+      "SELECT data FROM events WHERE type=? AND ts>=? ORDER BY id ASC",
+      "selected_diagnostic",
+      SELECTED_DIAGNOSTICS_STARTED_AT,
+    );
+    for (const row of rows || []) {
+      try {
+        const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        if (Object.prototype.hasOwnProperty.call(counters, data?.diagnostic)) {
+          counters[data.diagnostic] += 1;
+        }
+      } catch (error) {
+        selectedDiagnosticLog({
+          endpoint: "selected_diagnostic counter query",
+          error: error.message || String(error),
+          stack: error.stack || null,
+        });
+      }
+    }
+  } catch (error) {
+    selectedDiagnosticLog({
+      endpoint: "selected_diagnostic counter query",
+      error: error.message || String(error),
+      stack: error.stack || null,
+    });
+  }
+  return counters;
+}
 
 // ── SHADOW OS v2 — Selected Advisor (ADVISOR-ONLY, flag-gated) ─────────────────
 // Connects the Selected Engine to the live trade stream as a PURE ADVISORY
@@ -3298,8 +3354,22 @@ app.get("/api/knowledge/export", async (req, res) => {
 app.get("/api/selected/status", async (req, res) => {
   try {
     const status = await selectedEngine.getStatus();
-    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, ...status });
+    res.json({
+      ok: true,
+      selectedEnabled: SELECTED_ENGINE_ENABLED,
+      ...status,
+      diagnostics: {
+        ...(status.diagnostics || {}),
+        ...(await selectedCommunicationCounters()),
+        ...dashboardLatestContextDiagnostics,
+      },
+    });
   } catch (err) {
+    selectedDiagnosticLog({
+      endpoint: "/api/selected/status",
+      error: err.message || String(err),
+      stack: err.stack || null,
+    });
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -3314,14 +3384,38 @@ app.get("/api/selected/engines", async (req, res) => {
   }
 });
 
-// GET /api/selected/context[?signalId=] — build a fresh DecisionContext (defaults
-// to the latest recorded signal). Read-only aggregation; also cached in the ring.
+// GET /api/selected/context[?signalId=] — dashboard reads the newest in-memory
+// ring-buffer context. An explicit signalId remains an on-demand database rebuild
+// for legacy callers; the dashboard does not send signalId.
 app.get("/api/selected/context", async (req, res) => {
   try {
     const signalId = req.query.signalId ? String(req.query.signalId) : undefined;
-    const context = await selectedEngine.buildDecisionContext({ signalId });
-    res.json({ ok: true, selectedEnabled: SELECTED_ENGINE_ENABLED, context });
+    const context = signalId
+      ? await selectedEngine.buildDecisionContext({ signalId })
+      : selectedEngine.getLatest();
+    const source = signalId ? "database" : (context ? "ring_buffer" : null);
+    dashboardLatestContextDiagnostics.Dashboard_latestContext_timestamp = context?.timestamp || null;
+    dashboardLatestContextDiagnostics.Dashboard_latestContext_signalId =
+      context?.liveSignal?.signalId || context?.setupId || null;
+    dashboardLatestContextDiagnostics.Dashboard_latestContext_source = source;
+    res.json({
+      ok: true,
+      selectedEnabled: SELECTED_ENGINE_ENABLED,
+      context,
+      source,
+      diagnostics: {
+        ...selectedEngine.getDiagnostics(),
+        ...(await selectedCommunicationCounters()),
+        ...dashboardLatestContextDiagnostics,
+      },
+    });
   } catch (err) {
+    selectedDiagnosticLog({
+      setupId: req.query.signalId ? String(req.query.signalId) : null,
+      endpoint: "/api/selected/context",
+      error: err.message || String(err),
+      stack: err.stack || null,
+    });
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -3407,7 +3501,14 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       expectancy: result.expectancy || null,
       riskAssessment: result.riskAssessment || null,
     });
-  } catch (_) {
+  } catch (error) {
+    selectedDiagnosticLog({
+      signalId: req.body?.signalId || req.body?.signal_id || null,
+      setupId: req.body?.setupId || req.body?.fingerprint || null,
+      endpoint: "/api/cooperative/entry",
+      error: error.message || String(error),
+      stack: error.stack || null,
+    });
     res.json({ ok: true, decision: "ABSTAIN", policyAction: "FAILSAFE_ALLOW", blocked: false, contextId: null });
   }
 });
@@ -3418,17 +3519,63 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
 // Responds immediately so the bot's hot path is never delayed. NEVER influences
 // any trading decision.
 app.post("/api/cooperative/signal", express.json(), async (req, res) => {
-  res.json({ ok: true }); // always respond immediately — never block the caller
+  const signalId = req.body?.signalId || req.body?.signal_id || null;
+  const setupId = req.body?.setupId || req.body?.fingerprint || null;
+  const signalDiagnostic = {
+    signalId,
+    setupId,
+    endpoint: "/api/cooperative/signal",
+  };
+  logEvent({
+    type: "selected_diagnostic",
+    diagnostic: "cooperativeSignal_sent",
+    ...signalDiagnostic,
+    timestamp: new Date().toISOString(),
+  });
+  try {
+    res.status(200).json({ ok: true }); // always respond immediately — never block the caller
+    logEvent({
+      type: "selected_diagnostic",
+      diagnostic: "cooperativeSignal_success",
+      ...signalDiagnostic,
+      httpStatus: 200,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logEvent({
+      type: "selected_diagnostic",
+      diagnostic: "cooperativeSignal_failed",
+      ...signalDiagnostic,
+      httpStatus: error?.statusCode || null,
+      error: error?.message || String(error),
+      stack: error?.stack || null,
+      timestamp: new Date().toISOString(),
+    });
+    selectedDiagnosticLog({
+      ...signalDiagnostic,
+      httpStatus: error?.statusCode || null,
+      error: error?.message || String(error),
+      stack: error?.stack || null,
+    });
+  }
   if (!SELECTED_ENGINE_ENABLED) return;
   // Build a fresh DecisionContext from this live signal — fire-and-forget.
   // Uses _getLatestEvals() because args.signal is provided (no shadow_signals row required).
   selectedEngine.buildDecisionContext({
     signal: {
-      signal_id:  req.body?.signalId || null,
+      signal_id: signalId,
       symbol:     req.body?.symbol   || null,
       created_at: new Date().toISOString(),
     },
-  }).catch(() => {}); // best-effort — never throws into caller
+  }).catch((error) => {
+    selectedDiagnosticLog({
+      signalId,
+      setupId,
+      endpoint: "/api/cooperative/signal",
+      error: error.message || String(error),
+      stack: error.stack || null,
+    });
+  }); // best-effort — failure is visible but has no control-flow effect
 });
 
 app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
@@ -3449,7 +3596,14 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       evidence: shadow.evidence || {},
     });
     res.json({ ok: true, action: finalAction, advisoryOnly: true, evidence: shadow.evidence || {} });
-  } catch (_) {
+  } catch (error) {
+    selectedDiagnosticLog({
+      signalId: req.body?.signalId || req.body?.signal_id || null,
+      setupId: req.body?.setupId || req.body?.fingerprint || null,
+      endpoint: "/api/cooperative/advisory",
+      error: error.message || String(error),
+      stack: error.stack || null,
+    });
     res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true } });
   }
 });
