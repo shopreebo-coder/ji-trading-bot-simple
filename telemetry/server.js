@@ -25,10 +25,6 @@ const cooperativeManager = new CooperativeManager();
 const COOP_ENTRY_ENABLED = (process.env.COOP_ENTRY_ENABLED || "on").toLowerCase() === "on";
 const COOP_ENTRY_HIGH_CONFIDENCE = Number.isFinite(Number(process.env.COOP_ENTRY_HIGH_CONFIDENCE))
   ? Number(process.env.COOP_ENTRY_HIGH_CONFIDENCE) : 0.8;
-// Rate-limit for signal-notify endpoint: at most 1 DecisionContext rebuild per 30 s.
-// Prevents DB saturation when signals arrive every 2–3 s per symbol.
-let _lastSignalContextRefresh = 0;
-const SIGNAL_CONTEXT_DEBOUNCE_MS = 30000;
 const memoryIntegration = new LiveMemoryIntegration({
   enabled:  SHADOW_OS_MEMORY_ENABLED,
   calledBy: "server.js",
@@ -3419,13 +3415,10 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
 // ── Selected Engine signal notify (triggered by Live Bot per signal_detected) ─
 // The Live Bot calls this fire-and-forget after every signal_detected so the
 // Selected Engine ring stays current even when no candidate ever reaches the gate.
-// Rate-limited to ≤1 DecisionContext rebuild per 30 s; responds immediately so
-// the bot's hot path is never delayed. NEVER influences any trading decision.
+// Responds immediately so the bot's hot path is never delayed. NEVER influences
+// any trading decision.
 app.post("/api/cooperative/signal", express.json(), async (req, res) => {
   res.json({ ok: true }); // always respond immediately — never block the caller
-  const now = Date.now();
-  if (now - _lastSignalContextRefresh < SIGNAL_CONTEXT_DEBOUNCE_MS) return;
-  _lastSignalContextRefresh = now;
   if (!SELECTED_ENGINE_ENABLED) return;
   // Build a fresh DecisionContext from this live signal — fire-and-forget.
   // Uses _getLatestEvals() because args.signal is provided (no shadow_signals row required).
