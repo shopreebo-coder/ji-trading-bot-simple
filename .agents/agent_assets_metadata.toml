@@ -72,3 +72,9 @@ id = "UNq1rcNKwmuivpUuJ19F0"
 uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v1.pdf"
 type = "pdf"
 title = "Architecture Audit v1 (PDF)"
+
+[[outputs]]
+id = "nGiMb-J-wnjNSDD5eJtKE"
+uri = "file://AUDIT_REPORT_SELECTED_ENGINE_DIAGNOSTICS.md"
+type = "text"
+title = "Raport audytu Selected Engine diagnostics"
