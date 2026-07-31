@@ -7,4 +7,4 @@ The cooperative Selected Engine path may receive a signal before Shadow LAB has 
 
 **Why:** latest-per-engine substitution creates a mixed DecisionContext that looks complete but combines opinions from unrelated signals. This is especially easy to trigger because the cooperative notify path is fire-and-forget and Shadow LAB is polled asynchronously.
 
-**How to apply:** any context build receiving an inline signal must use the signal-scoped evaluation query. The explicit `signalId` rebuild and later Shadow LAB completion are the source of truth for a complete A–D context.
+**How to apply:** any context build receiving an inline signal must use the signal-scoped evaluation query. If the first read is incomplete, bounded retries may rebuild only that same `signalId`; never substitute the latest row for each engine. The explicit `signalId` rebuild and later Shadow LAB completion are the source of truth for a complete A–D context.

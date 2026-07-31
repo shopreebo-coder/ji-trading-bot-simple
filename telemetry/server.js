@@ -3567,8 +3567,11 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
     signal: {
       signal_id: signalId,
       symbol:     req.body?.symbol   || null,
-      created_at: new Date().toISOString(),
+      created_at: req.body?.createdAt || req.body?.created_at || req.body?.sourceTs || new Date().toISOString(),
     },
+    // ShadowLab persists the A/B/C/D rows asynchronously. Selected Engine
+    // retries this exact signalId without borrowing another signal's rows.
+    refreshEvaluations: true,
   }).catch((error) => {
     selectedDiagnosticLog({
       signalId,

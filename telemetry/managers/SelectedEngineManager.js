@@ -50,6 +50,9 @@ const { discoverEngines, loadCustomPlugins, parseJson } = require("./selected/en
 
 const DEFAULT_RING = 200;
 const DEFAULT_POLL_MS = 15 * 60 * 1000; // 15 min, matches the Knowledge Layer cadence
+// ShadowLab records A/B/C/D asynchronously after the cooperative signal
+// notification. Retry only the exact signalId, never latest-per-engine.
+const DEFAULT_EVAL_REFRESH_DELAYS_MS = [1000, 3000, 8000, 15000, 30000];
 
 /**
  * DecisionContext contract version. DecisionContext is the canonical event object
@@ -109,10 +112,14 @@ class SelectedEngineManager {
     this.log = opts.logger || { info() {}, error() {} };
     this.ringSize = Number(opts.ringSize) > 0 ? Number(opts.ringSize) : DEFAULT_RING;
     this.pollIntervalMs = Number(opts.pollIntervalMs) > 0 ? Number(opts.pollIntervalMs) : DEFAULT_POLL_MS;
+    this.evalRefreshDelaysMs = Array.isArray(opts.evalRefreshDelaysMs)
+      ? opts.evalRefreshDelaysMs.filter((ms) => Number(ms) >= 0).map(Number)
+      : DEFAULT_EVAL_REFRESH_DELAYS_MS;
     this.pluginDir = opts.pluginDir || path.join(__dirname, "selected", "engines");
 
     this._ring = [];
     this._byId = new Map();
+    this._pendingEvalRefreshes = new Map();
     this._customPlugins = null; // cached fs-scan of the plugin dir
     this._timer = null;
     this._running = false;
@@ -253,6 +260,9 @@ class SelectedEngineManager {
     try {
       const context = await this._buildDecisionContext(args);
       this._diagnostics.DecisionContext_build_success += 1;
+      if (args.refreshEvaluations && this._needsEvaluationRefresh(context)) {
+        this._scheduleEvaluationRefresh(args);
+      }
       return context;
     } catch (error) {
       this._diagnostics.DecisionContext_build_failed += 1;
@@ -268,6 +278,47 @@ class SelectedEngineManager {
       })}`);
       throw error;
     }
+  }
+
+  _needsEvaluationRefresh(context) {
+    const opinions = context && context.engines ? Object.values(context.engines) : [];
+    return opinions.length > 0 && opinions.some((opinion) => !opinion || opinion.present !== true);
+  }
+
+  _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Re-read evaluations for one cooperative signal after ShadowLab has had
+   * time to persist them. Every rebuild remains signal-scoped and read-only.
+   */
+  _scheduleEvaluationRefresh(args = {}) {
+    const signal = args.signal || {};
+    const signalId = signal.signal_id || signal.signalId || null;
+    if (!signalId || this._pendingEvalRefreshes.has(String(signalId))) return;
+
+    const refresh = (async () => {
+      for (const delayMs of this.evalRefreshDelaysMs) {
+        if (delayMs > 0) await this._sleep(delayMs);
+        const evals = await this._getEvals(signalId);
+        if (!evals.length) continue;
+
+        const context = await this._buildDecisionContext({
+          signal,
+          refreshEvaluations: false,
+        });
+        if (!this._needsEvaluationRefresh(context)) break;
+      }
+    })()
+      .catch((error) => {
+        this._error(`[SELECTED] evaluation refresh failed for ${signalId}: ${error.message}`);
+      })
+      .finally(() => {
+        this._pendingEvalRefreshes.delete(String(signalId));
+      });
+
+    this._pendingEvalRefreshes.set(String(signalId), refresh);
   }
 
   /**
@@ -642,6 +693,13 @@ class SelectedEngineManager {
         if (old && !this._ring.some((c) => c.id === old.id)) this._byId.delete(old.id);
       }
     }
+    // A retry for an older signal can finish after a newer signal. Keep
+    // getLatest() semantically latest-by-signal-time, not latest-by-retry-time.
+    this._ring.sort((a, b) => {
+      const ta = tsMs(a && a.timestamp) ?? tsMs(a && a.metadata && a.metadata.generated) ?? 0;
+      const tb = tsMs(b && b.timestamp) ?? tsMs(b && b.metadata && b.metadata.generated) ?? 0;
+      return ta - tb;
+    });
     this._byId.set(ctx.id, ctx);
   }
 
