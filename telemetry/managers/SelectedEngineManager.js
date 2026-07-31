@@ -287,7 +287,11 @@ class SelectedEngineManager {
     const symbol = signal.symbol || null;
 
     const [evals, outcome, engines, knowledge] = await Promise.all([
-      args.signal ? this._getLatestEvals() : this._getEvals(sid),
+      // A cooperative signal may arrive before Shadow LAB records its
+      // evaluations, but it must never borrow another signal's latest row.
+      // Missing same-signal evaluations deliberately remain absent/abstain
+      // until a later rebuild sees the recorded LAB rows.
+      this._getEvals(sid),
       this._getOutcome(sid),
       this._loadEngines(),
       this.loadKnowledge(),

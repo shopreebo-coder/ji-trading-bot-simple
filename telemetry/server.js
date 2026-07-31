@@ -3560,7 +3560,9 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
   }
   if (!SELECTED_ENGINE_ENABLED) return;
   // Build a fresh DecisionContext from this live signal — fire-and-forget.
-  // Uses _getLatestEvals() because args.signal is provided (no shadow_signals row required).
+  // The manager reads only evaluations matching this signalId; if LAB has not
+  // recorded them yet, the context remains incomplete rather than mixing rows
+  // from another signal.
   selectedEngine.buildDecisionContext({
     signal: {
       signal_id: signalId,
