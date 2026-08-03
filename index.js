@@ -246,6 +246,14 @@ const qualityCounters     = {
   instantAdverse: 0,   // # where first pip reading was already negative
 };
 
+// ── HARD vs RELAXED PERFORMANCE — TELEMETRY ONLY ─────────────────────────────
+// Independent closed-trade statistics by the entry gate that was recorded at
+// entry. These counters never participate in entry, exit, risk, or sizing logic.
+const gatePerformanceCounters = {
+  HARD:    { total: 0, wins: 0, losses: 0, totalPips: 0, totalMFE: 0, totalMAE: 0 },
+  RELAXED: { total: 0, wins: 0, losses: 0, totalPips: 0, totalMFE: 0, totalMAE: 0 },
+};
+
 // ── ALMOST TRADE FORENSICS — TELEMETRY ONLY ──────────────────────────────────
 // Stores setups that reach passCount >= 4 gate conditions but do NOT become trades.
 // 15-min delayed price check measures what the market did → evidence for which
@@ -1032,6 +1040,18 @@ async function manageTrades() {
         if (tradePlusTwoPips[trade.id])    qualityCounters.reachedPlusTwo++;
         if (tradeInstantAdverse[trade.id]) qualityCounters.instantAdverse++;
 
+        // ── HARD vs RELAXED PERFORMANCE — TELEMETRY ONLY ────────────────────
+        const entryGate = tradeEntryMeta[trade.id]?.entryGate || null;
+        if (entryGate === "HARD" || entryGate === "RELAXED") {
+          const gateStats = gatePerformanceCounters[entryGate];
+          gateStats.total++;
+          if (_outcome === "WIN")  gateStats.wins++;
+          if (_outcome === "LOSS") gateStats.losses++;
+          gateStats.totalPips += pips;
+          gateStats.totalMFE  += mfe;
+          gateStats.totalMAE  += mae;
+        }
+
         // ── TRADE FORENSICS — TELEMETRY ONLY ────────────────────────────────
         // Emits trade_forensics linking entry conditions with exit outcome.
         // Enables statistical winner vs loser comparison in telemetry DB.
@@ -1243,7 +1263,7 @@ async function manageTrades() {
       //   OANDA closes at floor SL when price reverses to it.
       //   Software safety-net exit if price gaps below floor between ticks.
       // DOES NOT MODIFY: initial SL, initial TP, entry logic, EMA, filters, risk, sizing.
-      if (peak >= 2.0 || cooperativeAction === "MOVE_SL") {
+      if (peak >= 1.5 || cooperativeAction === "MOVE_SL") {
         const floorProfit = parseFloat((Math.max(0, peak * 0.50)).toFixed(4));
         const floorPrice  = side === "buy"
           ? parseFloat((openPrice + floorProfit * pipMult).toFixed(5))
@@ -1328,6 +1348,24 @@ async function manageTrades() {
         console.log(
           `EXIT ${symbol}\nreason=${reason}\nprofit=${pips.toFixed(2)}\npeak=${peak.toFixed(2)}\nminutes=${minutesOpen.toFixed(1)}\nbreakEven=${breakEvenActive}`,
         );
+
+        const timeExitEntry = tradeEntrySnapshot[trade.id] || {};
+        const timeExitMeta  = tradeEntryMeta[trade.id] || {};
+        logEvent({
+          type:             "time_exit_telemetry",
+          signalId:         tradeSignalId[trade.id] || null,
+          tradeId:          trade.id,
+          symbol,
+          side,
+          atrPips:          timeExitEntry.atrPips ?? null,
+          trendBucket:      timeExitEntry.trendBucket ?? null,
+          volatilityBucket: timeExitEntry.volatilityBucket ?? null,
+          entryGate:        timeExitMeta.entryGate ?? null,
+          passCount:        timeExitMeta.passCount ?? null,
+          mfe:              parseFloat(peak.toFixed(2)),
+          mae:              parseFloat((tradeMAE[trade.id] ?? 0).toFixed(2)),
+          session:          timeExitEntry.session || classifySession(new Date().getUTCHours()),
+        });
 
         logEvent(buildClosePayload(reason));
         recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
@@ -2430,6 +2468,22 @@ function startBlockSummaryPrinter() {
       console.log(`  (trade_forensics events in telemetry DB for full winner/loser breakdown)`);
       console.log("============================================");
     }
+
+    // ── HARD vs RELAXED PERFORMANCE — TELEMETRY ONLY ────────────────────────
+    // Independent closed-trade report by the entry gate recorded at entry.
+    // These statistics are read-only and never affect strategy decisions.
+    console.log("===== HARD vs RELAXED PERFORMANCE (closed trades) =====");
+    for (const gate of ["HARD", "RELAXED"]) {
+      const gs = gatePerformanceCounters[gate];
+      const decidedTrades = gs.wins + gs.losses;
+      const winRate = decidedTrades > 0 ? (gs.wins / decidedTrades * 100).toFixed(1) : "n/a";
+      const avg = (value) => gs.total > 0 ? (value / gs.total).toFixed(2) : "n/a";
+      console.log(
+        `  ${gate.padEnd(7)}: total=${gs.total} wins=${gs.wins} losses=${gs.losses} ` +
+        `WR=${winRate}% avgProfit=${avg(gs.totalPips)}p avgMFE=${avg(gs.totalMFE)}p avgMAE=${avg(gs.totalMAE)}p`
+      );
+    }
+    console.log("======================================================");
 
     // ── BLOCKED WINNERS (ALMOST TRADE 15-min OUTCOMES) ───────────────────────
     // Shows which failing gate condition most often precedes a favorable market move.
