@@ -1,0 +1,395 @@
+FOREX ENGINE PRO — AI COMPLETE ANALYSIS REPORT v2
+Generated: 2026-08-03T11:30:27.781Z
+Scope: LIVE BOT + SHADOW LAB + KNOWLEDGE LAYER + SELECTED ENGINE + SELECTED ADVISOR + PIPELINE HEALTH + AI SUMMARY
+Mode: READ-ONLY (assembled client-side from existing telemetry endpoints)
+
+==================================================
+LIVE BOT
+==================================================
+
+PERFORMANCE SUMMARY
+  Trades: 521  Wins: 125  Losses: 336  BE: 60
+  Win Rate: 27.1%
+  Avg Peak: 0.67p
+  Avg Exit Eff: N/A
+
+TODAY BLOCKS
+
+SYMBOL PERFORMANCE
+  USD_JPY: 118 trades, 28.7% WR, avg -1.65p
+  EUR_USD: 222 trades, 26.6% WR, avg -1.04p
+  GBP_USD: 156 trades, 27.3% WR, avg -1.57p
+  USD_CHF: 14 trades, 25.0% WR, avg -1.82p
+  AUD_USD: 11 trades, 16.7% WR, avg -0.85p
+
+FILTER COST (BLOCKED OUTCOMES)
+  cooldown_block: 207 blocked, 100% moved, avg 25.34p
+  pullback_block: 86 blocked, 100% moved, avg 34.6p
+  exhaustion_block: 419 blocked, 95.2% moved, avg 8.2p
+  spread_edge_block: 938 blocked, 93.3% moved, avg 9.12p
+  spread_block: 350 blocked, 92.6% moved, avg 22.25p
+
+TRADE QUALITY
+  Reached +2p: 0.0%
+  Instant Adverse: 0.0%
+
+==================================================
+SHADOW LAB
+==================================================
+
+
+--- OVERVIEW ---
+  Signals processed (comparisons): 553
+  Last processed: 2026-08-03T05:15:19.779Z
+  Engine A: 553 decisions, wouldTrade 394, avg score 71.9
+  Engine B: 553 decisions, wouldTrade 301, states {"TRENDING":301,"DEAD":14,"VOLATILE":29,"NOISE":209}
+  Engine C: 553 decisions, wouldTrade 18, abstain rate 2%
+  Shadow mode: OBSERVE (gate active: false)
+  Data collection: 521/250 closed trades (100%, ready: true)
+
+--- GATE EVALUATIONS ---
+  Gate evaluations: 2449  blocks: 0  block rate: 0%
+  Recent gate window: 500 evals, 0 blocks
+    USD_JPY buy [ASIA] mode=OBSERVE engineD=N/A conf=NONE blocked=N/A
+    USD_JPY sell [ASIA] mode=OBSERVE engineD=true conf=HIGH blocked=N/A
+    USD_JPY buy [ASIA] mode=OBSERVE engineD=N/A conf=NONE blocked=N/A
+    USD_JPY buy [ASIA] mode=OBSERVE engineD=true conf=HIGH blocked=N/A
+    USD_JPY sell [ASIA] mode=OBSERVE engineD=N/A conf=NONE blocked=N/A
+
+--- SIGNALS PROCESSED (RESEARCH LAYER) ---
+  Research enabled: true
+  shadow_signals: 553  engine_evals: 2212  outcomes: 516
+  Engine A: 553 evals (trade 394, abstain 0)
+  Engine B: 553 evals (trade 301, abstain 0)
+  Engine C: 553 evals (trade 18, abstain 11)
+  Engine D: 553 evals (trade 68, abstain 108)
+  Expectancy[ALL]: -1.34p over 516 resolved (confidence: HIGH)
+
+--- AGREEMENT & CAUTION FLAGS ---
+  Comparisons: 553
+  Avg agreement: 38.7%   All-agree: 17 (3.1%)
+  Caution flags: 384 (69.4%)
+  Engine agreement with LIVE: A 71.2% · B 54.4% · C 3.3% (decided 542)
+
+--- SHADOW A SUMMARY — Quality Score ---
+  Decisions: 553  wouldTrade: 394 (71.2%)  avg score: 71.9
+  Score distribution: {"0-20":0,"20-40":0,"40-60":61,"60-80":356,"80-100":136}
+  Confidence: {"HIGH":136,"MEDIUM":258,"LOW":159}
+  EUR_USD: 241 decisions, avg score 71.9, trade 71.8%
+  GBP_USD: 165 decisions, avg score 71.8, trade 72.1%
+  USD_JPY: 120 decisions, avg score 72.1, trade 68.3%
+  USD_CHF: 15 decisions, avg score 71.1, trade 60%
+
+--- SHADOW B SUMMARY — Market Context ---
+  Decisions: 553  wouldTrade: 301 (54.4%)
+  State TRENDING: 301 (trade 301)
+  State NOISE: 209 (trade 0)
+  State VOLATILE: 29 (trade 0)
+  State DEAD: 14 (trade 0)
+
+--- SHADOW C SUMMARY — KNN Memory ---
+  Decisions: 553  decided: 542  abstain: 11 (2%)
+  wouldTrade: 18  wouldSkip: 524
+  Avg historical WR: 22.6%  avg historical expectancy: -1.42p
+  Confidence: {"HIGH":518,"MEDIUM":22,"LOW":2,"NONE":11}
+
+--- SHADOW D SUMMARY — Meta Engine ---
+  Decisions: 553  decided: 445  abstain: 108 (19.5%)
+  Avg meta vote score: 0.309  weights A/B/C: 0.266/0.3/0.499
+  Confidence: {"HIGH":385,"MEDIUM":60,"NONE":108}  regimes: {"TRENDING":301,"DEAD":14,"VOLATILE":29,"NOISE":209}
+  Status: live — weights learned per (symbol, session); cold-start = equal 1/3
+
+--- COMPARISON (BY SYMBOL) ---
+  EUR_USD: 241 comparisons, avg agreement 26.5%, caution 84.6%
+  GBP_USD: 165 comparisons, avg agreement 50%, caution 47.9%
+  USD_JPY: 120 comparisons, avg agreement 44%, caution 75%
+  USD_CHF: 15 comparisons, avg agreement 49.4%, caution 60%
+  AUD_USD: 12 comparisons, avg agreement 66%, caution 16.7%
+
+--- RANKING (VIRTUAL EXPECTANCY) ---
+  LIVE reference: WR 27.4%, expectancy -1.34p, 516 trades
+  #1 Engine C — KNN Memory: expectancy -1.24p, WR 18.8%, resolved 18
+  #2 Engine A — Quality Score: expectancy -1.36p, WR 27.8%, resolved 364
+  #3 Engine B — Market Context: expectancy -1.55p, WR 29.5%, resolved 279
+  #4 Engine D — Meta Engine: expectancy -1.83p, WR 20.4%, resolved 60
+  Data quality: ADEQUATE
+
+--- VIRTUAL PERFORMANCE ---
+  LIVE BOT: trades 516, WR 27.4%, expectancy -1.34p, PF 0.33, avg MFE 0.68p
+  Engine A — Quality Score: trades N/A, WR 27.8%, expectancy -1.36p, PF 0.31, avg MFE 0.72p
+  Engine B — Market Context: trades N/A, WR 29.5%, expectancy -1.55p, PF 0.29, avg MFE 0.75p
+  Engine C — KNN Memory: trades N/A, WR 18.8%, expectancy -1.24p, PF 0.27, avg MFE 0.78p
+  Engine D — Meta Engine: trades N/A, WR 20.4%, expectancy -1.83p, PF 0.22, avg MFE 0.78p
+
+--- EXIT LAB (SHADOW M) ---
+  Trades observed: 516 (active now: 37)
+  Avg MFE: 1.3p  Avg MAE: -2.9p  Avg duration: 5 min
+  Exit efficiency: -106.9%  Avg given back: 1.2p
+  Avg profit saved vs LIVE: 0.0p  Total saved: 0.0p
+  Best exit strategy: Live (no improvement)
+    #1 Live (baseline): {"strategy":"Live (baseline)","avgPips":-1.34,"count":516,"triggered":516}
+    #2 ATR Trailing: {"strategy":"ATR Trailing","avgPips":null,"count":0,"triggered":0}
+    #3 Profit Protection: {"strategy":"Profit Protection","avgPips":null,"count":0,"triggered":0}
+
+--- BEST & WORST OBSERVATIONS ---
+  [BEST]  Engine C — KNN Memory leads virtual expectancy at -1.24p.
+  [WORST] Engine D — Meta Engine trails at -1.83p.
+  [BEST]  Highest engine agreement: AUD_USD (66.0%).
+  [WORST] Highest caution rate: EUR_USD (84.6%).
+  [WORST] Exit Lab strategies show no cumulative saving vs live exits (0.0p).
+
+==================================================
+KNOWLEDGE LAYER
+==================================================
+
+
+--- SNAPSHOT / MANIFEST ---
+  Latest snapshot id (manifest version): 2023
+  Manifest checksum: 9d663f17dd5de8de19f6384e49119a5600495651b1bd9e73a87191f4749f3e19
+  Artifact count: 7  total bytes: 24989
+  Created: 2026-08-03T05:19:37.609Z
+  Snapshots recorded: 10
+
+--- GROWTH SINCE PREVIOUS SNAPSHOT ---
+  Previous snapshot id: 2022 (2026-08-03T05:04:37.606Z)
+  Artifacts: 7 -> 7 (+0)
+  Bytes: 24985 -> 24989 (+4)
+  Manifest changed: true
+
+--- STORE STATISTICS ---
+  Builder enabled (KNOWLEDGE_LAYER): true
+  Artifacts: total 2487, active 7, superseded 2480, active bytes 24989
+  Domains: confidence(1), config(1), engines(1), expectancy(1), experiments(1), market(1), patterns(1)
+  Snapshots: 374 (latest 2026-08-03T05:19:37.609Z)
+  System version: v40.1  run: eb3c1b73-d971-48fb-930d-f69290d5d192
+  Last build: {"at":"2026-08-03T11:19:37.602Z","ok":true,"durationMs":89,"changed":0,"results":[{"domain":"expectancy","artifact":"history","changed":false,"reason":"unchanged","version":317,"id":2481,"checksum":"41408a4098c903fe4e723e55bdb1ed381b018d982b4fa8ce0ce23bdeed4d624b"},{"domain":"engines","artifact":"statistics","changed":false,"reason":"unchanged","version":364,"id":2482,"checksum":"b90df53aaae063de89f61fa81c60361e0b3485be7ff4ac07c93538f692b43f62"},{"domain":"patterns","artifact":"validated","changed":false,"reason":"unchanged","version":367,"id":2483,"checksum":"94f51254a53854d462b514376945a73825bd8c99bd39b2533a19fab86cdb8d1c"},{"domain":"market","artifact":"fingerprints","changed":false,"reason":"unchanged","version":374,"id":2484,"checksum":"90c5ed494db852d1db96c8de8f6016a0fec892ab69fb9687398074cc277aa71d"},{"domain":"config","artifact":"history","changed":false,"reason":"unchanged","version":374,"id":2485,"checksum":"8dbab57e0603c4fe9c7a62945c084bb21421768df51079558da5b31cefb39502"},{"domain":"confidence","artifact":"history","changed":false,"reason":"unchanged","version":317,"id":2486,"checksum":"946366f8c7bd8443d89fdb53cc395700ccc2c7ab3a6e0f8dfd35e4a944ab8781"},{"domain":"experiments","artifact":"metadata","changed":false,"reason":"unchanged","version":374,"id":2487,"checksum":"d584041eec250cf393637c8a1c87df1c5fadf4057254c8c6bcae813a56761988"}],"snapshot":{"inserted":false,"manifestChecksum":"9d663f17dd5de8de19f6384e49119a5600495651b1bd9e73a87191f4749f3e19","artifactCount":7,"totalBytes":24989}}
+
+--- ACTIVE ARTIFACTS (VERSIONS) ---
+  confidence/history v317 — confidence 1, trainingEvents 489, 517B, created 2026-08-03T05:19:37.565Z
+  config/history v374 — confidence 1, trainingEvents 3770, 504B, created 2026-08-03T05:19:37.553Z
+  engines/statistics v364 — confidence 1, trainingEvents 2212, 833B, created 2026-08-03T05:19:37.494Z
+  expectancy/history v317 — confidence 1, trainingEvents 516, 452B, created 2026-08-03T05:19:37.475Z
+  experiments/metadata v374 — confidence 0.168317, trainingEvents 17, 4657B, created 2026-08-03T05:19:37.585Z
+  market/fingerprints v374 — confidence 1, trainingEvents 553, 1321B, created 2026-08-03T05:19:37.535Z
+  patterns/validated v367 — confidence 1, trainingEvents 516, 16705B, created 2026-08-03T05:19:37.512Z
+
+--- CONFIDENCE HISTORY (confidence/history) ---
+  ALL: LOW(3pt, resolved 27-29) -> MEDIUM(71pt, resolved 30-100) -> HIGH(415pt, resolved 101-516)
+
+--- EXPECTANCY HISTORY (expectancy/history) ---
+  ALL: 489 points, latest expectancy -1.34p, PF 0.32709, resolved 516, confidence HIGH
+
+--- EXPERIMENTS METADATA (experiments/metadata) ---
+  Experiments (run/build/config combos): 17
+  run 9cfe247b-f74… build v40.1+9cb99ad9adb0: signals 89, evals 356, outcomes 89 (2026-07-31T10:05:36.950Z -> 2026-08-03T05:16:25.460Z)
+  run b87e6cf5-918… build v40.1+28da2c48cad9: signals 13, evals 52, outcomes 13 (2026-07-29T19:11:37.867Z -> 2026-07-29T19:59:03.427Z)
+  run 095aac68-1c7… build v40.1+87f20511823a: signals 8, evals 36, outcomes 9 (2026-07-29T13:57:15.337Z -> 2026-07-29T18:42:06.435Z)
+  run 9b9cb20e-840… build v40.1+595766c44345: signals 24, evals 92, outcomes 23 (2026-07-29T02:14:16.912Z -> 2026-07-29T13:57:08.254Z)
+  run d72aa9e3-35f… build v40.1+816b2f7f3323: signals 263, evals 1052, outcomes 263 (2026-07-15T18:46:23.651Z -> 2026-07-28T17:16:26.273Z)
+
+--- MARKET FINGERPRINTS (market/fingerprints) ---
+  Distinct fingerprints: 7
+  FTTTTT: 158 signals, 151 resolved, avg -0.97p
+  TTTTFT: 146 signals, 133 resolved, avg -1.33p
+  TTTTTT: 124 signals, 115 resolved, avg -1.17p
+  TTTTTF: 61 signals, 56 resolved, avg -2.00p
+  FTTTTF: 30 signals, 30 resolved, avg -1.83p
+
+--- VALIDATED PATTERNS (patterns/validated) ---
+  Patterns: 61  validated: 0 (min sample 30)
+  [obs]   EUR_USD buy MEDIUM_TREND/LOW_VOL/NORMAL: 66 resolved, expectancy -1.07p
+  [obs]   EUR_USD sell MEDIUM_TREND/LOW_VOL/NORMAL: 48 resolved, expectancy -0.71p
+  [obs]   EUR_USD buy STRONG_TREND/LOW_VOL/NORMAL: 44 resolved, expectancy -1.26p
+
+==================================================
+SELECTED ENGINE
+==================================================
+
+
+--- DECISION CONTEXT ---
+  Context id: 6a7d6d0b335b342f63f42f5444e100219e0cbfcb15464cdc48ee6de04e186aaa  (schema v1)
+  Signal: 492985e8-b18b-41ca-8e35-cc6bc62ba09e  symbol USD_JPY  side buy  session ASIA
+  Built: 2026-08-03T11:19:37.513Z  engines: 4 [A, B, C, D]
+  Resolved outcome: {"profitPips":-4.099999999999682,"mfe":-0.9,"mae":-4.1,"durationMin":1.3136666666666665}
+
+--- CONSENSUS & DISAGREEMENT ---
+  Consensus: NO_TRADE  agreement 75%  disagreement 25%
+  Agreeing: [A, C, D]  dissenting: [B]  abstaining: []  decided: 4
+
+--- CONFIDENCE ---
+  Tier: MEDIUM  average: 0.725
+  Per engine: {"A":"LOW","B":"MEDIUM","C":"HIGH","D":"HIGH"}
+
+--- ENGINE OPINIONS ---
+  Engine A: wouldTrade=false confidence=LOW score=58.8 histWR=N/A histExp=N/A
+  Engine B: wouldTrade=true confidence=MEDIUM score=N/A histWR=N/A histExp=N/A
+  Engine C: wouldTrade=false confidence=HIGH score=N/A histWR=20 histExp=-1.34
+  Engine D: wouldTrade=false confidence=HIGH score=0.172 histWR=N/A histExp=N/A
+
+--- RANKING (Confidence -> Expectancy -> TrainingEvents -> Version -> Freshness) ---
+  #1 expectancy:ALL [expectancy] confidence 1, expectancy -1.336822, trainingEvents 516
+  #2 engine:C [engine] confidence 1, expectancy -1.34, trainingEvents 0
+  #3 knowledge:config/history [knowledge] confidence 1, expectancy N/A, trainingEvents 3770
+  #4 knowledge:engines/statistics [knowledge] confidence 1, expectancy N/A, trainingEvents 2212
+  #5 knowledge:market/fingerprints [knowledge] confidence 1, expectancy N/A, trainingEvents 553
+  #6 knowledge:patterns/validated [knowledge] confidence 1, expectancy N/A, trainingEvents 516
+  #7 knowledge:expectancy/history [knowledge] confidence 1, expectancy N/A, trainingEvents 516
+  #8 knowledge:confidence/history [knowledge] confidence 1, expectancy N/A, trainingEvents 489
+
+--- EXPLAINABILITY ---
+  Why selected: consensus=NO_TRADE (3/4 decided agree, 75%); confidence=MEDIUM; top=[expectancy:ALL, engine:C, knowledge:config/history]
+  Top ranked sources: [expectancy:ALL, engine:C, knowledge:config/history]
+  Selected sources: [expectancy:ALL, engine:C, knowledge:config/history, knowledge:engines/statistics, knowledge:market/fingerprints, knowledge:patterns/validated, knowledge:expectancy/history, knowledge:confidence/history, engine:D, engine:B, engine:A, knowledge:experiments/metadata]
+  Confidence chain: tier MEDIUM, avg 0.725
+  Knowledge versions: max 374, snapshot {"id":"2023","checksum":"9d663f17dd5de8de19f6384e49119a5600495651b1bd9e73a87191f4749f3e19","createdAt":"2026-08-03T05:19:37.609Z"}
+  Market fingerprint: {"setupId":"FTTTTF","trendBucket":"STRONG_TREND","volatilityBucket":"MEDIUM_VOL","spreadBucket":"EXTREME"}
+
+--- EVIDENCE TRACE (REPRODUCIBLE) ---
+  Checksum (content-only, restart-stable): 8a6696650279a0844a1cacf9d48ad63340a5c6054b85ce1fdffa94705244c69d
+  Records: 12  knowledge artifacts: 7  engines: [A, B, C, D]
+  Snapshot checksum: 9d663f17dd5de8de19f6384e49119a5600495651b1bd9e73a87191f4749f3e19
+  Ranking criteria embedded: yes (RANKING_CRITERIA vN/A)
+
+--- KNOWLEDGE vs ENGINE CONTRIBUTION ---
+  Ranking inputs: 4 engine source(s), 7 knowledge source(s), 1 other
+  Top-ranked source kind: expectancy:ALL
+  Knowledge contribution: 7 artifact-backed record(s) in ranking (versions: {"confidence/history":317,"config/history":374,"engines/statistics":364,"expectancy/history":317,"experiments/metadata":374,"market/fingerprints":374,"patterns/validated":367})
+  Engine contribution: 4 live engine opinion(s); decided 4 of 4
+
+--- FINAL REASONING ---
+  consensus=NO_TRADE (3/4 decided agree, 75%); confidence=MEDIUM; top=[expectancy:ALL, engine:C, knowledge:config/history]
+
+  [status] running=true (SELECTED_ENGINE flag gates background refresh only)
+  [status] ring 200/200 cached contexts, builds 15545, last build 2026-08-03T11:19:37.513Z
+  [status] knowledge domains visible: [confidence, config, engines, expectancy, experiments, market, patterns]  knowledge version 374
+
+==================================================
+SELECTED ADVISOR ANALYSIS
+==================================================
+
+  Mode: OBSERVATIONAL ONLY — opinions recorded strictly AFTER each Live Bot decision; the advisor never influences trading.
+  Advisor enabled (SELECTED_ADVISOR): true  observed opens: 89  full advisories: 89  stubs: 0  swallowed errors: 0
+
+--- STATUS BREAKDOWN ---
+  OK (opinion attached): 89   NOT_AVAILABLE (no DecisionContext): 0   ERROR: 0   (window: last 89)
+
+--- CONFIDENCE DISTRIBUTION ---
+  HIGH: 16   MEDIUM: 7   LOW: 0
+
+--- SELECTED DECISIONS ---
+  TRADE: 1   NO_TRADE: 18   SPLIT: 4   ABSTAIN: 66
+
+--- AGREEMENT WITH LIVE BOT ---
+  1/19 decided opinions agreed with the Live Bot (5.3%).
+
+--- AVERAGE CONSENSUS ---
+  Average agreementScore: 78.3% across 23 opinion(s).
+
+==================================================
+PIPELINE HEALTH
+==================================================
+
+
+--- INGESTION (LIVE SIGNAL PIPELINE) ---
+  Signals detected: 50000  reached gate: 8428  trades opened: 618  closed: 521
+  Outcomes: 125W / 336L / 60BE
+  Dominant blocker: spread (50000)  terminal: N/A
+  Silent leakage: -139579
+
+--- SHADOW / RESEARCH STAGE ---
+  Lab comparisons: 553  research signals: 553  evals: 2212  outcomes: 516
+  Research reconciler enabled (SHADOW_LAB_RESEARCH): true
+
+--- KNOWLEDGE STAGE ---
+  Builder enabled (KNOWLEDGE_LAYER): true  active artifacts: 7  snapshots: 374
+
+--- SELECTED STAGE ---
+  Background refresh (SELECTED_ENGINE): true  builds: 15545  context available: yes
+
+--- TELEMETRY & PERSISTENCE ---
+  DB backend: postgresql (persistent: true)
+  Event counts: {"trade_open":0,"trade_close":"521","trade_state_snapshot":"5488","shadowm_open":"554","shadowm_close":"516","shadowm_cursor":"6585","shadow_mode_change":"0","shadow_gate_eval":"2449","shadow_gate_block":"0","lab_comparison":"553"}
+  Shadow mode: OBSERVE  live open trades: 0
+  Memory integration: {"ok":true,"flagEnabled":true,"enabled":true,"ready":true,"active":true,"hasLock":false,"shuttingDown":false,"bootId":"1:2026-07-31T10:04:36.878Z","counters":{"eventsRecorded":161,"eventsDeduped":0,"writeErrors":0,"periodicRuns":0,"periodicErrors":0},"inflight":0,"lastRecovery":null,"lastError":null,"schema":{"ok":true,"applied":[],"skipped":["001_shadow_os_v2_schema.sql","002_runtime_domain_history.sql","003_trade_intent_v2.sql","004_memory_foundation.sql","005_shadowlab_foundation.sql","006_knowledge_foundation.sql"]}}
+
+--- POLLING & CACHE ---
+  Shadow M poll: event-driven cursor (see healthz shadowM: {"tradesObserved":516})
+  Knowledge builder poll: 15 min (unref'd), enabled=true
+  Selected Engine poll: unref'd background refresh, running=true
+  Selected ring cache: 200/200
+
+--- EXPORT STAGE (THIS REPORT) ---
+  Endpoints fetched: 34  failed: 0
+  Cumulative fetch time: 320138ms
+  Slowest endpoints: /api/pipeline-audit (302552ms), /api/healthz/persistence (8801ms), /api/shadow/status (1181ms), /api/knowledge/artifacts/expectancy/history (576ms), /api/knowledge/artifacts/confidence/history (564ms)
+
+--- FAILURES ---
+  none
+
+--- WARNINGS ---
+  [INFO] (SAFE) 181151 total pre-filter blocks confirms bot IS running and evaluating signals. Dominant blocker: spread (50000).
+  [INFO] (SAFE) OANDA-side closes (SL/TP/manual/margin) are captured by the telemetry reconciler (Sprint 7.2) as synthetic trade_close events. Reconciler: credsPresent=true polls=4406 nativeMatched=111 syntheticWritten=17. See /api/telemetry/health.
+  [INFO] (SAFE) open_trade_block, candle_block events are newly added in this build. They were previously silent — will appear in future runs after Railway redeploys.
+
+==================================================
+TELEMETRY HEALTH
+==================================================
+
+
+--- CLOSE-CAPTURE COMPLETENESS ---
+  Expected trade closes: 521
+  Captured trade closes: 521  (native software exits: 471, synthetic via OANDA reconciler: 50)
+  Missing trade closes:  0
+  Completeness:          100%
+  Synthetic closes by reason:
+    STOP LOSS (OANDA): 50
+
+--- RECONCILER (TELEMETRY_RECONCILER) ---
+  Flag: ON  running: true  OANDA creds: true  polls: 4406
+  Native-matched: 111  synthetic written: 17  pending (grace window): 0  reconcile errors: 0
+  Baseline (scope start): 2026-07-15T17:36:58.524Z  last poll: 2026-08-03T11:29:45.564Z  last error: N/A
+  DB pairing: opens=618 closes=521 live open now=0 unaccounted opens (pre-7.2 history)=97
+
+==================================================
+AI SUMMARY
+==================================================
+
+(Deterministic rule-based synthesis — no external AI calls. Compare-to-previous uses the last report generated in this browser.)
+
+--- WHAT WORKS WELL ---
+  Knowledge Layer holds 7 active versioned artifact(s) with provenance and content-only checksums.
+  Selected Engine produces reproducible, checksummed evidence traces — decisions are fully auditable.
+  PostgreSQL persistence is active — trading knowledge survives redeploys (sacred constraint holds).
+
+--- DEGRADED SINCE PREVIOUS REPORT ---
+  No degradation detected vs previous report (2026-07-31T17:16:29.489Z).
+
+--- BEST DEVELOPING SHADOW ---
+  Engine C — KNN Memory — rank #1, virtual expectancy -1.24p, WR 18.8%.
+
+--- KNOWLEDGE LAYER VALUE ---
+  7 active artifact(s) across domains [confidence, config, engines, expectancy, experiments, market, patterns].
+  Manifest evolved since previous snapshot (artifact delta +0) — knowledge is actively accruing.
+  No validated patterns yet — knowledge is accruing but below the validation sample threshold.
+  Verdict: YES — the layer adds measurable value.
+
+--- SELECTED ENGINE SANITY ---
+  Consensus NO_TRADE with confidence tier MEDIUM — reason: consensus=NO_TRADE (3/4 decided agree, 75%); confidence=MEDIUM; top=[expectancy:ALL, engine:C, knowledge:config/history]
+  Every decision carries a reproducible evidence trace — sanity is verifiable, not asserted.
+  Verdict: decisions are reasoned, read-only, and never influence trading (by design).
+
+--- WOULD SELECTED HAVE HELPED? ---
+  Basis: 5 REAL executed & closed trade(s) with a Selected opinion — retrospective filter only, no simulated entries.
+  Losses where Selected said NO_TRADE: 0/2 (0.0%) — of which HIGH confidence: 0
+  Profits that would have been rejected (WIN but Selected said NO_TRADE): 0/2
+  Potential Win Rate impact (same trades, NO_TRADE-flagged removed): 50.0% -> 50.0% (+0.0 pp)
+  Potential Expectancy impact (avg pips/trade): -0.24 -> -0.24 (+0.00)
+  Verdict: NEUTRAL — Selected agreed with every executed trade in this window.
+
+--- NEXT SPRINT RECOMMENDATIONS ---
+  1. Investigate engine disagreement — caution-flag rate 69.4% exceeds 30%.
+  2. Proceed with Sprint 7 (RecoveryManager + ValidationManager) — the next planned SHADOW OS v2 milestone.
+
+==================================================
+END OF REPORT — AI COMPLETE ANALYSIS REPORT v2
+==================================================
