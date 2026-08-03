@@ -3740,20 +3740,25 @@ function selFmtNum(n,dp){
   if(n===null||n===undefined) return "—";
   const v=Number(n); return Number.isFinite(v)? v.toFixed(dp==null?2:dp):"—";
 }
+function selObjects(value){
+  return Array.isArray(value) ? value.filter(item => item && typeof item === "object") : [];
+}
 function SelectedTab({ data }){
   if(!data) return <div className="content"><div style={{color:"#8b949e"}}>Ładowanie…</div></div>;
   const status  = data.status||{};
   const ctx     = data.context||null;
   const diagnostics = {...(status.diagnostics||{}), ...(data.contextDiagnostics||{})};
   const enabled = status.selectedEnabled;
-  const engines = status.engines||[];
+  const engines = selObjects(status.engines);
   const tel     = status.telemetry||{};
   const cons    = ctx ? ctx.consensus       : tel.consensus;
   const agree   = ctx ? ctx.agreementScore  : tel.agreementScore;
   const disagr  = ctx ? ctx.disagreementScore : tel.disagreementScore;
   const conf    = ctx && ctx.confidence ? ctx.confidence.tier : tel.confidence;
-  const opinions= ctx && ctx.engines ? Object.values(ctx.engines) : [];
-  const ranking = ctx && ctx.ranking  ? ctx.ranking : [];
+  const opinions= ctx && ctx.engines && typeof ctx.engines === "object"
+    ? Object.values(ctx.engines).filter(item => item && typeof item === "object")
+    : [];
+  const ranking = ctx ? selObjects(ctx.ranking) : [];
   const meta    = ctx ? (ctx.metadata||{}) : {};
   return (
     <div className="content">
