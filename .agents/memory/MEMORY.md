@@ -8,3 +8,4 @@
 - [Module status DB binding](module-status-db-binding.md) — db adapter parameters are variadic; passing [] as one parameter makes guarded dashboard counters appear as zero.
 - [Live AI cooperation policy](live-ai-cooperation-policy.md) — Selected Engine may block only HIGH-confidence NO_TRADE; Shadow M advises while Live Exit remains authoritative.
 - [Selected signal evaluation fidelity](selected-signal-evaluation-fidelity.md) — cooperative contexts must only consume Shadow LAB evaluations with the same signalId; never borrow latest-per-engine rows.
+- [Selected producer/consumer contract](selected-producer-consumer-contract.md) — signal_detected notifications and ShadowLab evaluation triggers must cover the same lifecycle, or Selected Engine will correctly show missing evidence.
