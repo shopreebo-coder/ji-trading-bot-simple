@@ -42,10 +42,10 @@ const RISK_PERCENT     = parseFloat(process.env.RISK_PERCENT || "0.01");
 const MAX_OPEN_TRADES  = parseInt(process.env.MAX_OPEN_TRADES || "2");
 const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
 const MIN_STRENGTH     = parseFloat(process.env.MIN_STRENGTH    || "0.08");   // Task 2: relaxed from 0.12
-const TRAILING_MIN_AGE_SECONDS       = parseFloat(process.env.TRAILING_MIN_AGE_SECONDS);
-const TRAILING_MIN_PROFIT_PIPS       = parseFloat(process.env.TRAILING_MIN_PROFIT_PIPS);
-const TRAILING_MIN_SL_IMPROVEMENT_PIPS = parseFloat(process.env.TRAILING_MIN_SL_IMPROVEMENT_PIPS);
-const TRAILING_SL_BUFFER_PIPS        = parseFloat(process.env.TRAILING_SL_BUFFER_PIPS);
+const TRAILING_MIN_AGE_SECONDS       = parseFloat(process.env.TRAILING_MIN_AGE_SECONDS || "60");
+const TRAILING_MIN_PROFIT_PIPS       = parseFloat(process.env.TRAILING_MIN_PROFIT_PIPS || "2.0");
+const TRAILING_MIN_SL_IMPROVEMENT_PIPS = parseFloat(process.env.TRAILING_MIN_SL_IMPROVEMENT_PIPS || "0.5");
+const TRAILING_SL_BUFFER_PIPS        = parseFloat(process.env.TRAILING_SL_BUFFER_PIPS || "0.2");
 
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
@@ -111,6 +111,13 @@ const stats = {
 const tradePeak      = {};
 const tradeBreakEven = {};
 const tradeTrailingActivated = {};
+const trailingTelemetryCounters = {
+  trailingActivated:       0,
+  trailingMoved:            0,
+  trailingBlockedAge:       0,
+  trailingBlockedProfit:    0,
+  trailingBlockedImprovement: 0,
+};
 
 // ── MFE TIME SNAPSHOTS — TELEMETRY ONLY ──────────────────────────────────────
 // Peak pip value captured at 30 s, 60 s, 120 s after entry.
@@ -1238,8 +1245,23 @@ async function manageTrades() {
       }
 
       // ── TRAILING STOP ─────────────────────────────────────────────────────
+      const trailingWasActivated = !!tradeTrailingActivated[trade.id];
+      const trailingBlockedByAge =
+        !trailingWasActivated &&
+        elapsedMs < TRAILING_MIN_AGE_SECONDS * 1000;
+      const trailingBlockedByProfit =
+        !trailingWasActivated &&
+        !trailingBlockedByAge &&
+        pips < TRAILING_MIN_PROFIT_PIPS;
+
+      if (trailingBlockedByAge) {
+        trailingTelemetryCounters.trailingBlockedAge++;
+      } else if (trailingBlockedByProfit) {
+        trailingTelemetryCounters.trailingBlockedProfit++;
+      }
+
       const trailingEligible =
-        tradeTrailingActivated[trade.id] ||
+        trailingWasActivated ||
         (
           elapsedMs >= TRAILING_MIN_AGE_SECONDS * 1000 &&
           pips >= TRAILING_MIN_PROFIT_PIPS
@@ -1258,7 +1280,7 @@ async function manageTrades() {
             ? (newSL - currentSL) / pipMult
             : (currentSL - newSL) / pipMult;
         const shouldMoveSL =
-          improvementPips > TRAILING_MIN_SL_IMPROVEMENT_PIPS;
+          improvementPips >= TRAILING_MIN_SL_IMPROVEMENT_PIPS;
 
         if (shouldMoveSL) {
           await axios.put(
@@ -1266,8 +1288,14 @@ async function manageTrades() {
             { stopLoss: { price: newSL.toFixed(5) } },
             { headers },
           );
+          if (!trailingWasActivated) {
+            trailingTelemetryCounters.trailingActivated++;
+          }
+          trailingTelemetryCounters.trailingMoved++;
           tradeTrailingActivated[trade.id] = true;
           console.log(`Trailing SL -> ${symbol}`);
+        } else {
+          trailingTelemetryCounters.trailingBlockedImprovement++;
         }
       }
 
@@ -2506,6 +2534,15 @@ function startBlockSummaryPrinter() {
       );
     }
     console.log("======================================================");
+
+    // ── TRAILING STOP TELEMETRY — READ-ONLY ─────────────────────────────────
+    console.log("===== TRAILING STOP TELEMETRY =====");
+    console.log(`  trailingActivated:         ${trailingTelemetryCounters.trailingActivated}`);
+    console.log(`  trailingMoved:             ${trailingTelemetryCounters.trailingMoved}`);
+    console.log(`  trailingBlockedAge:        ${trailingTelemetryCounters.trailingBlockedAge}`);
+    console.log(`  trailingBlockedProfit:     ${trailingTelemetryCounters.trailingBlockedProfit}`);
+    console.log(`  trailingBlockedImprovement: ${trailingTelemetryCounters.trailingBlockedImprovement}`);
+    console.log("===================================");
 
     // ── BLOCKED WINNERS (ALMOST TRADE 15-min OUTCOMES) ───────────────────────
     // Shows which failing gate condition most often precedes a favorable market move.
