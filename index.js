@@ -42,6 +42,16 @@ const RISK_PERCENT     = parseFloat(process.env.RISK_PERCENT || "0.01");
 const MAX_OPEN_TRADES  = parseInt(process.env.MAX_OPEN_TRADES || "2");
 const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
 const MIN_STRENGTH     = parseFloat(process.env.MIN_STRENGTH    || "0.08");   // Task 2: relaxed from 0.12
+const TRAILING_MIN_AGE_SECONDS       = parseFloat(process.env.TRAILING_MIN_AGE_SECONDS);
+const TRAILING_MIN_PROFIT_PIPS       = parseFloat(process.env.TRAILING_MIN_PROFIT_PIPS);
+const TRAILING_MIN_IMPROVEMENT_PIPS  = parseFloat(process.env.TRAILING_MIN_IMPROVEMENT_PIPS);
+const TRAILING_SL_BUFFER_PIPS        = parseFloat(process.env.TRAILING_SL_BUFFER_PIPS);
+const TRAILING_CONFIG_VALID = [
+  TRAILING_MIN_AGE_SECONDS,
+  TRAILING_MIN_PROFIT_PIPS,
+  TRAILING_MIN_IMPROVEMENT_PIPS,
+  TRAILING_SL_BUFFER_PIPS,
+].every(Number.isFinite);
 
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
@@ -106,6 +116,7 @@ const stats = {
 
 const tradePeak      = {};
 const tradeBreakEven = {};
+const tradeTrailingActivated = {};
 
 // ── MFE TIME SNAPSHOTS — TELEMETRY ONLY ──────────────────────────────────────
 // Peak pip value captured at 30 s, 60 s, 120 s after entry.
@@ -1130,6 +1141,7 @@ async function manageTrades() {
       function cleanupTradeState() {
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
+        delete tradeTrailingActivated[trade.id];
         delete tradeMAE[trade.id];
         delete tradeTimeToProfit[trade.id];
         delete tradeTimeToDd[trade.id];
@@ -1232,18 +1244,26 @@ async function manageTrades() {
       }
 
       // ── TRAILING STOP ─────────────────────────────────────────────────────
-      if (pips >= 10) {
+      if (
+        TRAILING_CONFIG_VALID &&
+        !tradeTrailingActivated[trade.id] &&
+        elapsedMs >= TRAILING_MIN_AGE_SECONDS * 1000 &&
+        pips >= TRAILING_MIN_PROFIT_PIPS
+      ) {
         const trailingDistance = 6;
         const newSL =
           side === "buy"
-            ? current - trailingDistance * pipMult
-            : current + trailingDistance * pipMult;
+            ? current - (trailingDistance + TRAILING_SL_BUFFER_PIPS) * pipMult
+            : current + (trailingDistance + TRAILING_SL_BUFFER_PIPS) * pipMult;
 
         const currentSL = parseFloat(trade.stopLossOrder?.price || 0);
+        const improvementPips = currentSL === 0
+          ? Infinity
+          : side === "buy"
+            ? (newSL - currentSL) / pipMult
+            : (currentSL - newSL) / pipMult;
         const shouldMoveSL =
-          side === "buy"
-            ? newSL > currentSL
-            : newSL < currentSL || currentSL === 0;
+          improvementPips > TRAILING_MIN_IMPROVEMENT_PIPS;
 
         if (shouldMoveSL) {
           await axios.put(
@@ -1251,6 +1271,7 @@ async function manageTrades() {
             { stopLoss: { price: newSL.toFixed(5) } },
             { headers },
           );
+          tradeTrailingActivated[trade.id] = true;
           console.log(`Trailing SL -> ${symbol}`);
         }
       }
