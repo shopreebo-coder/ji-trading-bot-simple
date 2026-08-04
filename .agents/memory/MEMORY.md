@@ -10,3 +10,4 @@
 - [Selected signal evaluation fidelity](selected-signal-evaluation-fidelity.md) — cooperative contexts must only consume Shadow LAB evaluations with the same signalId; never borrow latest-per-engine rows.
 - [Selected producer/consumer contract](selected-producer-consumer-contract.md) — signal_detected notifications and ShadowLab evaluation triggers must cover the same lifecycle, or Selected Engine will correctly show missing evidence.
 - [Railway versus workspace runtime](railway-vs-workspace-runtime.md) — Railway-only secrets are not inherited by the local Replit workflow; identify the runtime before diagnosing missing broker configuration.
+- [Broker-confirmed open events](broker-confirmed-open-events.md) — persist trade_open only after broker acknowledgement and await the write, preventing real orders from becoming telemetry or Shadow gaps.

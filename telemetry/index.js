@@ -50,7 +50,7 @@ const _INSERT_SQL =
   }
 })();
 
-// ── logEvent — fire-and-forget (sync call site, async write + emit) ───────────
+// ── logEvent — async DB write + emitter; callers may await persistence ─────────
 function logEvent(event) {
   const ts     = event.timestamp || new Date().toISOString();
   const botId  = event.botId  || BOT_ID;
@@ -58,7 +58,7 @@ function logEvent(event) {
   const symbol = event.symbol || null;
   const data   = JSON.stringify({ ...event, ts, botId });
 
-  db.run(_INSERT_SQL, ts, botId, type, symbol, data)
+  return db.run(_INSERT_SQL, ts, botId, type, symbol, data)
     .then(info => {
       const row = {
         id: Number(info.lastInsertRowid),
@@ -66,8 +66,12 @@ function logEvent(event) {
         data: { ...event, ts, botId },
       };
       emitter.emit("event", row);
+      return true;
     })
-    .catch(err => console.error("[TELEMETRY] DB write error:", err.message));
+    .catch(err => {
+      console.error("[TELEMETRY] DB write error:", err.message);
+      return false;
+    });
 }
 
 // ── getLastId ─────────────────────────────────────────────────────────────────

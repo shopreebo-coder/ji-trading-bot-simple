@@ -773,7 +773,7 @@ async function placeTrade(symbol, side, units, slPips, tpPips) {
   try {
     if (tradeLocks[symbol]) {
       console.log(`LOCK ACTIVE -> ${symbol}`);
-      return;
+      return false;
     }
 
     tradeLocks[symbol] = true;
@@ -782,7 +782,7 @@ async function placeTrade(symbol, side, units, slPips, tpPips) {
     if (existingTrade) {
       console.log(`EXISTING TRADE -> ${symbol}`);
       tradeLocks[symbol] = false;
-      return;
+      return false;
     }
 
     const priceData = await axios.get(
@@ -818,8 +818,10 @@ async function placeTrade(symbol, side, units, slPips, tpPips) {
     dailyTrades++;
 
     await sleep(5000);
+    return true;
   } catch (err) {
     console.log("Trade error", err.response?.data || err.message);
+    return false;
   } finally {
     tradeLocks[symbol] = false;
   }
@@ -2126,7 +2128,10 @@ async function strategy(symbol) {
         side:           "buy",
       };
       lastTradeDirection[symbol] = "buy";                          // TELEMETRY ONLY — for cooldown analysis
-      logEvent({
+      const buyPlaced = await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
+      if (!buyPlaced) return;
+
+      await logEvent({
         type: "trade_open",
         signalId, symbol, session,
         side: "buy",
@@ -2143,7 +2148,6 @@ async function strategy(symbol) {
         conditionMap:   _buyCondMap,      // QUALITY TELEMETRY — full per-condition state for analysis
       });
 
-      await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
       preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY
     }
 
@@ -2215,7 +2219,10 @@ async function strategy(symbol) {
         side:           "sell",
       };
       lastTradeDirection[symbol] = "sell";                         // TELEMETRY ONLY — for cooldown analysis
-      logEvent({
+      const sellPlaced = await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
+      if (!sellPlaced) return;
+
+      await logEvent({
         type: "trade_open",
         signalId, symbol, session,
         side: "sell",
@@ -2232,7 +2239,6 @@ async function strategy(symbol) {
         conditionMap:   _sellCondMap,     // QUALITY TELEMETRY — full per-condition state for analysis
       });
 
-      await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
       preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY
     }
   } catch (err) {
