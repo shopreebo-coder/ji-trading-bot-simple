@@ -64,6 +64,10 @@ externalPort = 3001
 
 [userenv.shared]
 MAX_OPEN_TRADES = "3"
+TRAILING_MIN_AGE_SECONDS = "60"
+TRAILING_MIN_PROFIT_PIPS = "2.0"
+TRAILING_MIN_SL_IMPROVEMENT_PIPS = "0.5"
+TRAILING_SL_BUFFER_PIPS = "0.2"
 
 [nix]
 channel = "stable-25_05"

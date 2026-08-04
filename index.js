@@ -44,14 +44,8 @@ const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
 const MIN_STRENGTH     = parseFloat(process.env.MIN_STRENGTH    || "0.08");   // Task 2: relaxed from 0.12
 const TRAILING_MIN_AGE_SECONDS       = parseFloat(process.env.TRAILING_MIN_AGE_SECONDS);
 const TRAILING_MIN_PROFIT_PIPS       = parseFloat(process.env.TRAILING_MIN_PROFIT_PIPS);
-const TRAILING_MIN_IMPROVEMENT_PIPS  = parseFloat(process.env.TRAILING_MIN_IMPROVEMENT_PIPS);
+const TRAILING_MIN_SL_IMPROVEMENT_PIPS = parseFloat(process.env.TRAILING_MIN_SL_IMPROVEMENT_PIPS);
 const TRAILING_SL_BUFFER_PIPS        = parseFloat(process.env.TRAILING_SL_BUFFER_PIPS);
-const TRAILING_CONFIG_VALID = [
-  TRAILING_MIN_AGE_SECONDS,
-  TRAILING_MIN_PROFIT_PIPS,
-  TRAILING_MIN_IMPROVEMENT_PIPS,
-  TRAILING_SL_BUFFER_PIPS,
-].every(Number.isFinite);
 
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
@@ -1244,12 +1238,13 @@ async function manageTrades() {
       }
 
       // ── TRAILING STOP ─────────────────────────────────────────────────────
-      if (
-        TRAILING_CONFIG_VALID &&
-        !tradeTrailingActivated[trade.id] &&
-        elapsedMs >= TRAILING_MIN_AGE_SECONDS * 1000 &&
-        pips >= TRAILING_MIN_PROFIT_PIPS
-      ) {
+      const trailingEligible =
+        tradeTrailingActivated[trade.id] ||
+        (
+          elapsedMs >= TRAILING_MIN_AGE_SECONDS * 1000 &&
+          pips >= TRAILING_MIN_PROFIT_PIPS
+        );
+      if (trailingEligible) {
         const trailingDistance = 6;
         const newSL =
           side === "buy"
@@ -1263,7 +1258,7 @@ async function manageTrades() {
             ? (newSL - currentSL) / pipMult
             : (currentSL - newSL) / pipMult;
         const shouldMoveSL =
-          improvementPips > TRAILING_MIN_IMPROVEMENT_PIPS;
+          improvementPips > TRAILING_MIN_SL_IMPROVEMENT_PIPS;
 
         if (shouldMoveSL) {
           await axios.put(
