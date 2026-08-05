@@ -200,6 +200,31 @@ class ModuleStatusManager {
       alsoVisibleIn: "ANALIZA",
     });
 
+    {
+      const evals = ev.exit_engine_x_evaluation || 0;
+      const votes = ev.exit_engine_x_vote || 0;
+      const decisions = ev.exit_engine_x_decision || 0;
+      const closes = ev.exit_engine_x_close || 0;
+      modules.push({
+        id: "exit-engine-x", name: "Exit Engine X (Shadow Intelligence)", tier: "INTELLIGENCE",
+        status: evals > 0 ? STATUS.OBSERVING : STATUS.INSTALLED,
+        connected: true, collectsData: true, influencesLive: false,
+        observations: evals,
+        stats: {
+          evaluations: evals,
+          votes,
+          decisions,
+          closedTrades: closes,
+          mode: "SHADOW",
+          advisoryOnly: true,
+        },
+        reason: evals > 0
+          ? "Shadow-only — recommendations are recorded; Live Exit remains authoritative"
+          : "Waiting for first evaluated live trade",
+        alsoVisibleIn: "ANALIZA",
+      });
+    }
+
     modules.push({
       id: "shadow-gate", name: "Shadow Gate", tier: "LIVE TRADING",
       status: gateMode ? STATUS.ACTIVE : STATUS.OBSERVING,

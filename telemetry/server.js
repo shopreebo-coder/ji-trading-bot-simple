@@ -3176,6 +3176,8 @@ app.get("/api/healthz/persistence", async (req, res) => {
       "shadowm_open", "shadowm_close", "shadowm_cursor",
       "shadow_mode_change", "shadow_gate_eval", "shadow_gate_block",
       "lab_comparison",
+      "exit_engine_x_open", "exit_engine_x_evaluation", "exit_engine_x_vote",
+      "exit_engine_x_decision", "exit_engine_x_lifecycle", "exit_engine_x_close",
     ];
     const counts = {};
     for (const t of types) {

@@ -1182,6 +1182,7 @@ async function manageTrades() {
           mfe: peak,
           mae: tradeMAE[trade.id] ?? 0,
           minutesOpen,
+          liveAction: _liveExitNatural,
           reason,
         }).catch((err) => {
           console.log(`[EXIT ENGINE X] Close evaluation skipped: ${err.message}`);

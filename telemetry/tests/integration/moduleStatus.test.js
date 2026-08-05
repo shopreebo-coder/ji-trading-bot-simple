@@ -50,12 +50,12 @@ test("registry covers all modules with valid statuses and full card contract", a
   const out = await makeManager().build();
 
   assert.ok(Array.isArray(out.modules), "modules array");
-  assert.ok(out.modules.length >= 21, `expected >=21 modules, got ${out.modules.length}`);
+  assert.ok(out.modules.length >= 22, `expected >=22 modules, got ${out.modules.length}`);
   assert.ok(out.generated, "generated timestamp");
   assert.ok(out.rule && out.rule.includes("no hidden modules"), "project rule string");
 
   const requiredIds = [
-    "live-engine", "exit-engine", "shadow-gate",
+    "live-engine", "exit-engine", "exit-engine-x", "shadow-gate",
     "shadow-a", "shadow-b", "shadow-c", "shadow-d", "shadow-m",
     "shadowlab-research", "knowledge-layer",
     "selected-engine", "selected-advisor", "ai-analysis",

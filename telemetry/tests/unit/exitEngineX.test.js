@@ -9,6 +9,10 @@ const {
   decideExit,
   calculateExitIQ,
   stageFor,
+  calculateKnowledgeConfidence,
+  calculateContextMemory,
+  calculateRegretMemory,
+  compareWithLiveExit,
   ExitEngineX,
 } = require("../../exit-engine-x");
 
@@ -58,6 +62,40 @@ test("decision engine is the only place that resolves module votes", () => {
     { decision: "REDUCE" },
     { decision: "HOLD" },
   ]).finalDecision, "REDUCE");
+});
+
+test("knowledge confidence is UNKNOWN below the minimum sample and never blocks", () => {
+  assert.equal(calculateKnowledgeConfidence({ sampleSize: 4, matched: true }).level, "UNKNOWN");
+  assert.equal(calculateKnowledgeConfidence({ sampleSize: 30, matched: true, artifactConfidence: 0.8 }).level, "LOW");
+  assert.equal(calculateKnowledgeConfidence({ sampleSize: 300, matched: true, artifactConfidence: 0.8 }).level, "HIGH");
+});
+
+test("context and regret memory produce bounded, auditable scores", () => {
+  const context = calculateContextMemory({
+    context: {
+      symbol: "EUR_USD",
+      side: "buy",
+      session: "LONDON",
+      trendBucket: "STRONG_TREND",
+      volatilityBucket: "MEDIUM_VOL",
+      fingerprint: "fp-a",
+      atrPips: 5,
+      spreadPips: 0.4,
+    },
+    similarity: { topScore: 0.8 },
+    knowledge: { matchedFingerprint: true },
+  });
+  const regret = calculateRegretMemory({
+    history: [{ mfe: 8, profitPips: 4 }],
+    mfe: 6,
+    pips: 2,
+  });
+  assert.ok(context.score >= 0 && context.score <= 100);
+  assert.equal(context.matchedFingerprint, true);
+  assert.equal(regret.currentRegret, 4);
+  assert.equal(regret.averageRegret, 4);
+  assert.equal(compareWithLiveExit("CLOSE", "REQUEST_CLOSE").same, true);
+  assert.equal(compareWithLiveExit("HOLD", "REQUEST_CLOSE").difference, "CLOSE_VS_HOLD");
 });
 
 test("lifecycle and Exit IQ are deterministic", () => {
@@ -117,6 +155,10 @@ test("state is idempotent and knowledge/history are scoped to the exact signal",
   });
   assert.equal(first.knowledgeResult.matchedFingerprint, true);
   assert.equal(second.knowledgeResult.matchedFingerprint, false);
+  assert.equal(first.knowledgeConfidence.level, "UNKNOWN");
+  assert.equal(first.votes.length, 11);
+  assert.ok(first.votes.every((vote) => ["HOLD", "REDUCE", "CLOSE"].includes(vote.decision)));
+  assert.equal(first.liveExitComparison.difference, "SAME");
 
   await engine.onTradeClose({ signalId: "signal-a", actualExitPips: 2, mfe: 3 });
   await engine.onTradeClose({ signalId: "signal-a", actualExitPips: 2, mfe: 3 });
