@@ -2,15 +2,21 @@ require("dotenv").config();
 const axios  = require("axios");
 const crypto = require("crypto"); // signalId generation — TELEMETRY ONLY
 const { CooperativeManager } = require("./telemetry/managers/CooperativeManager");
+const { ExitEngineX } = require("./telemetry/exit-engine-x");
 const cooperativeManager = new CooperativeManager();
 
 // Telemetry — loaded with fallback so bot works even without better-sqlite3
 let logEvent = () => {};
+let telemetryDb = null;
 try {
-  logEvent = require("./telemetry").logEvent;
+  const telemetry = require("./telemetry");
+  logEvent = telemetry.logEvent;
+  telemetryDb = telemetry.db;
 } catch (e) {
   console.error("[TELEMETRY] Not loaded:", e.message);
 }
+
+const exitEngineX = new ExitEngineX({ db: telemetryDb, logEvent });
 
 // Shadow Gate — Snowball Lab Meta D integration v40.1
 // OBSERVE mode by default (data collection, never blocks). Fail-safe: always-allow on error.
@@ -1009,6 +1015,33 @@ async function manageTrades() {
         liveEngineProcessed: true,
       });
 
+      const exitEngineEntry = tradeEntrySnapshot[trade.id] || {};
+      void exitEngineX.evaluate({
+        tradeId: trade.id,
+        signalId: tradeSignalId[trade.id] || null,
+        symbol,
+        side,
+        entryTime: trade.openTime || null,
+        pips,
+        mfe: peak,
+        mae: tradeMAE[trade.id] ?? 0,
+        minutesOpen,
+        liveAction: _liveExitNatural,
+        atrPips: exitEngineEntry.atrPips ?? null,
+        spreadPips: exitEngineEntry.spread ?? null,
+        session: exitEngineEntry.session || classifySession(new Date().getUTCHours()),
+        trendBucket: exitEngineEntry.trendBucket ?? null,
+        volatilityBucket: exitEngineEntry.volatilityBucket ?? null,
+        fingerprint: exitEngineEntry.fingerprint ?? null,
+        trendStrength: exitEngineEntry.trendStrength ?? exitEngineEntry.emaDistance ?? 0,
+        entryQuality: tradeEntryMeta[trade.id]?.passCount
+          ? tradeEntryMeta[trade.id].passCount / 9
+          : null,
+        passCount: tradeEntryMeta[trade.id]?.passCount ?? null,
+      }).catch((err) => {
+        console.log(`[EXIT ENGINE X] Evaluation skipped: ${err.message}`);
+      });
+
       // ── POST-ENTRY FAILURE DETECTION — TELEMETRY ONLY ────────────────────
       // Fires once if trade drops >1.5 pips adverse within first 3 minutes.
       if (minutesOpen < 3 && pips < -1.5 && !tradePostEntryLogged[trade.id]) {
@@ -1139,6 +1172,22 @@ async function manageTrades() {
         };
       }
 
+      function notifyExitEngineXClose(reason) {
+        void exitEngineX.onTradeClose({
+          tradeId: trade.id,
+          signalId: tradeSignalId[trade.id] || null,
+          symbol,
+          side,
+          actualExitPips: pips,
+          mfe: peak,
+          mae: tradeMAE[trade.id] ?? 0,
+          minutesOpen,
+          reason,
+        }).catch((err) => {
+          console.log(`[EXIT ENGINE X] Close evaluation skipped: ${err.message}`);
+        });
+      }
+
       function cleanupTradeState() {
         delete tradePeak[trade.id];
         delete tradeBreakEven[trade.id];
@@ -1177,6 +1226,7 @@ async function manageTrades() {
 
         logEvent(buildClosePayload(reason));
         recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+        notifyExitEngineXClose(reason);
 
         await closeTrade(trade.id);
         cleanupTradeState();
@@ -1199,6 +1249,7 @@ async function manageTrades() {
 
         logEvent(buildClosePayload(reason));
         recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+        notifyExitEngineXClose(reason);
 
         await closeTrade(trade.id);
         cleanupTradeState();
@@ -1359,6 +1410,7 @@ async function manageTrades() {
           stats.totalDurationMin += minutesOpen;
           logEvent(buildClosePayload(reason));
           recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+          notifyExitEngineXClose(reason);
           await closeTrade(trade.id);
           cleanupTradeState();
           cooldownMap[symbol] = Date.now();
@@ -1375,6 +1427,7 @@ async function manageTrades() {
 
         logEvent(buildClosePayload(reason));
         recordClosedTrade({ win: false, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+        notifyExitEngineXClose(reason);
 
         await closeTrade(trade.id);
         stats.losses++;
@@ -1415,6 +1468,7 @@ async function manageTrades() {
 
         logEvent(buildClosePayload(reason));
         recordClosedTrade({ win: pips > 1.0, pips, mfe: peak, mae: tradeMAE[trade.id] ?? 0, duration: minutesOpen });
+        notifyExitEngineXClose(reason);
 
         await closeTrade(trade.id);
         stats.totalTrades++;
@@ -2191,6 +2245,22 @@ async function strategy(symbol) {
         passCount:      _buyPassCount,    // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _buyCondMap,      // QUALITY TELEMETRY — full per-condition state for analysis
       });
+      void exitEngineX.onTradeOpen({
+        signalId,
+        symbol,
+        side: "buy",
+        session,
+        atrPips,
+        spreadPips: spread,
+        emaDistance,
+        trendBucket: trendBkt,
+        volatilityBucket: volBkt,
+        fingerprint: _fpHash(_buyFp),
+        entryQuality: _buyPassCount / 9,
+        passCount: _buyPassCount,
+      }).catch((err) => {
+        console.log(`[EXIT ENGINE X] Open evaluation skipped: ${err.message}`);
+      });
 
       preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY
     }
@@ -2281,6 +2351,22 @@ async function strategy(symbol) {
         entryGate:      _entryGate,       // GATE_V3: "HARD" | "RELAXED"
         passCount:      _sellPassCount,   // QUALITY TELEMETRY — # of 9 conditions true at entry
         conditionMap:   _sellCondMap,     // QUALITY TELEMETRY — full per-condition state for analysis
+      });
+      void exitEngineX.onTradeOpen({
+        signalId,
+        symbol,
+        side: "sell",
+        session,
+        atrPips,
+        spreadPips: spread,
+        emaDistance,
+        trendBucket: trendBkt,
+        volatilityBucket: volBkt,
+        fingerprint: _fpHash(_sellFp),
+        entryQuality: _sellPassCount / 9,
+        passCount: _sellPassCount,
+      }).catch((err) => {
+        console.log(`[EXIT ENGINE X] Open evaluation skipped: ${err.message}`);
       });
 
       preFilterCounters.entry_allowed++;                                      // TELEMETRY ONLY

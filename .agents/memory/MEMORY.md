@@ -11,3 +11,4 @@
 - [Selected producer/consumer contract](selected-producer-consumer-contract.md) — signal_detected notifications and ShadowLab evaluation triggers must cover the same lifecycle, or Selected Engine will correctly show missing evidence.
 - [Railway versus workspace runtime](railway-vs-workspace-runtime.md) — Railway-only secrets are not inherited by the local Replit workflow; identify the runtime before diagnosing missing broker configuration.
 - [Broker-confirmed open events](broker-confirmed-open-events.md) — persist trade_open only after broker acknowledgement and await the write, preventing real orders from becoming telemetry or Shadow gaps.
+- [Exit Engine X shadow boundary](exit-engine-x-shadow-boundary.md) — observe and log only; require 300–500 trade validation before any Live Exit influence.
