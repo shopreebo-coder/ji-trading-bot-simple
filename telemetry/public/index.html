@@ -163,7 +163,7 @@ function Header({ botStatus, ts }){
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","SELECTED","MODUŁY","EXPORT"];
+const TABS = ["LIVE","ANALIZA","PIPELINE","WYKRESY","DECYZJE","WZORCE","EXCURSION","INSIGHTS","BLOCKED","FILTERED","LAB","KNOWLEDGE","SELECTED","MODUŁY","Exit Engine X","EXPORT"];
 function Tabs({ active, set }){
   return (
     <div className="tabs">
@@ -260,6 +260,232 @@ function ModulesTab(){
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── EXIT ENGINE X tab — read-only diagnostics over existing telemetry ───────
+const EXIT_ENGINE_X_REFRESH_MS = 30000;
+const EXIT_ENGINE_X_EVENT_FALLBACKS = [
+  "exit_engine_x_open",
+  "exit_engine_x_evaluation",
+  "exit_engine_x_vote",
+  "exit_engine_x_decision",
+  "exit_engine_x_close",
+  "exit_engine_x_lifecycle",
+];
+function exitXAvailable(value){ return value !== null && value !== undefined; }
+function exitXValue(value){
+  if(!exitXAvailable(value)) return "N/A";
+  if(typeof value === "boolean") return value ? "YES" : "NO";
+  if(typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+function ExitXMetric({ label, value }){
+  return (
+    <div className="card" style={{minWidth:170,flex:"1 1 170px"}}>
+      <div className="lbl">{label}</div>
+      <div style={{fontSize:16,fontWeight:700,wordBreak:"break-word"}}>{exitXValue(value)}</div>
+    </div>
+  );
+}
+function ExitXTree({ value, depth=0 }){
+  if(!exitXAvailable(value)) return <span style={{color:"#8b949e"}}>N/A</span>;
+  if(typeof value !== "object") return <span>{exitXValue(value)}</span>;
+  if(Array.isArray(value)){
+    if(value.length===0) return <span style={{color:"#8b949e"}}>N/A</span>;
+    return (
+      <div style={{marginLeft:depth?12:0}}>
+        {value.map((item,i)=>(
+          <div key={i} style={{borderTop:"1px solid #21262d",padding:"5px 0"}}>
+            <span style={{color:"#79c0ff"}}>[{i}]</span>: <ExitXTree value={item} depth={depth+1}/>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const keys = Object.keys(value);
+  if(!keys.length) return <span style={{color:"#8b949e"}}>N/A</span>;
+  return (
+    <div style={{marginLeft:depth?12:0}}>
+      {keys.map(key=>(
+        <div key={key} style={{borderTop:"1px solid #21262d",padding:"5px 0",wordBreak:"break-word"}}>
+          <span style={{color:"#79c0ff"}}>{key}</span>: <ExitXTree value={value[key]} depth={depth+1}/>
+        </div>
+      ))}
+    </div>
+  );
+}
+function ExitXObjectSection({ title, value }){
+  return (
+    <div className="panel">
+      <div className="ph">{title}</div>
+      <div className="pb" style={{maxHeight:"none",padding:"8px 14px",fontSize:12}}>
+        <ExitXTree value={value}/>
+      </div>
+    </div>
+  );
+}
+function ExitXHistory({ title, rows }){
+  const list = Array.isArray(rows) ? rows : [];
+  return (
+    <div className="panel">
+      <div className="ph">{title} <span style={{fontWeight:400}}>{list.length ? `(${list.length})` : "(N/A)"}</span></div>
+      <div className="pb" style={{maxHeight:360,padding:"0 14px"}}>
+        {list.length ? list.map((row,i)=>(
+          <div key={`${row.id||row.eventId||row.ts||"row"}-${i}`} style={{borderBottom:"1px solid #21262d",padding:"8px 0",fontSize:12}}>
+            <div style={{color:"#8b949e",marginBottom:4}}>
+              #{row.id ?? row.eventId ?? "N/A"} · {row.type || "N/A"} · {row.ts || "N/A"}
+            </div>
+            <ExitXTree value={row.data ?? row}/>
+          </div>
+        )) : <div className="empty">N/A</div>}
+      </div>
+    </div>
+  );
+}
+function ExitEngineXTab(){
+  const [data,setData] = useState(null);
+  const [error,setError] = useState(null);
+  useEffect(()=>{
+    let alive = true;
+    const load = async () => {
+      try {
+        const [moduleStatus, persistence, trades, allEvents] = await Promise.all([
+          api("/api/modules/status"),
+          api("/api/healthz/persistence"),
+          api("/api/trades"),
+          api("/api/events?limit=500"),
+        ]);
+        const eventCounts = persistence && persistence.eventCounts && typeof persistence.eventCounts==="object"
+          ? persistence.eventCounts : {};
+        const allExitEvents = Array.isArray(allEvents)
+          ? allEvents.filter(row=>row && String(row.type||"").indexOf("exit_engine_x_")===0)
+          : [];
+        const eventTypes = [
+          ...Object.keys(eventCounts),
+          ...allExitEvents.map(row=>row.type),
+        ]
+          .filter(type=>type.indexOf("exit_engine_x_")===0);
+        const requestedTypes = [...new Set([...EXIT_ENGINE_X_EVENT_FALLBACKS, ...eventTypes])];
+        const eventResults = await Promise.all(requestedTypes.map(async type=>{
+          try {
+            const rows = await api(`/api/events?type=${encodeURIComponent(type)}&limit=100`);
+            return [type, Array.isArray(rows) ? rows : []];
+          } catch(_) {
+            return [type, []];
+          }
+        }));
+        if(!alive) return;
+        const histories = Object.fromEntries(eventResults);
+        for(const type of requestedTypes){
+          if(!histories[type] || !histories[type].length){
+            histories[type] = allExitEvents.filter(row=>row.type===type).slice(0,100);
+          }
+        }
+        const module = Array.isArray(moduleStatus?.modules)
+          ? moduleStatus.modules.find(item=>item && item.id==="exit-engine-x") || null
+          : null;
+        const evaluations = histories.exit_engine_x_evaluation || [];
+        const decisions = histories.exit_engine_x_decision || [];
+        const votes = histories.exit_engine_x_vote || [];
+        const lifecycles = histories.exit_engine_x_lifecycle || [];
+        const activeTrades = Array.isArray(trades)
+          ? trades.filter(trade=>trade && trade.open && !trade.close)
+          : [];
+        const raw = {
+          moduleStatus,
+          exitEngineX: module,
+          persistence,
+          events: histories,
+          activeTrades,
+        };
+        setData({
+          module,
+          persistence,
+          histories,
+          evaluations,
+          decisions,
+          votes,
+          lifecycles,
+          activeTrades,
+          lastEvaluation: evaluations[0] || null,
+          lastDecision: decisions[0] || null,
+          lastLifecycle: lifecycles[0] || null,
+          raw,
+          updatedAt: new Date().toISOString(),
+        });
+        setError(null);
+      } catch(err) {
+        if(alive) setError(err?.message || String(err));
+      }
+    };
+    load();
+    const id = setInterval(load, EXIT_ENGINE_X_REFRESH_MS);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[]);
+  if(error && !data) return <div className="page"><div className="card">Exit Engine X diagnostics error: {error}</div></div>;
+  if(!data) return <div className="page"><div className="card">Loading Exit Engine X diagnostics…</div></div>;
+  const module = data.module || {};
+  const stats = module.stats || {};
+  const persistence = data.persistence || {};
+  const eventCounts = Object.fromEntries(
+    Object.entries(persistence.eventCounts || {})
+      .filter(([type])=>type.indexOf("exit_engine_x_")===0)
+  );
+  const activeTradeState = data.activeTrades.length ? data.activeTrades : null;
+  return (
+    <div className="page">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:12}}>
+        <div>
+          <h2 style={{fontSize:18,color:"#e6edf3"}}>Exit Engine X</h2>
+          <div style={{fontSize:12,color:"#8b949e"}}>Read-only shadow diagnostics · Live Exit remains authoritative</div>
+        </div>
+        <div style={{fontSize:11,color:"#8b949e"}}>Last Update: {data.updatedAt || "N/A"}</div>
+      </div>
+      {error && <div className="drift-alert">Refresh warning: {error} — showing last good data.</div>}
+
+      <div className="sec-label">Overview</div>
+      <div className="cards">
+        <ExitXMetric label="Status" value={module.status}/>
+        <ExitXMetric label="Connected" value={module.connected}/>
+        <ExitXMetric label="Collecting Data" value={module.collectsData}/>
+        <ExitXMetric label="Influence on Live" value={module.influencesLive}/>
+        <ExitXMetric label="Mode" value={stats.mode}/>
+        <ExitXMetric label="Advisory Only" value={stats.advisoryOnly}/>
+        <ExitXMetric label="Observations" value={module.observations}/>
+        <ExitXMetric label="Last Update" value={data.updatedAt}/>
+      </div>
+
+      <div className="sec-label">Runtime Counters</div>
+      <ExitXObjectSection title="All Exit Engine X runtime counters" value={stats}/>
+
+      <div className="sec-label">Live Diagnostics</div>
+      <div className="cards">
+        <ExitXMetric label="Current State" value={module.status}/>
+        <ExitXMetric label="Waiting Reason" value={module.reason}/>
+        <ExitXMetric label="Current Lifecycle State" value={data.lastLifecycle?.data?.to || data.lastLifecycle?.to}/>
+        <ExitXMetric label="Active Trade State" value={activeTradeState ? `${activeTradeState.length} trade(s)` : null}/>
+      </div>
+      <ExitXObjectSection title="Last Evaluation" value={data.lastEvaluation}/>
+      <ExitXObjectSection title="Active Trade State (if available)" value={activeTradeState}/>
+
+      <div className="sec-label">Event Counters</div>
+      <ExitXObjectSection title="Every Exit Engine X telemetry event" value={eventCounts}/>
+
+      <div className="sec-label">Decision History</div>
+      <ExitXHistory title="Latest Evaluations" rows={data.evaluations}/>
+      <ExitXHistory title="Latest Decisions" rows={data.decisions}/>
+      <ExitXHistory title="Latest Votes" rows={data.votes}/>
+      <ExitXHistory title="Latest Lifecycle Events" rows={data.lifecycles}/>
+
+      <div className="sec-label">Raw Telemetry</div>
+      <details className="panel" open>
+        <summary className="ph" style={{cursor:"pointer"}}>Complete Exit Engine X backend payload</summary>
+        <pre style={{margin:0,padding:14,overflow:"auto",maxHeight:600,color:"#cbd5e1",fontSize:11,lineHeight:1.5}}>
+          {JSON.stringify(data.raw, null, 2)}
+        </pre>
+      </details>
     </div>
   );
 }
@@ -4084,6 +4310,7 @@ function App(){
       {tab==="KNOWLEDGE" && <KnowledgeTab data={knowledge}/>}
       {tab==="SELECTED"  && <SelectedTab  data={selected}/>}
       {tab==="MODUŁY"    && <ModulesTab/>}
+      {tab==="Exit Engine X" && <ExitEngineXTab/>}
       {tab==="EXPORT"    && <ExportTab/>}
     </>
   );
