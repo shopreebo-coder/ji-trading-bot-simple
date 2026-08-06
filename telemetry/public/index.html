@@ -127,6 +127,20 @@ tr:hover td{background:#1c2128}
 /* section divider */
 .sec-divider{border-top:1px solid #30363d;margin:12px 0 16px;padding-top:8px}
 .sec-label{font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
+.exitx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-bottom:18px}
+.exitx-grid .card{min-width:0}
+.exitx-note{color:#8b949e;font-size:11px;line-height:1.55;margin:-5px 0 14px}
+.exitx-table-wrap{overflow-x:auto}
+.exitx-table{min-width:1080px}
+.exitx-table th{white-space:nowrap}
+.exitx-table td{white-space:nowrap}
+.exitx-table td.wrap{white-space:normal;min-width:130px}
+.exitx-badge{display:inline-block;border:1px solid #30363d;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap}
+.exitx-badge.good{color:#3fb950;border-color:#238636;background:#122117}
+.exitx-badge.warn{color:#d29922;border-color:#9e6a03;background:#2d2100}
+.exitx-badge.bad{color:#f85149;border-color:#da3633;background:#2d1111}
+.exitx-badge.info{color:#58a6ff;border-color:#1f6feb;background:#0d1d35}
+.exitx-subtitle{font-size:12px;color:#8b949e;margin:-6px 0 14px}
 </style>
 </head>
 <body>
@@ -285,7 +299,9 @@ function ExitXMetric({ label, value }){
   return (
     <div className="card" style={{minWidth:170,flex:"1 1 170px"}}>
       <div className="lbl">{label}</div>
-      <div style={{fontSize:16,fontWeight:700,wordBreak:"break-word"}}>{exitXValue(value)}</div>
+      <div style={{fontSize:16,fontWeight:700,wordBreak:"break-word"}}>
+        {React.isValidElement(value) ? value : exitXValue(value)}
+      </div>
     </div>
   );
 }
@@ -344,7 +360,390 @@ function ExitXHistory({ title, rows }){
     </div>
   );
 }
-function ExitEngineXTab(){
+
+function exitXPayload(row){
+  return row && row.data && typeof row.data === "object" ? row.data : (row || {});
+}
+function exitXTimestamp(row){
+  const p = exitXPayload(row);
+  return row?.ts || p.ts || p.timestamp || p.time || p.createdAt || null;
+}
+function exitXKey(row){
+  const p = exitXPayload(row);
+  return String(
+    p.signalId || p.tradeId || p.positionId ||
+    `${p.symbol || row?.symbol || "UNKNOWN"}:${p.entryTime || p.openedAt || p.openTime || "UNKNOWN"}`
+  );
+}
+function exitXSorted(rows, direction=1){
+  return (Array.isArray(rows) ? rows : []).slice().sort((a,b)=>{
+    const at = Date.parse(exitXTimestamp(a) || "") || Number(a?.id) || 0;
+    const bt = Date.parse(exitXTimestamp(b) || "") || Number(b?.id) || 0;
+    return direction * (at - bt);
+  });
+}
+function exitXNum(...values){
+  for(const value of values){
+    if(value === null || value === undefined || value === "") continue;
+    const n = Number(value);
+    if(Number.isFinite(n)) return n;
+  }
+  return null;
+}
+function exitXText(...values){
+  for(const value of values){
+    if(value !== null && value !== undefined && String(value).trim() !== "") return String(value);
+  }
+  return null;
+}
+function exitXAvg(values){
+  const usable = (Array.isArray(values) ? values : []).filter(value=>Number.isFinite(value));
+  return usable.length ? usable.reduce((sum,value)=>sum+value,0)/usable.length : null;
+}
+function exitXPctValue(n, denominator){
+  return denominator ? (n / denominator) * 100 : null;
+}
+function exitXScore(value){
+  if(value && typeof value === "object") return exitXNum(value.score, value.value, value.confidence);
+  return exitXNum(value);
+}
+function exitXConfidence(row){
+  const p = exitXPayload(row);
+  return exitXScore(p.confidence ?? p.exitConfidence ?? p.decisionConfidence);
+}
+function exitXKnowledgeConfidence(row){
+  const p = exitXPayload(row);
+  return exitXScore(
+    p.knowledgeConfidence ??
+    p.knowledgeResult?.confidence ??
+    p.knowledge?.confidence ??
+    p.knowledgeScore
+  );
+}
+function exitXNumericField(row, names){
+  const p = exitXPayload(row);
+  for(const name of names){
+    const parts = name.split(".");
+    let value = p;
+    for(const part of parts) value = value == null ? null : value[part];
+    const n = exitXNum(value);
+    if(n !== null) return n;
+  }
+  return null;
+}
+function exitXExplicitVerdict(row){
+  const p = exitXPayload(row);
+  const comparison = p.liveExitComparison || p.comparison || {};
+  const direct = exitXText(
+    p.finalVerdict, p.verdict, p.comparisonOutcome, p.exitXVerdict,
+    comparison.finalVerdict, comparison.verdict, comparison.outcome
+  );
+  if(direct) return direct.toUpperCase();
+  if(p.betterThanLive === true || comparison.betterThanLive === true) return "BETTER";
+  if(p.worseThanLive === true || comparison.worseThanLive === true) return "WORSE";
+  if(p.equalToLive === true || comparison.equalToLive === true) return "EQUAL";
+  return null;
+}
+function exitXQualityOutcome(row){
+  const p = exitXPayload(row);
+  const explicit = exitXExplicitVerdict(row);
+  if(explicit) return explicit === "BETTER" || explicit === "WIN" || explicit === "SUCCESS";
+  const outcome = exitXText(p.outcome, p.result, p.quality, p.finalOutcome);
+  if(outcome) return ["WIN","BETTER","SUCCESS","PROFIT","POSITIVE"].includes(outcome.toUpperCase());
+  const profit = exitXNumericField(row, [
+    "profitDifference", "profitDifferencePips", "profitPips", "actualExit",
+    "liveExitPips", "realizedPips"
+  ]);
+  return profit === null ? null : profit > 0;
+}
+function exitXBuildAnalytics({opens, closes, evaluations, decisions, votes, lifecycles, activeTrades}){
+  const openRows = exitXSorted(opens);
+  const closeRows = exitXSorted(closes);
+  const evaluationRows = exitXSorted(evaluations);
+  const decisionRows = exitXSorted(decisions);
+  const voteRows = exitXSorted(votes);
+  const lifecycleRows = exitXSorted(lifecycles);
+  const allKeys = new Set([
+    ...openRows.map(exitXKey),
+    ...evaluationRows.map(exitXKey),
+    ...closeRows.map(exitXKey),
+  ]);
+  const closedKeys = new Set(closeRows.map(exitXKey));
+  const openKeys = new Set(openRows.map(exitXKey));
+  const activeKeys = new Set(
+    (Array.isArray(activeTrades) ? activeTrades : [])
+      .filter(trade=>trade && trade.open && !trade.close)
+      .map(trade=>exitXKey(trade.open))
+  );
+  for(const key of openKeys) if(!closedKeys.has(key)) activeKeys.add(key);
+
+  const latestByKey = (rows, key) => {
+    const matches = rows.filter(row=>exitXKey(row)===key);
+    return matches.length ? matches[matches.length-1] : null;
+  };
+  const firstByKey = (rows, key) => rows.find(row=>exitXKey(row)===key) || null;
+  const closedHistory = closeRows.map(close=>{
+    const key = exitXKey(close);
+    const closePayload = exitXPayload(close);
+    const evaluation = latestByKey(evaluationRows, key);
+    const decision = latestByKey(decisionRows, key);
+    const open = firstByKey(openRows, key);
+    const source = evaluation || decision || close;
+    const sourcePayload = exitXPayload(source);
+    const comparison = closePayload.liveExitComparison || exitXPayload(evaluation)?.liveExitComparison || {};
+    const liveExitPips = exitXNumericField(close, [
+      "liveExitPips", "actualExitPips", "actualExit", "profitPips", "realizedPips"
+    ]);
+    const exitXPips = exitXNumericField(close, [
+      "exitXPips", "shadowExitPips", "proposedExitPips", "proposalPips",
+      "exitX.pips", "proposal.pips"
+    ]) ?? exitXNumericField(evaluation, [
+      "exitXPips", "shadowExitPips", "proposedExitPips", "proposalPips",
+      "exitX.pips", "proposal.pips"
+    ]);
+    const difference = exitXNumericField(close, [
+      "exitImprovementPips", "improvementPips", "pipsSaved", "profitDifferencePips",
+      "profitDifference", "differencePips"
+    ]) ?? (exitXPips !== null && liveExitPips !== null ? exitXPips - liveExitPips : null);
+    return {
+      key,
+      open,
+      close,
+      evaluation,
+      decision,
+      symbol: exitXText(closePayload.symbol, sourcePayload.symbol, open && exitXPayload(open).symbol),
+      entryTime: exitXText(
+        open && exitXTimestamp(open),
+        sourcePayload.entryTime,
+        closePayload.entryTime
+      ),
+      liveExit: exitXText(
+        closePayload.liveExitReason, closePayload.exitReason, closePayload.reason,
+        closePayload.liveAction, comparison.liveAction
+      ),
+      liveExitPips,
+      exitXProposal: exitXText(
+        closePayload.shadowRecommendation, closePayload.recommendation,
+        exitXPayload(evaluation)?.shadowRecommendation,
+        exitXPayload(evaluation)?.decision
+      ),
+      exitXPips,
+      difference,
+      confidence: exitXConfidence(evaluation || close),
+      knowledgeConfidence: exitXKnowledgeConfidence(evaluation || close),
+      exitReason: exitXText(
+        closePayload.exitReason, closePayload.liveExitReason, closePayload.reason,
+        exitXPayload(evaluation)?.exitReason, exitXPayload(evaluation)?.tradeStage
+      ),
+      verdict: exitXExplicitVerdict(close) || exitXExplicitVerdict(evaluation),
+      profitPips: exitXNumericField(close, [
+        "profitDifferencePips", "profitPips", "actualExit", "realizedPips"
+      ]),
+    };
+  });
+
+  const comparisonRows = closedHistory.filter(row=>row.difference !== null || row.verdict);
+  const diffs = comparisonRows.map(row=>row.difference).filter(value=>value !== null);
+  const verdicts = comparisonRows.map(row=>row.verdict).filter(Boolean);
+  const verdictCounts = {
+    better: verdicts.filter(v=>["BETTER","WIN","SUCCESS"].includes(v)).length,
+    worse: verdicts.filter(v=>["WORSE","LOSS","MISSED"].includes(v)).length,
+    equal: verdicts.filter(v=>["EQUAL","SAME","UNCHANGED"].includes(v)).length,
+  };
+  const evaluationsByKey = {};
+  for(const row of evaluationRows){
+    const key = exitXKey(row);
+    (evaluationsByKey[key] ||= []).push(row);
+  }
+  const decisionsByKey = {};
+  for(const row of decisionRows){
+    const key = exitXKey(row);
+    (decisionsByKey[key] ||= []).push(row);
+  }
+  const changes = Object.values(decisionsByKey).map(rows=>{
+    const sequence = exitXSorted(rows).map(row=>exitXText(
+      exitXPayload(row).decision, exitXPayload(row).recommendation,
+      exitXPayload(row).shadowRecommendation
+    )).filter(Boolean);
+    return {
+      changes: sequence.slice(1).reduce((count,value,index)=>count + (value !== sequence[index] ? 1 : 0),0),
+      stable: sequence.length > 0 && new Set(sequence).size === 1,
+    };
+  });
+
+  const confidenceBuckets = [
+    {label:"90–100%", min:90, max:100},
+    {label:"80–90%", min:80, max:90},
+    {label:"70–80%", min:70, max:80},
+    {label:"60–70%", min:60, max:70},
+    {label:"Below 60%", min:0, max:60},
+  ].map(bucket=>{
+    const rows = closedHistory.filter(row=>{
+      if(row.confidence === null) return false;
+      return bucket.min === 0
+        ? row.confidence < bucket.max
+        : row.confidence >= bucket.min && row.confidence <= bucket.max;
+    });
+    const outcomes = rows.map(row=>exitXQualityOutcome(row.close)).filter(value=>value !== null);
+    return {
+      ...bucket,
+      sample: rows.length,
+      accuracy: outcomes.length ? exitXPctValue(outcomes.filter(Boolean).length, outcomes.length) : null,
+    };
+  });
+
+  const latestEvaluation = evaluationRows[evaluationRows.length-1] || null;
+  const latestDecision = decisionRows[decisionRows.length-1] || null;
+  const latestLifecycle = lifecycleRows[lifecycleRows.length-1] || null;
+  const latestPayload = exitXPayload(latestEvaluation || latestDecision || latestLifecycle);
+  const latestKey = latestEvaluation ? exitXKey(latestEvaluation) : null;
+  const latestUpdates = latestKey ? (decisionsByKey[latestKey] || []).length : null;
+  const logs = decisionRows.slice().reverse().map(row=>{
+    const evaluation = latestByKey(evaluationRows, exitXKey(row));
+    const decisionPayload = exitXPayload(row);
+    const evaluationPayload = exitXPayload(evaluation);
+    return {
+      ...row,
+      data: {
+        ...decisionPayload,
+        confidence: decisionPayload.confidence ?? evaluationPayload.confidence,
+        knowledgeConfidence: decisionPayload.knowledgeConfidence ?? evaluationPayload.knowledgeConfidence,
+        reason: decisionPayload.reason ?? evaluationPayload.reason ?? evaluationPayload.exitReason,
+        tradeStage: decisionPayload.tradeStage ?? evaluationPayload.tradeStage,
+        shadowRecommendation: decisionPayload.shadowRecommendation ??
+          decisionPayload.decision ?? evaluationPayload.shadowRecommendation ?? evaluationPayload.decision,
+      },
+    };
+  });
+  const knowledgeRows = [...evaluationRows, ...closeRows];
+  const knowledgeScores = knowledgeRows.map(exitXKnowledgeConfidence).filter(value=>value !== null);
+  const knowledgeMatches = knowledgeRows.filter(row=>{
+    const p = exitXPayload(row);
+    return p.knowledgeResult?.matchedFingerprint === true ||
+      p.knowledgeMatched === true || p.knowledgeMatch === true;
+  }).length;
+  const knowledgeEligible = knowledgeRows.filter(row=>exitXKnowledgeConfidence(row) !== null).length;
+  const knowledgeOverrides = knowledgeRows.filter(row=>{
+    const p = exitXPayload(row);
+    return p.knowledgeOverride === true || p.knowledgeResult?.override === true ||
+      p.overrideSource === "KNOWLEDGE";
+  }).length;
+  const knowledgeAssisted = knowledgeRows.filter(row=>{
+    const p = exitXPayload(row);
+    return p.knowledgeAssisted === true || p.knowledgeResult?.assisted === true ||
+      p.assistedByKnowledge === true;
+  }).length;
+  const sampleSize = Math.max(
+    ...knowledgeRows.map(row=>exitXNumericField(row, [
+      "knowledgeResult.sampleSize", "knowledge.sampleSize", "sampleSize"
+    ]) || 0),
+    0
+  );
+  const explicitImprovement = diffs.length ? exitXAvg(diffs) : null;
+  const validationSamples = comparisonRows.length;
+  const qualityRows = closedHistory;
+  const efficiency = qualityRows.map(row=>{
+    const p = exitXPayload(row.close);
+    const direct = exitXNumericField(row.close, ["exitEfficiency", "efficiency"]);
+    if(direct !== null) return direct;
+    const best = exitXNumericField(row.close, ["bestPossibleExit", "mfeAtExit", "mfe"]);
+    const actual = row.liveExitPips ?? exitXNumericField(row.close, ["actualExit"]);
+    return best !== null && actual !== null && best > 0 ? (actual / best) * 100 : null;
+  }).filter(value=>value !== null);
+  const knowledgeProgress = sampleSize > 0 ? Math.min(100, (sampleSize / 300) * 100) : null;
+  return {
+    performance: {
+      tradesObserved: allKeys.size,
+      tradesClosed: closedHistory.length,
+      activeTrades: activeKeys.size,
+      marketEvaluations: evaluationRows.length,
+      decisionsMade: decisionRows.length,
+      votesCast: voteRows.length,
+      avgEvaluationsPerTrade: allKeys.size ? evaluationRows.length / allKeys.size : null,
+      avgDecisionsPerTrade: allKeys.size ? decisionRows.length / allKeys.size : null,
+    },
+    comparison: {
+      better: verdictCounts.better || diffs.filter(value=>value>0).length,
+      worse: verdictCounts.worse || diffs.filter(value=>value<0).length,
+      equal: verdictCounts.equal || diffs.filter(value=>value===0).length,
+      denominator: verdicts.length || diffs.length,
+      averageImprovement: explicitImprovement,
+      totalPipsSaved: diffs.length ? diffs.reduce((sum,value)=>sum+value,0) : null,
+      largestImprovement: diffs.length ? Math.max(...diffs) : null,
+      largestMissedOpportunity: diffs.length ? Math.min(...diffs) : null,
+      profitDifference: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, [
+        "profitDifferencePips", "profitDifference"
+      ])).filter(value=>value !== null)),
+      averageExitDelay: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, [
+        "exitDelayMinutes", "delayMinutes", "exitDelayMs"
+      ])).map((value, index)=>{
+        const raw = qualityRows[index] && exitXNumericField(qualityRows[index].close, ["exitDelayMs"]);
+        return raw !== null && exitXNumericField(qualityRows[index].close, ["exitDelayMinutes","delayMinutes"]) === null ? raw / 60000 : value;
+      }).filter(value=>value !== null)),
+    },
+    quality: {
+      exitEfficiency: efficiency.length ? exitXAvg(efficiency) : null,
+      averageMfeAtExit: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["mfeAtExit","mfe"])).filter(value=>value !== null)),
+      averageMaeAtExit: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["maeAtExit","mae"])).filter(value=>value !== null)),
+      profitProtected: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["profitProtectedPips","profitProtected"])).filter(value=>value !== null)),
+      profitGivenBack: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["profitGivenBackPips","profitGivenBack","regretMemory.difference","regretScore"])).filter(value=>value !== null)),
+      earlyExitAccuracy: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["earlyExitAccuracy","earlyExitCorrect"])).filter(value=>value !== null)),
+      lateExitAccuracy: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["lateExitAccuracy","lateExitCorrect"])).filter(value=>value !== null)),
+      averageHoldTime: exitXAvg(qualityRows.map(row=>exitXNumericField(row.close, ["durationMin","duration","minutesOpen"])).filter(value=>value !== null)),
+      averageExitConfidence: exitXAvg(qualityRows.map(row=>row.confidence).filter(value=>value !== null)),
+    },
+    knowledge: {
+      confidence: exitXAvg(knowledgeScores),
+      matchRate: knowledgeEligible ? exitXPctValue(knowledgeMatches, knowledgeEligible) : null,
+      overrideCount: knowledgeOverrides,
+      assistedDecisions: knowledgeAssisted,
+      averageConfidence: knowledgeScores.length ? exitXAvg(knowledgeScores) : null,
+      sampleSize: sampleSize || null,
+      learningProgress: knowledgeProgress,
+    },
+    decision: {
+      recommendation: exitXText(
+        latestPayload.shadowRecommendation, latestPayload.decision, latestPayload.recommendation
+      ),
+      reason: exitXText(
+        latestPayload.exitReason, latestPayload.reason, latestPayload.decisionReason,
+        latestPayload.liveExitReason
+      ),
+      confidence: exitXConfidence(latestEvaluation || latestDecision),
+      activeState: exitXText(
+        latestPayload.tradeStage, latestPayload.state, exitXPayload(latestLifecycle).to
+      ),
+      activeMode: exitXText(latestPayload.mode, latestPayload.exitMode, "SHADOW"),
+      latency: exitXNumericField(latestEvaluation || latestDecision, [
+        "decisionLatencyMs", "latencyMs", "decisionLatency"
+      ]),
+      updates: latestUpdates,
+    },
+    confidenceBuckets,
+    stability: {
+      averageChanges: changes.length ? exitXAvg(changes.map(row=>row.changes)) : null,
+      stable: changes.length ? changes.filter(row=>row.stable).length : null,
+      unstable: changes.length ? changes.filter(row=>!row.stable).length : null,
+      score: changes.length ? exitXPctValue(changes.filter(row=>row.stable).length, changes.length) : null,
+    },
+    summary: {
+      rating: explicitImprovement === null ? null : explicitImprovement > 0 ? "POSITIVE" : explicitImprovement < 0 ? "NEGATIVE" : "NEUTRAL",
+      expectedImprovement: explicitImprovement,
+      learningStage: validationSamples >= 300 ? "VALIDATION" : validationSamples > 0 ? "LEARNING" : null,
+      recommendation: explicitImprovement === null ? null : explicitImprovement > 0 ? "CONTINUE VALIDATION" : "DO NOT PROMOTE",
+      validationSamples,
+      status: validationSamples >= 300 && explicitImprovement !== null && explicitImprovement > 0 ? "READY FOR LIVE"
+        : sampleSize > 0 ? (explicitImprovement !== null && explicitImprovement > 0 ? "PROMISING" : "LEARNING")
+        : "NOT READY",
+    },
+    history: closedHistory.reverse(),
+    logs,
+    latestEvaluation,
+    latestDecision,
+    latestLifecycle,
+  };
+}
+function ExitEngineXTabLegacy(){
   const [data,setData] = useState(null);
   const [error,setError] = useState(null);
   useEffect(()=>{
@@ -370,7 +769,7 @@ function ExitEngineXTab(){
         const requestedTypes = [...new Set([...EXIT_ENGINE_X_EVENT_FALLBACKS, ...eventTypes])];
         const eventResults = await Promise.all(requestedTypes.map(async type=>{
           try {
-            const rows = await api(`/api/events?type=${encodeURIComponent(type)}&limit=100`);
+          const rows = await api(`/api/events?type=${encodeURIComponent(type)}&limit=2000`);
             return [type, Array.isArray(rows) ? rows : []];
           } catch(_) {
             return [type, []];
@@ -390,9 +789,20 @@ function ExitEngineXTab(){
         const decisions = histories.exit_engine_x_decision || [];
         const votes = histories.exit_engine_x_vote || [];
         const lifecycles = histories.exit_engine_x_lifecycle || [];
+        const opens = histories.exit_engine_x_open || [];
+        const closes = histories.exit_engine_x_close || [];
         const activeTrades = Array.isArray(trades)
           ? trades.filter(trade=>trade && trade.open && !trade.close)
           : [];
+        const analytics = exitXBuildAnalytics({
+          opens,
+          closes,
+          evaluations,
+          decisions,
+          votes,
+          lifecycles,
+          activeTrades,
+        });
         const raw = {
           moduleStatus,
           exitEngineX: module,
@@ -408,7 +818,10 @@ function ExitEngineXTab(){
           decisions,
           votes,
           lifecycles,
+          opens,
+          closes,
           activeTrades,
+          analytics,
           lastEvaluation: evaluations[0] || null,
           lastDecision: decisions[0] || null,
           lastLifecycle: lifecycles[0] || null,
@@ -481,6 +894,311 @@ function ExitEngineXTab(){
 
       <div className="sec-label">Raw Telemetry</div>
       <details className="panel" open>
+        <summary className="ph" style={{cursor:"pointer"}}>Complete Exit Engine X backend payload</summary>
+        <pre style={{margin:0,padding:14,overflow:"auto",maxHeight:600,color:"#cbd5e1",fontSize:11,lineHeight:1.5}}>
+          {JSON.stringify(data.raw, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function ExitXFormatted({ value, suffix="", decimals=2 }){
+  if(value === null || value === undefined || value === "") return <span className="pz">N/A</span>;
+  if(typeof value === "number") return <span>{value.toFixed(decimals)}{suffix}</span>;
+  return <span>{String(value)}{suffix}</span>;
+}
+function ExitXPercent({ value }){
+  return <ExitXFormatted value={value} suffix="%" decimals={1}/>;
+}
+function ExitXPips({ value }){
+  if(value === null || value === undefined || !Number.isFinite(Number(value))) return <span className="pz">N/A</span>;
+  const n = Number(value);
+  return <span className={n>0?"pp":n<0?"pn":"pz"}>{n>0?"+":""}{n.toFixed(2)} p</span>;
+}
+function ExitXBadge({ value, tone="info" }){
+  return <span className={`exitx-badge ${tone}`}>{value ?? "N/A"}</span>;
+}
+function ExitXSection({ title, children, note }){
+  return (
+    <section className="panel">
+      <div className="ph">{title}</div>
+      <div className="pb" style={{maxHeight:"none",padding:14}}>
+        {note && <div className="exitx-note">{note}</div>}
+        {children}
+      </div>
+    </section>
+  );
+}
+function ExitXTableEmpty({ columns }){
+  return <tr><td colSpan={columns} className="empty">N/A — brak wystarczających danych telemetrycznych</td></tr>;
+}
+function ExitXDecisionLog({ rows }){
+  const list = Array.isArray(rows) ? rows : [];
+  return (
+    <div className="exitx-table-wrap">
+      <table className="exitx-table">
+        <thead><tr>
+          <th>Timestamp</th><th>Symbol</th><th>Recommendation</th><th>Confidence</th>
+          <th>Knowledge Confidence</th><th>Reason</th><th>State</th>
+        </tr></thead>
+        <tbody>
+          {list.length ? list.slice(0,100).map((row,index)=>{
+            const p = exitXPayload(row);
+            return <tr key={`${exitXKey(row)}-${exitXTimestamp(row)}-${index}`}>
+              <td>{exitXTimestamp(row) || "N/A"}</td>
+              <td>{exitXText(p.symbol,row.symbol) || "N/A"}</td>
+              <td><ExitXBadge value={exitXText(p.shadowRecommendation,p.decision,p.recommendation)} tone="info"/></td>
+              <td><ExitXFormatted value={exitXConfidence(row)} suffix="%" decimals={1}/></td>
+              <td><ExitXFormatted value={exitXKnowledgeConfidence(row)} suffix="%" decimals={1}/></td>
+              <td className="wrap">{exitXText(p.reason,p.exitReason,p.decisionReason) || "N/A"}</td>
+              <td>{exitXText(p.tradeStage,p.state,p.mode) || "N/A"}</td>
+            </tr>;
+          }) : <ExitXTableEmpty columns={7}/>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function ExitXTradeHistory({ rows }){
+  const list = Array.isArray(rows) ? rows : [];
+  return (
+    <div className="exitx-table-wrap">
+      <table className="exitx-table">
+        <thead><tr>
+          <th>Symbol</th><th>Entry Time</th><th>Live Exit</th><th>Exit X Proposal</th>
+          <th>Difference (Pips)</th><th>Confidence</th><th>Knowledge Confidence</th>
+          <th>Exit Reason</th><th>Final Verdict</th>
+        </tr></thead>
+        <tbody>
+          {list.length ? list.slice(0,200).map((row,index)=>{
+            const verdict = row.verdict;
+            const verdictTone = verdict === "BETTER" ? "good" : verdict === "WORSE" ? "bad" : verdict ? "warn" : "info";
+            return <tr key={`${row.key}-${index}`}>
+              <td>{row.symbol || "N/A"}</td>
+              <td>{row.entryTime || "N/A"}</td>
+              <td>{row.liveExit || "N/A"}</td>
+              <td>{row.exitXProposal || "N/A"}</td>
+              <td><ExitXPips value={row.difference}/></td>
+              <td><ExitXFormatted value={row.confidence} suffix="%" decimals={1}/></td>
+              <td><ExitXFormatted value={row.knowledgeConfidence} suffix="%" decimals={1}/></td>
+              <td className="wrap">{row.exitReason || "N/A"}</td>
+              <td><ExitXBadge value={verdict} tone={verdictTone}/></td>
+            </tr>;
+          }) : <ExitXTableEmpty columns={9}/>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function ExitEngineXTab(){
+  const [data,setData] = useState(null);
+  const [error,setError] = useState(null);
+  useEffect(()=>{
+    let alive = true;
+    const load = async () => {
+      try {
+        const [moduleStatus, persistence, trades, allEvents] = await Promise.all([
+          api("/api/modules/status"),
+          api("/api/healthz/persistence"),
+          api("/api/trades"),
+          api("/api/events?limit=500"),
+        ]);
+        const eventCounts = persistence && persistence.eventCounts && typeof persistence.eventCounts==="object"
+          ? persistence.eventCounts : {};
+        const allExitEvents = Array.isArray(allEvents)
+          ? allEvents.filter(row=>row && String(row.type||"").indexOf("exit_engine_x_")===0)
+          : [];
+        const eventTypes = [...Object.keys(eventCounts), ...allExitEvents.map(row=>row.type)]
+          .filter(type=>type.indexOf("exit_engine_x_")===0);
+        const requestedTypes = [...new Set([...EXIT_ENGINE_X_EVENT_FALLBACKS, ...eventTypes])];
+        const eventResults = await Promise.all(requestedTypes.map(async type=>{
+          try {
+            const rows = await api(`/api/events?type=${encodeURIComponent(type)}&limit=2000`);
+            return [type, Array.isArray(rows) ? rows : []];
+          } catch(_) {
+            return [type, []];
+          }
+        }));
+        if(!alive) return;
+        const histories = Object.fromEntries(eventResults);
+        for(const type of requestedTypes){
+          if(!histories[type] || !histories[type].length){
+            histories[type] = allExitEvents.filter(row=>row.type===type);
+          }
+        }
+        const module = Array.isArray(moduleStatus?.modules)
+          ? moduleStatus.modules.find(item=>item && item.id==="exit-engine-x") || null
+          : null;
+        const evaluations = histories.exit_engine_x_evaluation || [];
+        const decisions = histories.exit_engine_x_decision || [];
+        const votes = histories.exit_engine_x_vote || [];
+        const lifecycles = histories.exit_engine_x_lifecycle || [];
+        const opens = histories.exit_engine_x_open || [];
+        const closes = histories.exit_engine_x_close || [];
+        const activeTrades = Array.isArray(trades)
+          ? trades.filter(trade=>trade && trade.open && !trade.close)
+          : [];
+        const analytics = exitXBuildAnalytics({
+          opens, closes, evaluations, decisions, votes, lifecycles, activeTrades,
+        });
+        const raw = {moduleStatus, exitEngineX:module, persistence, events:histories, activeTrades, analytics};
+        setData({
+          module, persistence, histories, evaluations, decisions, votes, lifecycles, opens, closes,
+          activeTrades, analytics, raw, lastEvaluation:evaluations[0] || null,
+          lastDecision:decisions[0] || null, lastLifecycle:lifecycles[0] || null,
+          updatedAt:new Date().toISOString(),
+        });
+        setError(null);
+      } catch(err) {
+        if(alive) setError(err?.message || String(err));
+      }
+    };
+    load();
+    const id = setInterval(load, EXIT_ENGINE_X_REFRESH_MS);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[]);
+  if(error && !data) return <div className="page"><div className="card">Exit Engine X diagnostics error: {error}</div></div>;
+  if(!data) return <div className="page"><div className="card">Loading Exit Engine X diagnostics…</div></div>;
+  const module = data.module || {};
+  const stats = module.stats || {};
+  const persistence = data.persistence || {};
+  const a = data.analytics || {};
+  const perf = a.performance || {};
+  const comparison = a.comparison || {};
+  const quality = a.quality || {};
+  const knowledge = a.knowledge || {};
+  const decision = a.decision || {};
+  const stability = a.stability || {};
+  const summary = a.summary || {};
+  const eventCounts = Object.fromEntries(Object.entries(persistence.eventCounts || {})
+    .filter(([type])=>type.indexOf("exit_engine_x_")===0));
+  const countFallback = (key,fallback) => perf[key] ?? (fallback ? stats[fallback] : null);
+  const verdictDenominator = comparison.denominator;
+  const ratingTone = summary.status === "READY FOR LIVE" || summary.status === "PROMISING" ? "good"
+    : summary.status === "LEARNING" ? "warn" : "bad";
+  return (
+    <div className="page">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:12}}>
+        <div>
+          <h2 style={{fontSize:18,color:"#e6edf3"}}>Exit Engine X Analysis Center</h2>
+          <div className="exitx-subtitle">Read-only shadow telemetry · Live Exit remains authoritative · no broker or trade mutations</div>
+        </div>
+        <div style={{fontSize:11,color:"#8b949e"}}>Last Update: {data.updatedAt || "N/A"}</div>
+      </div>
+      {error && <div className="drift-alert">Refresh warning: {error} — showing last good data.</div>}
+
+      <div className="exitx-grid">
+        <ExitXMetric label="Status" value={module.status}/>
+        <ExitXMetric label="Mode" value={stats.mode || "SHADOW"}/>
+        <ExitXMetric label="Influence on Live" value={module.influencesLive}/>
+        <ExitXMetric label="Advisory Only" value={stats.advisoryOnly}/>
+        <ExitXMetric label="Current Overall Rating" value={summary.rating}/>
+        <ExitXMetric label="Readiness" value={<ExitXBadge value={summary.status} tone={ratingTone}/>}/>
+      </div>
+
+      <div className="sec-label">1 · Performance</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Trades Observed" value={countFallback("tradesObserved","observations")}/>
+        <ExitXMetric label="Trades Closed" value={countFallback("tradesClosed","closedTrades")}/>
+        <ExitXMetric label="Active Trades" value={countFallback("activeTrades",null)}/>
+        <ExitXMetric label="Market Evaluations" value={countFallback("marketEvaluations","evaluations")}/>
+        <ExitXMetric label="Decisions Made" value={countFallback("decisionsMade","decisions")}/>
+        <ExitXMetric label="Votes Cast" value={countFallback("votesCast","votes")}/>
+        <ExitXMetric label="Avg Evaluations / Trade" value={<ExitXFormatted value={perf.avgEvaluationsPerTrade} decimals={2}/>}/>
+        <ExitXMetric label="Avg Decisions / Trade" value={<ExitXFormatted value={perf.avgDecisionsPerTrade} decimals={2}/>}/>
+      </div>
+
+      <div className="sec-label">2 · Live Bot Comparison</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Better Than Live" value={<ExitXPercent value={exitXPctValue(comparison.better,verdictDenominator)}/>}/>
+        <ExitXMetric label="Worse Than Live" value={<ExitXPercent value={exitXPctValue(comparison.worse,verdictDenominator)}/>}/>
+        <ExitXMetric label="Equal To Live" value={<ExitXPercent value={exitXPctValue(comparison.equal,verdictDenominator)}/>}/>
+        <ExitXMetric label="Average Exit Improvement" value={<ExitXPips value={comparison.averageImprovement}/>}/>
+        <ExitXMetric label="Total Pips Saved" value={<ExitXPips value={comparison.totalPipsSaved}/>}/>
+        <ExitXMetric label="Largest Improvement" value={<ExitXPips value={comparison.largestImprovement}/>}/>
+        <ExitXMetric label="Largest Missed Opportunity" value={<ExitXPips value={comparison.largestMissedOpportunity}/>}/>
+        <ExitXMetric label="Profit Difference" value={<ExitXPips value={comparison.profitDifference}/>}/>
+        <ExitXMetric label="Average Exit Delay" value={<ExitXFormatted value={comparison.averageExitDelay} suffix=" min" decimals={2}/>}/>
+      </div>
+      <div className="exitx-note">Percentages and pips are calculated only where the telemetry payload contains an explicit verdict or comparable exit values.</div>
+
+      <div className="sec-label">3 · Exit Quality</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Exit Efficiency" value={<ExitXPercent value={quality.exitEfficiency}/>}/>
+        <ExitXMetric label="Average MFE At Exit" value={<ExitXPips value={quality.averageMfeAtExit}/>}/>
+        <ExitXMetric label="Average MAE At Exit" value={<ExitXPips value={quality.averageMaeAtExit}/>}/>
+        <ExitXMetric label="Profit Protected" value={<ExitXPips value={quality.profitProtected}/>}/>
+        <ExitXMetric label="Profit Given Back" value={<ExitXPips value={quality.profitGivenBack}/>}/>
+        <ExitXMetric label="Early Exit Accuracy" value={<ExitXPercent value={quality.earlyExitAccuracy}/>}/>
+        <ExitXMetric label="Late Exit Accuracy" value={<ExitXPercent value={quality.lateExitAccuracy}/>}/>
+        <ExitXMetric label="Average Hold Time" value={<ExitXFormatted value={quality.averageHoldTime} suffix=" min" decimals={2}/>}/>
+        <ExitXMetric label="Average Exit Confidence" value={<ExitXFormatted value={quality.averageExitConfidence} suffix="%" decimals={1}/>}/>
+      </div>
+
+      <div className="sec-label">4 · Knowledge Layer</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Knowledge Confidence" value={<ExitXFormatted value={knowledge.confidence} suffix="%" decimals={1}/>}/>
+        <ExitXMetric label="Knowledge Match Rate" value={<ExitXPercent value={knowledge.matchRate}/>}/>
+        <ExitXMetric label="Knowledge Override Count" value={knowledge.overrideCount}/>
+        <ExitXMetric label="Knowledge Assisted Decisions" value={knowledge.assistedDecisions}/>
+        <ExitXMetric label="Average Knowledge Confidence" value={<ExitXFormatted value={knowledge.averageConfidence} suffix="%" decimals={1}/>}/>
+        <ExitXMetric label="Knowledge Learning Progress" value={<ExitXPercent value={knowledge.learningProgress}/>}/>
+        <ExitXMetric label="Knowledge Sample Size" value={knowledge.sampleSize}/>
+      </div>
+      <div className="exitx-note">Knowledge confidence remains separate from decision confidence. No learning-stage claim is made without a sample size in telemetry.</div>
+
+      <div className="sec-label">5 · Decision Engine · Live Status</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Current Recommendation" value={<ExitXBadge value={decision.recommendation} tone="info"/>}/>
+        <ExitXMetric label="Current Exit Reason" value={decision.reason}/>
+        <ExitXMetric label="Current Confidence" value={<ExitXFormatted value={decision.confidence} suffix="%" decimals={1}/>}/>
+        <ExitXMetric label="Active State" value={decision.activeState}/>
+        <ExitXMetric label="Active Exit Mode" value={decision.activeMode}/>
+        <ExitXMetric label="Decision Latency" value={<ExitXFormatted value={decision.latency === null ? null : decision.latency < 1000 ? decision.latency : decision.latency/1000} suffix={decision.latency === null ? "" : decision.latency < 1000 ? " ms" : " s"} decimals={2}/>}/>
+        <ExitXMetric label="Number Of Decision Updates" value={decision.updates}/>
+      </div>
+
+      <ExitXSection title="6 · Confidence Analysis" note="Accuracy is shown only when a closed trade has an outcome/verdict that can be evaluated.">
+        <div className="exitx-table-wrap"><table>
+          <thead><tr><th>Confidence Band</th><th>Accuracy</th><th>Sample</th></tr></thead>
+          <tbody>{(a.confidenceBuckets || []).map(bucket=>(
+            <tr key={bucket.label}><td>{bucket.label}</td><td><ExitXPercent value={bucket.accuracy}/></td><td>{bucket.sample || "N/A"}</td></tr>
+          ))}</tbody>
+        </table></div>
+      </ExitXSection>
+
+      <div className="sec-label">7 · Decision Stability</div>
+      <div className="exitx-grid">
+        <ExitXMetric label="Recommendation Changes / Trade" value={<ExitXFormatted value={stability.averageChanges} decimals={2}/>}/>
+        <ExitXMetric label="Average Recommendation Changes" value={<ExitXFormatted value={stability.averageChanges} decimals={2}/>}/>
+        <ExitXMetric label="Stable Decisions" value={stability.stable}/>
+        <ExitXMetric label="Unstable Decisions" value={stability.unstable}/>
+        <ExitXMetric label="Stability Score" value={<ExitXPercent value={stability.score}/>}/>
+      </div>
+
+      <ExitXSection title="8 · Trade History" note="History is keyed by signalId/tradeId where available; it does not infer a shadow profit from a recommendation alone.">
+        <ExitXTradeHistory rows={a.history}/>
+      </ExitXSection>
+      <ExitXSection title="9 · Live Log" note="Decision events are append-only telemetry.">
+        <ExitXDecisionLog rows={a.logs}/>
+      </ExitXSection>
+      <ExitXSection title="10 · Summary Panel" note={`READY FOR LIVE is intentionally gated at 300 validated comparison samples and positive measured improvement. Current validation sample: ${summary.validationSamples ?? "N/A"}.`}>
+        <div className="exitx-grid" style={{marginBottom:0}}>
+          <ExitXMetric label="Current Overall Rating" value={<ExitXBadge value={summary.rating} tone={ratingTone}/>}/>
+          <ExitXMetric label="Expected Improvement" value={<ExitXPips value={summary.expectedImprovement}/>}/>
+          <ExitXMetric label="Current Learning Stage" value={summary.learningStage}/>
+          <ExitXMetric label="Recommendation" value={summary.recommendation}/>
+          <ExitXMetric label="Status" value={<ExitXBadge value={summary.status} tone={ratingTone}/>}/>
+        </div>
+      </ExitXSection>
+
+      <div className="sec-label">Telemetry Audit</div>
+      <ExitXObjectSection title="Exit Engine X event counters" value={eventCounts}/>
+      <ExitXHistory title="Latest Evaluations" rows={data.evaluations}/>
+      <ExitXHistory title="Latest Votes" rows={data.votes}/>
+      <ExitXHistory title="Latest Lifecycle Events" rows={data.lifecycles}/>
+      <details className="panel">
         <summary className="ph" style={{cursor:"pointer"}}>Complete Exit Engine X backend payload</summary>
         <pre style={{margin:0,padding:14,overflow:"auto",maxHeight:600,color:"#cbd5e1",fontSize:11,lineHeight:1.5}}>
           {JSON.stringify(data.raw, null, 2)}
