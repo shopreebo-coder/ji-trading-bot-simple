@@ -13,3 +13,4 @@
 - [Broker-confirmed open events](broker-confirmed-open-events.md) — persist trade_open only after broker acknowledgement and await the write, preventing real orders from becoming telemetry or Shadow gaps.
 - [Exit Engine X shadow boundary](exit-engine-x-shadow-boundary.md) — observe and log only; require 300–500 trade validation before any Live Exit influence.
 - [Module status Shadow M legacy](module-status-shadow-m-legacy.md) — OBSERVE test conflicts with current Shadow M advisory cooperation; keep separate from Exit Engine X.
+- [Public application routing](public-routing.md) — Telemetry owns `/`; Mockup Sandbox uses `/mockup`; API artifact uses `/api-server` so telemetry keeps `/api/*`.
