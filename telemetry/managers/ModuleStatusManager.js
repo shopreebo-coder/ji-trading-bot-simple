@@ -66,6 +66,7 @@ class ModuleStatusManager {
     this.runtimeRegistry     = opts.runtimeRegistry     || null;
     this.getLiveState        = opts.getLiveState        || (() => ({}));
     this.logger              = opts.logger || { info: () => {}, error: () => {} };
+    this.runtimeStartedAt    = opts.runtimeStartedAt || null;
   }
 
   // ── guarded primitives ────────────────────────────────────────────────────
@@ -100,6 +101,8 @@ class ModuleStatusManager {
 
   async _advisoryLifecycleCounts() {
     try {
+      const runtimeFilter = this.runtimeStartedAt ? " AND ts >= ?" : "";
+      const params = this.runtimeStartedAt ? [this.runtimeStartedAt] : [];
       const rows = await this.db.all(
         `SELECT type, COUNT(*) AS n FROM events
          WHERE type IN (
@@ -110,7 +113,9 @@ class ModuleStatusManager {
            'selected_advisor_advisory_read'
          )
          AND data LIKE '%"cooperationPath":"shadow_abc_selected_live"%'
-         GROUP BY type`
+          ${runtimeFilter}
+          GROUP BY type`,
+        ...params,
       );
       const map = {};
       for (const r of rows || []) map[r.type] = toCount(r.n);
