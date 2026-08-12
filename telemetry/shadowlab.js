@@ -7,7 +7,8 @@
  *   - NEVER touches index.js  (live bot is READ ONLY)
  *   - NEVER affects live bot logic, risk, execution, or state
  *   - Read-only on: trade_open, trade_close, lab_shadow_*
- *   - Writes only: lab_shadow_a, lab_shadow_b, lab_shadow_c, lab_shadow_d, lab_comparison
+ *   - Writes only: lab_shadow_a, lab_shadow_b, lab_shadow_c, lab_shadow_d, lab_comparison,
+ *                 and the A/B/C entry advisory lifecycle in the shared events stream
  *
  * Engine status:
  *   A (Quality Score)   — FROZEN  (baseline reference)
@@ -995,10 +996,79 @@ function shadowGate(signal) {
     const advisory = {
       advisoryOnly: true,
       authoritativeLayer: "live_bot",
+      channel: "live_entry_decision_context",
       runtime,
       engines: { A: engineA, B: engineB, C: engineC },
       meta: engineD,
     };
+
+    const advisoryTimestamp = new Date().toISOString();
+    const advisoryId = `${signal.signalId || signal.symbol || "unknown"}:${advisoryTimestamp}`;
+    const recommendation = (output) => output.wouldTrade === true
+      ? "TRADE"
+      : output.wouldTrade === false
+        ? "NO_TRADE"
+        : "ABSTAIN";
+    const outputs = {};
+    for (const [letter, output] of Object.entries({ A: engineA, B: engineB, C: engineC })) {
+      if (!runtime[letter]) continue;
+      outputs[letter] = {
+        advisoryId: `${advisoryId}:${letter}`,
+        engineId: output.engineId,
+        recommendation: recommendation(output),
+        confidence: output.confidence || null,
+        evaluation: output,
+      };
+    }
+    advisory.advisoryId = advisoryId;
+    advisory.generatedAt = advisoryTimestamp;
+    advisory.outputs = outputs;
+    advisory.delivery = {
+      target: "live_bot",
+      channel: "live_entry_decision_context",
+      generated: true,
+      delivered: true,
+      read: true,
+      usedForDecision: false,
+    };
+
+    // shadowGate() is called by Live Bot's entry path and its return value is
+    // consumed before broker execution. These lifecycle records make that
+    // real advisory hand-off observable without changing the live decision.
+    for (const [letter, output] of Object.entries(outputs)) {
+      const lifecycle = {
+        advisoryId: output.advisoryId,
+        signalId: signal.signalId || null,
+        setupId: signal.signalId || null,
+        symbol: signal.symbol || null,
+        side: signal.side || null,
+        engineId: output.engineId,
+        recommendation: output.recommendation,
+        confidence: output.confidence,
+        evaluation: output.evaluation,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        channel: "live_entry_decision_context",
+        timestamp: advisoryTimestamp,
+      };
+      try {
+        logEvent({ type: `shadow_${letter.toLowerCase()}_advisory_generated`, ...lifecycle });
+        logEvent({
+          type: `shadow_${letter.toLowerCase()}_advisory_delivered`,
+          ...lifecycle,
+          deliveredTo: "live_bot",
+        });
+        logEvent({
+          type: `shadow_${letter.toLowerCase()}_advisory_read`,
+          ...lifecycle,
+          readBy: "live_bot",
+          acceptedBy: "live_entry_decision_context",
+          accepted: true,
+          usedForDecision: false,
+        });
+      } catch (_) {}
+    }
+
     try {
       logEvent({
         type: "shadow_advisory",
@@ -1007,8 +1077,13 @@ function shadowGate(signal) {
         side: signal.side,
         advisoryOnly: true,
         authoritativeLayer: "live_bot",
+        channel: "live_entry_decision_context",
+        advisoryId,
+        generatedAt: advisoryTimestamp,
         runtime,
         engines: { A: engineA, B: engineB, C: engineC },
+        outputs,
+        delivery: advisory.delivery,
         meta: engineD,
       });
     } catch (_) {}
@@ -1081,7 +1156,11 @@ async function getShadowMemoryStats() {
     const counts = {};
     const types  = ["lab_shadow_a","lab_shadow_b","lab_shadow_c","lab_shadow_d",
                      "lab_comparison","shadow_gate_eval","shadow_gate_block",
-                     "shadow_advisory","trade_close"];
+                     "shadow_advisory",
+                     "shadow_a_advisory_generated","shadow_a_advisory_delivered","shadow_a_advisory_read",
+                     "shadow_b_advisory_generated","shadow_b_advisory_delivered","shadow_b_advisory_read",
+                     "shadow_c_advisory_generated","shadow_c_advisory_delivered","shadow_c_advisory_read",
+                     "trade_close"];
     for (const t of types) {
       try {
         counts[t] = (await db.get("SELECT COUNT(*) AS n FROM events WHERE type=?", t))?.n ?? 0;

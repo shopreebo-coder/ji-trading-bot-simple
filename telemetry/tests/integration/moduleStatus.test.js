@@ -84,11 +84,18 @@ test("registry covers all modules with valid statuses and full card contract", a
   assert.strictEqual(counted, out.modules.length, "summary sums to module count");
 });
 
-test("ACTIVE (influence on live) is restricted to live/exit engines in OBSERVE mode", async () => {
+test("ACTIVE influence is reserved for live paths and completed advisory hand-offs", async () => {
   const out = await makeManager().build();
   const influencers = out.modules.filter((m) => m.influencesLive).map((m) => m.id).sort();
-  assert.deepStrictEqual(influencers, ["exit-engine", "live-engine", "shadow-m"],
-    "in OBSERVE mode only Live Engine, Live Exit, and advisory Shadow M are live-connected");
+  const expected = ["exit-engine", "live-engine", "shadow-m"];
+  for (const letter of ["a", "b", "c"]) {
+    const module = out.modules.find((m) => m.id === `shadow-${letter}`);
+    const complete = module.stats.generated > 0 && module.stats.delivered > 0 && module.stats.read > 0;
+    assert.equal(module.influencesLive, complete,
+      `Shadow ${letter.toUpperCase()} influence follows generated/delivered/read telemetry`);
+    if (complete) expected.push(`shadow-${letter}`);
+  }
+  assert.deepStrictEqual(influencers, expected.sort());
   const gate = out.modules.find((m) => m.id === "shadow-gate");
   assert.strictEqual(gate.status, MODULE_STATUS.OBSERVING);
 });
