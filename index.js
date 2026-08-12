@@ -1939,6 +1939,33 @@ async function strategy(symbol) {
     const _sellFirstFail = Object.entries({ ..._m5s, ..._m1s }).find(([, v]) => !v)?.[0] || null;
     const _direction     = _buyAll ? "BUY" : _sellAll ? "SELL" : "NONE";
 
+    // Build these telemetry inputs before the advisory pre-gate so Shadow A/B/C
+    // receive a valid condition map for every fully evaluated signal.
+    const _buyCondMap = {
+      trend:    _m5b.trend,
+      m5close:  _m5b.close,
+      candle:   _m5b.candle,
+      ema:      _m5b.ema,
+      strength: _m5b.strength,
+      m1trend:  _m1b.trend,
+      m1candle: _m1b.candle,
+      m1prev:   _m1b.prev,
+      m1close:  _m1b.close,
+    };
+    const _sellCondMap = {
+      trend:    _m5s.trend,
+      m5close:  _m5s.close,
+      candle:   _m5s.candle,
+      ema:      _m5s.ema,
+      strength: _m5s.strength,
+      m1trend:  _m1s.trend,
+      m1candle: _m1s.candle,
+      m1prev:   _m1s.prev,
+      m1close:  _m1s.close,
+    };
+    const _buyPassCount = Object.values(_buyCondMap).filter(Boolean).length;
+    const _sellPassCount = Object.values(_sellCondMap).filter(Boolean).length;
+
     console.log(`\n===== ENTRY PIPELINE: ${symbol} [${session}] =====`);
     console.log(`  ATR: ${atrPips.toFixed(1)}p  Spread: ${spread.toFixed(2)}p  EMA-dist: ${emaDistance.toFixed(1)}p  Candle-str: ${candleStrength.toFixed(2)}  Entry-dist: ${entryDistance.toFixed(2)}p`);
     console.log(`  M5-BUY : trend${_T(_m5b.trend)} close${_T(_m5b.close)} candle${_T(_m5b.candle)} ema${_T(_m5b.ema)} str${_T(_m5b.strength)}  | M1-BUY : trend${_T(_m1b.trend)} candle${_T(_m1b.candle)} prev${_T(_m1b.prev)} close${_T(_m1b.close)}`);
@@ -2221,18 +2248,6 @@ async function strategy(symbol) {
         console.log(`[RELAXED_GATE] BUY ${symbol} passScore=${_buyPassScore}/9 — anchor(ema+str+candle)=TRUE — relaxed gate fired`);
       }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
-      const _buyCondMap  = {
-        trend:    _m5b.trend,
-        m5close:  _m5b.close,
-        candle:   _m5b.candle,
-        ema:      _m5b.ema,
-        strength: _m5b.strength,
-        m1trend:  _m1b.trend,
-        m1candle: _m1b.candle,
-        m1prev:   _m1b.prev,
-        m1close:  _m1b.close,
-      };
-      const _buyPassCount = Object.values(_buyCondMap).filter(Boolean).length;
       const _m5CandleType  = bullishCandle(lastCandle) ? "bullish" : "neutral-doji";
       const _m1PrevType    = bullishCandle(m1PrevCandle) ? "bullish" : "neutral-doji";
       if (!_m1TrendStatus) {
@@ -2325,18 +2340,6 @@ async function strategy(symbol) {
         console.log(`[RELAXED_GATE] SELL ${symbol} passScore=${_sellPassScore}/9 — anchor(ema+str+candle)=TRUE — relaxed gate fired`);
       }
       // TRADE QUALITY TELEMETRY — full 9-condition map stored on every trade_open for server-side analysis
-      const _sellCondMap  = {
-        trend:    _m5s.trend,
-        m5close:  _m5s.close,
-        candle:   _m5s.candle,
-        ema:      _m5s.ema,
-        strength: _m5s.strength,
-        m1trend:  _m1s.trend,
-        m1candle: _m1s.candle,
-        m1prev:   _m1s.prev,
-        m1close:  _m1s.close,
-      };
-      const _sellPassCount = Object.values(_sellCondMap).filter(Boolean).length;
       const _m5CandleType  = bearishCandle(lastCandle) ? "bearish" : "neutral-doji";
       const _m1PrevType    = bearishCandle(m1PrevCandle) ? "bearish" : "neutral-doji";
       if (!_m1TrendStatus) {

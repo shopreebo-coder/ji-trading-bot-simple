@@ -42,6 +42,7 @@ function makeManager(overrides = {}) {
       getStats: () => ({ credsPresent: false, pollCount: 0, syntheticWritten: 0, pendingWithinGrace: 0, pendingRetry: 0 }),
     },
     memoryIntegration: overrides.memoryIntegration || { getStatus: () => ({ enabled: true }) },
+    runtimeStartedAt: overrides.runtimeStartedAt,
     getLiveState: overrides.getLiveState || (() => ({ botStatus: "running", openTrades: {}, dailyTrades: 0 })),
   });
 }
@@ -105,6 +106,25 @@ test("ACTIVE influence is reserved for live paths and completed advisory hand-of
   assert.deepStrictEqual(influencers, expected.sort());
   const gate = out.modules.find((m) => m.id === "shadow-gate");
   assert.strictEqual(gate.status, MODULE_STATUS.OBSERVING);
+});
+
+test("historical lifecycle rows do not activate the current runtime", async () => {
+  const futureRuntime = new Date(Date.now() + 60_000).toISOString();
+  const out = await makeManager({ runtimeStartedAt: futureRuntime }).build();
+
+  for (const letter of ["a", "b", "c"]) {
+    const module = out.modules.find((m) => m.id === `shadow-${letter}`);
+    assert.deepStrictEqual(
+      { generated: module.stats.generated, delivered: module.stats.delivered, read: module.stats.read },
+      { generated: 0, delivered: 0, read: 0 },
+      `Shadow ${letter.toUpperCase()} ignores pre-runtime lifecycle rows`,
+    );
+    assert.strictEqual(module.influencesLive, false);
+  }
+
+  const advisor = out.modules.find((m) => m.id === "selected-advisor");
+  assert.deepStrictEqual(advisor.stats.entryHandshake, { generated: 0, delivered: 0, read: 0 });
+  assert.strictEqual(advisor.influencesLive, false);
 });
 
 test("GATE mode promotes shadow-gate and shadow-d to ACTIVE with influence", async () => {

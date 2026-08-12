@@ -8,6 +8,7 @@
  */
 
 require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+const PROCESS_STARTED_AT = new Date().toISOString();
 
 const express    = require("express");
 const path       = require("path");
@@ -236,6 +237,7 @@ for (const [id, reason] of [
 // getters of the managers above. Zero writes, zero timers, zero trading impact.
 const moduleStatus = new ModuleStatusManager({
   db,
+  runtimeStartedAt: PROCESS_STARTED_AT,
   flags: {
     memory:          { enabled: SHADOW_OS_MEMORY_ENABLED,     raw: process.env.SHADOW_OS_MEMORY },
     research:        { enabled: SHADOW_LAB_RESEARCH_ENABLED,  raw: process.env.SHADOW_LAB_RESEARCH },
