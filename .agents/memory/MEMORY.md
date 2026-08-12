@@ -15,3 +15,4 @@
 - [Module status Shadow M legacy](module-status-shadow-m-legacy.md) — OBSERVE test conflicts with current Shadow M advisory cooperation; keep separate from Exit Engine X.
 - [Public application routing](public-routing.md) — Telemetry owns `/`; Mockup Sandbox uses `/mockup`; API artifact uses `/api-server` so telemetry keeps `/api/*`.
 - [Cross-process runtime toggles](runtime-toggle-control.md) — child-process Shadow controls require a shared atomic channel, not only server memory.
+- [GitHub push path](github-push-integration.md) — when local HTTPS auth fails, use the installed GitHub integration with a non-force fast-forward after comparing remote blobs.
