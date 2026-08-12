@@ -253,16 +253,33 @@ class ModuleStatusManager {
       const obs = ev[`lab_shadow_${s.letter}`] || 0;
       const isD = s.letter === "d";
       const dInfluences = isD && gateMode;
+      const advisory = isD ? null : {
+        generated: ev[`shadow_${s.letter}_advisory_generated`] || 0,
+        delivered: ev[`shadow_${s.letter}_advisory_delivered`] || 0,
+        read: ev[`shadow_${s.letter}_advisory_read`] || 0,
+      };
+      const advisoryInfluences = !isD &&
+        advisory.generated > 0 &&
+        advisory.delivered > 0 &&
+        advisory.read > 0;
       let status, reason = null;
       if (dInfluences)      { status = STATUS.ACTIVE; reason = "GATE mode — HIGH-confidence SKIP blocks entries"; }
+      else if (advisoryInfluences) {
+        status = STATUS.ACTIVE;
+        reason = "Active — advisory cooperation: entry recommendations delivered and read by Live Bot";
+      }
       else if (obs > 0)     { status = s.learning ? STATUS.LEARNING : STATUS.OBSERVING; }
       else                  { status = STATUS.INSTALLED; reason = "Waiting for first evaluated signal"; }
       modules.push({
         id: `shadow-${s.letter}`, name: s.name, tier: "SHADOW RESEARCH",
         status,
-        connected: true, collectsData: true, influencesLive: dInfluences,
+        connected: true, collectsData: true, influencesLive: dInfluences || advisoryInfluences,
         observations: obs,
-        stats: { pipelineEvals: obs, researchEvals: this._evalsForLetter(evals, s.letter) },
+        stats: {
+          pipelineEvals: obs,
+          researchEvals: this._evalsForLetter(evals, s.letter),
+          ...(advisory || {}),
+        },
         reason,
         alsoVisibleIn: "LAB",
       });

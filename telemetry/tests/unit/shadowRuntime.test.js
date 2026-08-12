@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const { db } = require("../../db-adapter");
 
 const controlPath = path.join(os.tmpdir(), `shadow-runtime-${process.pid}-${Date.now()}.json`);
 process.env.RUNTIME_MODULES_FILE = controlPath;
@@ -18,6 +19,27 @@ const signal = {
   side: "buy",
   session: "LONDON",
 };
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function lifecycleRows(signalId, letter, stage) {
+  return db.all(
+    `SELECT type, data FROM events WHERE type=? AND data LIKE ?`,
+    `shadow_${letter}_advisory_${stage}`,
+    `%${signalId}%`,
+  );
+}
+
+async function waitForLifecycleRows(signalId, letter, stage, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  let rows = [];
+  do {
+    rows = await lifecycleRows(signalId, letter, stage);
+    if (rows.length > 0) return rows;
+    await wait(50);
+  } while (Date.now() < deadline);
+  return rows;
+}
 
 test.after(() => {
   try { fs.unlinkSync(controlPath); } catch (_) {}
@@ -64,4 +86,77 @@ test("Shadow Gate OFF is an explicit fail-open no-op", () => {
   assert.equal(result.reason, "shadow_gate_runtime_off");
   assert.equal(result.blocked, false);
   assert.equal(result.advisoryOnly, true);
+});
+
+test("A/B/C ON generate and deliver independent advisory outputs to Live", async () => {
+  runtime.ensureRuntimeDefaults({
+    "shadow-a": true,
+    "shadow-b": true,
+    "shadow-c": true,
+    "shadow-d": true,
+    "shadow-gate": true,
+  });
+  const signalId = `advisory-on-${process.pid}-${Date.now()}`;
+  const result = shadowGate({ ...signal, signalId });
+
+  assert.deepEqual(Object.keys(result.advisory.outputs).sort(), ["A", "B", "C"]);
+  assert.equal(result.advisory.advisoryOnly, true);
+  assert.equal(result.advisory.authoritativeLayer, "live_bot");
+  assert.equal(result.advisory.channel, "live_entry_decision_context");
+  assert.deepEqual(result.advisory.delivery, {
+    target: "live_bot",
+    channel: "live_entry_decision_context",
+    generated: true,
+    delivered: true,
+    read: true,
+    usedForDecision: false,
+  });
+
+  for (const letter of ["a", "b", "c"]) {
+    const generated = await waitForLifecycleRows(signalId, letter, "generated");
+    const delivered = await waitForLifecycleRows(signalId, letter, "delivered");
+    const read = await waitForLifecycleRows(signalId, letter, "read");
+    assert.equal(generated.length, 1, `${letter.toUpperCase()} advisory generated`);
+    assert.equal(delivered.length, 1, `${letter.toUpperCase()} advisory delivered`);
+    assert.equal(read.length, 1, `${letter.toUpperCase()} advisory read`);
+    const payload = JSON.parse(read[0].data);
+    assert.equal(payload.accepted, true);
+    assert.equal(payload.advisoryOnly, true);
+    assert.equal(payload.authoritativeLayer, "live_bot");
+    assert.equal(payload.symbol, "EUR_USD");
+    assert.ok(payload.recommendation);
+    assert.ok(Object.prototype.hasOwnProperty.call(payload, "confidence"));
+  }
+});
+
+test("A/B/C OFF generate no advisory and cannot influence Live", async () => {
+  runtime.ensureRuntimeDefaults({
+    "shadow-a": true,
+    "shadow-b": true,
+    "shadow-c": true,
+    "shadow-d": true,
+    "shadow-gate": true,
+  });
+  const signalId = `advisory-off-${process.pid}-${Date.now()}`;
+  for (const letter of ["a", "b", "c"]) {
+    runtime.setRuntimeEnabled(`shadow-${letter}`, false);
+    try {
+      const result = shadowGate({ ...signal, signalId: `${signalId}-${letter}` });
+      assert.equal(result.blocked, false, `${letter.toUpperCase()} OFF is fail-open`);
+      assert.equal(result.advisory.outputs[letter.toUpperCase()], undefined);
+      assert.equal(result.advisory.delivery.usedForDecision, false);
+    } finally {
+      runtime.setRuntimeEnabled(`shadow-${letter}`, true);
+    }
+  }
+  await wait(100);
+  for (const letter of ["a", "b", "c"]) {
+    for (const stage of ["generated", "delivered", "read"]) {
+      assert.equal(
+        (await lifecycleRows(`${signalId}-${letter}`, letter, stage)).length,
+        0,
+        `${letter.toUpperCase()} OFF has no ${stage} advisory`,
+      );
+    }
+  }
 });
