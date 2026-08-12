@@ -50,6 +50,7 @@ class ModuleStatusManager {
    * @param {object} opts.selectedEngine      SelectedEngineManager instance
    * @param {object} opts.telemetryReconciler TelemetryReconciler instance
    * @param {object} opts.memoryIntegration   LiveMemoryIntegration instance
+   * @param {object} opts.runtimeRegistry     RuntimeModuleRegistry instance
    * @param {function} opts.getLiveState      () => live state object of server.js
    * @param {object} [opts.logger]
    */
@@ -62,6 +63,7 @@ class ModuleStatusManager {
     this.selectedEngine      = opts.selectedEngine      || null;
     this.telemetryReconciler = opts.telemetryReconciler || null;
     this.memoryIntegration   = opts.memoryIntegration   || null;
+    this.runtimeRegistry     = opts.runtimeRegistry     || null;
     this.getLiveState        = opts.getLiveState        || (() => ({}));
     this.logger              = opts.logger || { info: () => {}, error: () => {} };
   }
@@ -233,6 +235,7 @@ class ModuleStatusManager {
       stats: {
         mode,
         gateBlocks: ev.shadow_gate_block || 0,
+        advisoryEvents: ev.shadow_advisory || 0,
         modeChanges: ev.shadow_mode_change || 0,
       },
       reason: gateMode ? "GATE mode — blocks HIGH-confidence SKIP signals" : "OBSERVE mode — data collection, never blocks",
@@ -482,6 +485,28 @@ class ModuleStatusManager {
         reason: "Planned — Sprint 7 not started yet",
         alsoVisibleIn: null,
       });
+    }
+
+    // Add runtime controls to every card. Toggleable modules are forced to a
+    // truthful DISABLED card when their lifecycle/control channel is off.
+    for (const module of modules) {
+      const runtime = this.runtimeRegistry && this.runtimeRegistry.getStatus(module.id);
+      module.runtimeEnabled = runtime ? runtime.runtimeEnabled : !(
+        module.status === STATUS.NOT_INSTALLED
+      );
+      module.toggleable = runtime ? runtime.toggleable : false;
+      module.toggleReason = runtime ? runtime.toggleReason : (
+        module.status === STATUS.NOT_INSTALLED ? "Module is not installed" : "Protected or on-demand module"
+      );
+      module.transition = runtime ? runtime.transition : null;
+      module.lastChangedAt = runtime ? runtime.lastChangedAt : null;
+      if (runtime && !runtime.runtimeEnabled && runtime.toggleable) {
+        module.status = STATUS.DISABLED;
+        module.connected = false;
+        module.collectsData = false;
+        module.influencesLive = false;
+        module.reason = "Explicitly disabled at runtime";
+      }
     }
 
     const summary = {};

@@ -17,6 +17,7 @@
  */
 
 const { logEvent, db } = require("./index");
+const { getRuntimeEnabled } = require("./runtime-control");
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SHADOW ENGINE A — Quality Score (0–100)  ★ FROZEN — DO NOT MODIFY ★
@@ -934,10 +935,43 @@ function setShadowMode(m) {
  */
 function shadowGate(signal) {
   try {
-    const engineA = ShadowQualityEngine.evaluate(signal);
-    const engineB = ShadowContextEngine.evaluate(signal);
-    const engineC = ShadowKNNEngine.evaluate(signal);
-    const engineD = ShadowMetaEngine.evaluate(signal, engineA, engineB, engineC);
+    const gateEnabled = getRuntimeEnabled("shadow-gate", true);
+    const runtime = {
+      A: getRuntimeEnabled("shadow-a", true),
+      B: getRuntimeEnabled("shadow-b", true),
+      C: getRuntimeEnabled("shadow-c", true),
+      D: getRuntimeEnabled("shadow-d", true),
+      gate: gateEnabled,
+    };
+    if (!gateEnabled) {
+      return {
+        blocked: false,
+        mode: "DISABLED",
+        reason: "shadow_gate_runtime_off",
+        confidence: "NONE",
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        engines: {},
+        runtime,
+      };
+    }
+
+    const disabled = (letter) => ({
+      engineId: `ENGINE_${letter}_RUNTIME_DISABLED`,
+      wouldTrade: null,
+      confidence: "NONE",
+      reason: `shadow_${letter.toLowerCase()}_runtime_off`,
+      disabled: true,
+      marketState: "DISABLED",
+      historicalWinrate: null,
+      kNeighbours: 0,
+    });
+    const engineA = runtime.A ? ShadowQualityEngine.evaluate(signal) : disabled("A");
+    const engineB = runtime.B ? ShadowContextEngine.evaluate(signal) : disabled("B");
+    const engineC = runtime.C ? ShadowKNNEngine.evaluate(signal) : disabled("C");
+    const engineD = runtime.D
+      ? ShadowMetaEngine.evaluate(signal, engineA, engineB, engineC)
+      : disabled("D");
 
     // Log gate evaluation (always — this feeds Shadow Memory even in OBSERVE)
     try {
@@ -954,12 +988,43 @@ function shadowGate(signal) {
         engineCKNeigh:     engineC.kNeighbours, engineCConfidence: engineC.confidence,
         engineDDecision:   engineD.wouldTrade,  engineDVoteScore: engineD.metaVoteScore,
         engineDConfidence: engineD.confidence,  engineDReason:    engineD.reason,
+        runtime,
+      });
+    } catch (_) {}
+
+    const advisory = {
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+      runtime,
+      engines: { A: engineA, B: engineB, C: engineC },
+      meta: engineD,
+    };
+    try {
+      logEvent({
+        type: "shadow_advisory",
+        signalId: signal.signalId,
+        symbol: signal.symbol,
+        side: signal.side,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        runtime,
+        engines: { A: engineA, B: engineB, C: engineC },
+        meta: engineD,
       });
     } catch (_) {}
 
     // OBSERVE mode — data collection, never block
     if (_shadowMode === "OBSERVE") {
-      return { blocked: false, mode: "OBSERVE", reason: "observe_mode_data_collection", confidence: engineD.confidence };
+      return {
+        blocked: false,
+        mode: "OBSERVE",
+        reason: "observe_mode_data_collection",
+        confidence: engineD.confidence,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        advisory,
+        runtime,
+      };
     }
 
     // GATE mode — block only on HIGH-confidence SKIP
@@ -980,6 +1045,10 @@ function shadowGate(signal) {
         reason:     engineD.reason,
         confidence: engineD.confidence,
         voteScore:  engineD.metaVoteScore,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        advisory,
+        runtime,
       };
     }
 
@@ -991,6 +1060,10 @@ function shadowGate(signal) {
                   engineD.wouldTrade === true  ? "meta_approved"     : "meta_low_confidence_allow",
       confidence: engineD.confidence,
       voteScore:  engineD.metaVoteScore,
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+      advisory,
+      runtime,
     };
 
   } catch (err) {
@@ -1007,7 +1080,8 @@ async function getShadowMemoryStats() {
   try {
     const counts = {};
     const types  = ["lab_shadow_a","lab_shadow_b","lab_shadow_c","lab_shadow_d",
-                     "lab_comparison","shadow_gate_eval","shadow_gate_block","trade_close"];
+                     "lab_comparison","shadow_gate_eval","shadow_gate_block",
+                     "shadow_advisory","trade_close"];
     for (const t of types) {
       try {
         counts[t] = (await db.get("SELECT COUNT(*) AS n FROM events WHERE type=?", t))?.n ?? 0;

@@ -254,6 +254,7 @@ class ShadowM {
     this._knownSids = new Set();  // all signalIds ever opened — prevents duplicate open on replay
     this._polling   = false;      // guard against concurrent poll ticks
     this._pollCount = 0;          // DIAG: total poll ticks since start
+    this._timer     = null;
   }
 
   async start() {
@@ -268,10 +269,19 @@ class ShadowM {
     // DB polling — replaces in-process emitter.
     // Bot runs as a child process (spawn); emitter is process-local and never crosses that boundary.
     // Polling the shared PostgreSQL table is the only reliable cross-process mechanism.
-    setInterval(() => this._poll().catch(err => console.error("[SHADOW M] Poll error:", err.message)), 5000);
+    this._timer = setInterval(() => this._poll().catch(err => console.error("[SHADOW M] Poll error:", err.message)), 5000);
+    if (this._timer.unref) this._timer.unref();
 
     console.log(`[SHADOW M] Exit Lab online — DB-polling, OBSERVE only | PID=${process.pid} | lastId=${this._lastId} | active=${this._active.size} | known=${this._knownSids.size}`);
     logEvent({ type: "shadowm_startup", module: "exit_lab", restored: this._active.size });
+  }
+
+  stop() {
+    if (this._timer) {
+      clearInterval(this._timer);
+      this._timer = null;
+    }
+    this._started = false;
   }
 
   async getAdvisory(state = {}) {

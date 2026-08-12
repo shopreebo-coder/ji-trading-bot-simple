@@ -25,6 +25,7 @@ const { SelectedAdvisor, DEFAULT_ATTEMPT_DELAYS_MS, DEFAULT_STALE_MS, DEFAULT_RI
 const { TelemetryReconciler, buildDefaultOandaClient, CURSOR_TYPE: RECONCILER_CURSOR_TYPE, REASON_MAP: RECONCILER_REASON_MAP } = require("./TelemetryReconciler");
 const { ModuleStatusManager, MODULE_STATUS } = require("./ModuleStatusManager");
 const { CooperativeManager } = require("./CooperativeManager");
+const { RuntimeModuleRegistry } = require("./RuntimeModuleRegistry");
 
 module.exports = {
   RuntimeDomainManager,
@@ -73,5 +74,6 @@ module.exports = {
   // Sprint 9 — Module Status Registry (presentation-only, read-only)
   ModuleStatusManager,
   MODULE_STATUS,
+  RuntimeModuleRegistry,
   CooperativeManager,
 };

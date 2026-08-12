@@ -20,7 +20,7 @@ const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = requi
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
 // Every hook below is best-effort — a memory-layer failure NEVER breaks trading.
 const SHADOW_OS_MEMORY_ENABLED = (process.env.SHADOW_OS_MEMORY || "on").toLowerCase() !== "off";
-const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager, CooperativeManager } = require("./managers");
+const { LiveMemoryIntegration, ShadowLabManager, KnowledgeManager, SelectedEngineManager, SelectedAdvisor, TelemetryReconciler, ModuleStatusManager, RuntimeModuleRegistry, CooperativeManager } = require("./managers");
 const cooperativeManager = new CooperativeManager();
 const COOP_ENTRY_ENABLED = (process.env.COOP_ENTRY_ENABLED || "on").toLowerCase() === "on";
 const COOP_ENTRY_HIGH_CONFIDENCE = Number.isFinite(Number(process.env.COOP_ENTRY_HIGH_CONFIDENCE))
@@ -167,6 +167,67 @@ const telemetryReconciler = new TelemetryReconciler({
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
 
+// ── Runtime module registry ───────────────────────────────────────────────────
+// Parent-process managers use lifecycle adapters. Shadow A/B/C/D/Gate use the
+// shared runtime-control file because shadowGate() runs inside the child bot
+// process. Protected execution/telemetry surfaces are visible but cannot be
+// toggled here: disabling them would violate the authoritative Live Bot
+// contract or remove the API needed to control/observe the system.
+const runtimeRegistry = new RuntimeModuleRegistry({
+  logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
+});
+for (const id of ["shadow-a", "shadow-b", "shadow-c", "shadow-d", "shadow-gate"]) {
+  runtimeRegistry.register({ id, enabled: true, toggleable: true, control: true });
+}
+runtimeRegistry
+  .register({
+    id: "shadow-m",
+    enabled: true,
+    toggleable: true,
+    lifecycle: shadowM,
+  })
+  .register({
+    id: "shadowlab-research",
+    enabled: SHADOW_LAB_RESEARCH_ENABLED,
+    toggleable: true,
+    lifecycle: shadowLabResearch,
+  })
+  .register({
+    id: "knowledge-layer",
+    enabled: KNOWLEDGE_LAYER_ENABLED,
+    toggleable: true,
+    lifecycle: knowledge,
+  })
+  .register({
+    id: "selected-engine",
+    enabled: SELECTED_ENGINE_ENABLED,
+    toggleable: true,
+    lifecycle: selectedEngine,
+  })
+  .register({
+    id: "selected-advisor",
+    enabled: SELECTED_ADVISOR_ENABLED,
+    toggleable: true,
+    lifecycle: selectedAdvisor,
+  })
+  .register({
+    id: "telemetry-reconciler",
+    enabled: TELEMETRY_RECONCILER_ENABLED,
+    toggleable: true,
+    lifecycle: telemetryReconciler,
+  });
+for (const [id, reason] of [
+  ["live-engine", "Live Bot is the sole authoritative execution layer"],
+  ["exit-engine", "Live Exit remains authoritative and must not be disabled here"],
+  ["exit-engine-x", "Exit Engine X is protected shadow-only observability"],
+  ["memory", "Memory hooks are protected best-effort hooks on the live process"],
+  ["telemetry-core", "Telemetry Core is required for runtime control and observability"],
+  ["health-monitor", "Health endpoints are required for safe operation"],
+  ["ai-analysis", "AI Analysis is on-demand and has no background lifecycle"],
+]) {
+  runtimeRegistry.register({ id, enabled: true, toggleable: false, reason });
+}
+
 // ── SPRINT 9: Module Status Registry (READ-ONLY, presentation-only) ───────────
 // PROJECT RULE (Sprint 9): every existing and future module must have its own
 // visible status section in the dashboard — no module may stay hidden in code.
@@ -190,6 +251,7 @@ const moduleStatus = new ModuleStatusManager({
   selectedEngine,
   telemetryReconciler,
   memoryIntegration,
+  runtimeRegistry,
   getLiveState: () => live, // `live` is defined below; only called inside request handlers
   logger: { info: (m) => console.log(m), error: (m) => console.error(m) },
 });
@@ -3869,7 +3931,8 @@ app.get("/api/selected/advisories", async (req, res) => {
 
 app.post("/api/cooperative/entry", express.json(), async (req, res) => {
   try {
-    const result = SELECTED_ENGINE_ENABLED && COOP_ENTRY_ENABLED
+    const selectedRuntimeOn = runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled !== false;
+    const result = SELECTED_ENGINE_ENABLED && selectedRuntimeOn && COOP_ENTRY_ENABLED
       ? await selectedEngine.evaluateEntry(req.body || {})
       : { decision: "ABSTAIN", contextId: null, explanation: "cooperation disabled" };
     const policy = cooperativeManager.entryPolicy(result, {
@@ -3961,7 +4024,7 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
       stack: error?.stack || null,
     });
   }
-  if (!SELECTED_ENGINE_ENABLED) return;
+  if (!SELECTED_ENGINE_ENABLED || runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled === false) return;
   // Build a fresh DecisionContext from this live signal — fire-and-forget.
   // The manager reads only evaluations matching this signalId; if LAB has not
   // recorded them yet, the context remains incomplete rather than mixing rows
@@ -3988,6 +4051,14 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
 
 app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
   try {
+    if (runtimeRegistry.getStatus("shadow-m")?.runtimeEnabled === false) {
+      return res.json({
+        ok: true,
+        action: "HOLD",
+        advisoryOnly: true,
+        evidence: { tracked: false, reason: "shadow_m_runtime_off" },
+      });
+    }
     const shadow = await shadowM.getAdvisory(req.body || {});
     const policy = cooperativeManager.managementPolicy(shadow);
     // Use the actual Live Exit Engine action passed by the bot, not a hardcoded placeholder.
@@ -4034,6 +4105,7 @@ async function gracefulExit(signal) {
     if (_botProc) { try { _botProc.kill("SIGTERM"); } catch (_) {} }
     try { selectedEngine.stop(); } catch (_) {} // read-only, unref'd — stop for symmetry
     try { selectedAdvisor.stop(); } catch (_) {} // advisor-only, unref'd timers — stop for symmetry
+    try { await runtimeRegistry.stopAll(); } catch (_) {}
     await memoryIntegration.gracefulShutdown({ timeoutMs: 4000, reason: signal });
   } catch (err) {
     console.error("[SERVER] Graceful shutdown error:", err.message);
@@ -4128,32 +4200,28 @@ app.get("/api/modules/status", async (req, res) => {
   }
 });
 
+// Runtime ON/OFF control. Every mutation goes through the registry so a
+// protected execution surface cannot be accidentally disabled.
+app.post("/api/modules/:id/runtime", express.json(), async (req, res) => {
+  const requested = req.body && req.body.enabled;
+  if (typeof requested !== "boolean") {
+    return res.status(400).json({ ok: false, error: "enabled must be boolean" });
+  }
+  try {
+    const state = await runtimeRegistry.setEnabled(req.params.id, requested);
+    res.json({ ok: true, module: state, registry: await moduleStatus.build() });
+  } catch (error) {
+    const status = error.code === "UNKNOWN_MODULE" ? 404 :
+      error.code === "PROTECTED_MODULE" ? 409 : 500;
+    res.status(status).json({ ok: false, error: error.message, code: error.code || "RUNTIME_TOGGLE_FAILED" });
+  }
+});
+
 // ── start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[SERVER] API on :${PORT}  DB: ${DB_PATH}`);
-  startBot();
   shadowLab.start();
-  shadowM.start().catch(err => console.error("[SERVER] shadowM.start:", err.message));
-  // Sprint 5: research reconciler — only when explicitly enabled (default OFF = no-op).
-  if (SHADOW_LAB_RESEARCH_ENABLED) {
-    console.log("[SERVER] SHADOW_LAB_RESEARCH=on — starting research reconciler (read-only)");
-    shadowLabResearch.start().catch(err => console.error("[SERVER] shadowLabResearch.start:", err.message));
-  }
-  // Sprint 6: knowledge layer — only when explicitly enabled (default OFF = no-op).
-  if (KNOWLEDGE_LAYER_ENABLED) {
-    console.log("[SERVER] KNOWLEDGE_LAYER=on — starting knowledge builder (read-only)");
-    knowledge.start().catch(err => console.error("[SERVER] knowledge.start:", err.message));
-  }
-  // Selected Engine: read-only intelligence orchestration — only when enabled (default OFF = no-op).
-  if (SELECTED_ENGINE_ENABLED) {
-    console.log("[SERVER] SELECTED_ENGINE=on — starting selected engine (read-only)");
-    selectedEngine.start().catch(err => console.error("[SERVER] selectedEngine.start:", err.message));
-  }
-  // Sprint 7.2: telemetry reconciler — default ON; TELEMETRY_RECONCILER=off = complete no-op.
-  if (TELEMETRY_RECONCILER_ENABLED) {
-    console.log("[SERVER] TELEMETRY_RECONCILER=on — starting OANDA close reconciler (read-only vs OANDA, telemetry-only writes)");
-    telemetryReconciler.start().catch(err => console.error("[SERVER] telemetryReconciler.start:", err.message));
-  } else {
-    console.log("[SERVER] TELEMETRY_RECONCILER=off — OANDA-side closes will NOT be captured (pre-7.2 behavior)");
-  }
+  runtimeRegistry.startInitial()
+    .then(() => startBot())
+    .catch(err => console.error("[SERVER] runtime module startup:", err.message));
 });

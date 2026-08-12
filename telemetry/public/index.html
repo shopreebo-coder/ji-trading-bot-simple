@@ -141,6 +141,10 @@ tr:hover td{background:#1c2128}
 .exitx-badge.bad{color:#f85149;border-color:#da3633;background:#2d1111}
 .exitx-badge.info{color:#58a6ff;border-color:#1f6feb;background:#0d1d35}
 .exitx-subtitle{font-size:12px;color:#8b949e;margin:-6px 0 14px}
+.module-toggle{padding:4px 9px;border:1px solid #30363d;border-radius:5px;background:#21262d;color:#e6edf3;cursor:pointer;font-size:11px;font-weight:600}
+.module-toggle:hover{background:#30363d}
+.module-toggle.off{color:#3fb950;border-color:#238636}
+.module-toggle:disabled{opacity:.55;cursor:wait}
 </style>
 </head>
 <body>
@@ -163,10 +167,11 @@ function fmtNum(v,dec=2){ return v==null?"—":parseFloat(v).toFixed(dec); }
 
 async function api(path, options={}){
   const timeoutMs = Number(options.timeoutMs || 8000);
+  const { timeoutMs: _ignored, ...fetchOptions } = options;
   const controller = new AbortController();
   const timer = setTimeout(()=>controller.abort(), timeoutMs);
   try {
-    const r = await fetch(path, {signal: controller.signal});
+    const r = await fetch(path, {...fetchOptions, signal: controller.signal});
     const body = await r.json().catch(()=>({}));
     if(!r.ok){
       const error = new Error(body?.error || `HTTP ${r.status}`);
@@ -228,16 +233,31 @@ function fmtStatVal(v){
   if(typeof v==="object"){ try{ return JSON.stringify(v); }catch(e){ return String(v); } }
   return String(v);
 }
-function ModuleCard({ m }){
+function ModuleCard({ m, onToggle, busy }){
   const c = MODULE_STATUS_COLORS[m.status] || "#9ca3af";
   const statKeys = m.stats && typeof m.stats==="object" ? Object.keys(m.stats) : [];
   return (
     <div className="card" style={{minWidth:280,maxWidth:400,flex:"1 1 300px",textAlign:"left"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
         <div style={{fontSize:13,fontWeight:600,color:"#e2e8f0"}}>{m.name}</div>
-        <span style={{background:c,color:"#0b1220",padding:"2px 8px",borderRadius:10,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{m.status}</span>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{background:c,color:"#0b1220",padding:"2px 8px",borderRadius:10,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{m.status}</span>
+          {m.toggleable && (
+            <button
+              className={`module-toggle ${m.runtimeEnabled ? "" : "off"}`}
+              disabled={!!busy || !!m.transition}
+              title={m.toggleReason || "Runtime lifecycle control"}
+              onClick={()=>onToggle(m)}
+            >
+              {busy || m.transition ? "…" : (m.runtimeEnabled ? "OFF" : "ON")}
+            </button>
+          )}
+        </div>
       </div>
       <div style={{fontSize:12,marginTop:6,lineHeight:1.7}}>
+        <div>Runtime: <b style={{color:m.runtimeEnabled?"#3fb950":"#f97316"}}>{m.runtimeEnabled?"ON":"OFF"}</b>
+          {!m.toggleable && m.toggleReason ? <span style={{color:"#64748b"}}> · protected</span> : null}
+        </div>
         <div>Connected to Live Engine: <ModYesNo v={!!m.connected}/></div>
         <div>Collecting data: <ModYesNo v={!!m.collectsData}/></div>
         <div>Influence on Live: <ModYesNo v={!!m.influencesLive}/></div>
@@ -258,6 +278,7 @@ function ModuleCard({ m }){
 function ModulesTab(){
   const [data,setData] = useState(null);
   const [err,setErr]   = useState(null);
+  const [busy,setBusy] = useState({});
   useEffect(()=>{
     let alive = true;
     const load = () => api("/api/modules/status")
@@ -269,6 +290,22 @@ function ModulesTab(){
     const id = setInterval(load, 30000);
     return ()=>{ alive=false; clearInterval(id); };
   },[]);
+  const toggle = async (module) => {
+    setBusy(prev=>({...prev,[module.id]:true}));
+    try {
+      const next = await api(`/api/modules/${encodeURIComponent(module.id)}/runtime`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({enabled:!module.runtimeEnabled}),
+      });
+      if(next?.registry?.modules) { setData(next.registry); setErr(null); }
+      else throw new Error(next?.error || "unexpected runtime toggle response");
+    } catch(e) {
+      setErr(e.message);
+    } finally {
+      setBusy(prev=>{const copy={...prev}; delete copy[module.id]; return copy;});
+    }
+  };
   if(err && !data) return <div className="page"><div className="card">Module registry error: {String(err)}</div></div>;
   if(!data) return <div className="page"><div className="card">Loading module registry…</div></div>;
   const tiers=[]; const byTier={};
@@ -293,7 +330,7 @@ function ModulesTab(){
         <div key={t}>
           <h3 style={{margin:"14px 2px 6px",color:"#cbd5e1"}}>{t}</h3>
           <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
-            {byTier[t].map(m=> <ModuleCard key={m.id} m={m}/>)}
+             {byTier[t].map(m=> <ModuleCard key={m.id} m={m} onToggle={toggle} busy={busy[m.id]}/>)}
           </div>
         </div>
       ))}
