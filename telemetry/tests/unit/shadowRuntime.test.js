@@ -88,7 +88,7 @@ test("Shadow Gate OFF is an explicit fail-open no-op", () => {
   assert.equal(result.advisoryOnly, true);
 });
 
-test("A/B/C ON generate and deliver independent advisory outputs to Live", async () => {
+test("A/B/C ON generate independent outputs before the Selected hand-off", async () => {
   runtime.ensureRuntimeDefaults({
     "shadow-a": true,
     "shadow-b": true,
@@ -104,11 +104,11 @@ test("A/B/C ON generate and deliver independent advisory outputs to Live", async
   assert.equal(result.advisory.authoritativeLayer, "live_bot");
   assert.equal(result.advisory.channel, "live_entry_decision_context");
   assert.deepEqual(result.advisory.delivery, {
-    target: "live_bot",
+    target: "selected_advisor",
     channel: "live_entry_decision_context",
     generated: true,
-    delivered: true,
-    read: true,
+    delivered: false,
+    read: false,
     usedForDecision: false,
   });
 
@@ -117,15 +117,8 @@ test("A/B/C ON generate and deliver independent advisory outputs to Live", async
     const delivered = await waitForLifecycleRows(signalId, letter, "delivered");
     const read = await waitForLifecycleRows(signalId, letter, "read");
     assert.equal(generated.length, 1, `${letter.toUpperCase()} advisory generated`);
-    assert.equal(delivered.length, 1, `${letter.toUpperCase()} advisory delivered`);
-    assert.equal(read.length, 1, `${letter.toUpperCase()} advisory read`);
-    const payload = JSON.parse(read[0].data);
-    assert.equal(payload.accepted, true);
-    assert.equal(payload.advisoryOnly, true);
-    assert.equal(payload.authoritativeLayer, "live_bot");
-    assert.equal(payload.symbol, "EUR_USD");
-    assert.ok(payload.recommendation);
-    assert.ok(Object.prototype.hasOwnProperty.call(payload, "confidence"));
+    assert.equal(delivered.length, 0, `${letter.toUpperCase()} is not falsely marked delivered by Shadow Gate`);
+    assert.equal(read.length, 0, `${letter.toUpperCase()} is not falsely marked read by Shadow Gate`);
   }
 });
 

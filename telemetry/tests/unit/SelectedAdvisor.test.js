@@ -17,6 +17,7 @@
 const { test } = require("node:test");
 const assert   = require("node:assert/strict");
 const { SelectedAdvisor } = require("../../managers/SelectedAdvisor");
+const { CooperativeManager } = require("../../managers/CooperativeManager");
 
 // Short delays so the whole suite runs in milliseconds.
 const FAST_DELAYS = [10, 20, 30];
@@ -384,4 +385,130 @@ test("onTradeOpen with missing/malformed args never throws", async () => {
   assert.doesNotThrow(() => advisor.onTradeOpen({ side: "buy" }));
   await wait(60);
   assert.equal(advisor.getAdvisories().length, 0, "no symbol ⇒ nothing scheduled");
+});
+
+test("entry handshake accepts A/B/C, passes them to Selected Engine, and returns Live context", async () => {
+  const db = fakeDb();
+  let selectedInput = null;
+  const advisor = new SelectedAdvisor({
+    db, logger: silentLog, attemptDelaysMs: FAST_DELAYS,
+    selectedEngine: {
+      evaluateEntry: async (input) => {
+        selectedInput = input;
+        return {
+          decision: "TRADE",
+          contextId: "selected-ctx-sig-entry",
+          confidenceScore: 0.7,
+          confidenceTier: "MEDIUM",
+          explanation: "selected context received",
+        };
+      },
+    },
+  });
+  const shadowAdvisory = {
+    advisoryId: "adv-sig-entry",
+    advisoryOnly: true,
+    outputs: {
+      A: { advisoryId: "adv-sig-entry:A", engineId: "ENGINE_A_QUALITY", recommendation: "TRADE", confidence: "HIGH", evaluation: { wouldTrade: true } },
+      B: { advisoryId: "adv-sig-entry:B", engineId: "ENGINE_B_CONTEXT", recommendation: "NO_TRADE", confidence: "MEDIUM", evaluation: { wouldTrade: false } },
+      C: { advisoryId: "adv-sig-entry:C", engineId: "ENGINE_C_KNN", recommendation: "ABSTAIN", confidence: "NONE", evaluation: { wouldTrade: null } },
+    },
+  };
+
+  const result = await advisor.receiveEntryContext({
+    signal: { signalId: "sig-entry", symbol: "EUR_USD", side: "buy", spread: 1.2 },
+    shadowAdvisory,
+  });
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(Object.keys(result.shadowOutputs).sort(), ["A", "B", "C"]);
+  assert.equal(result.shadowConsensus.consensus, "SPLIT");
+  assert.equal(result.shadowConsensus.decided, 2);
+  assert.equal(result.shadowConsensus.abstain, 1);
+  assert.equal(result.selected.decision, "TRADE");
+  assert.equal(result.selected.contextId, "selected-ctx-sig-entry");
+  assert.equal(selectedInput.signalId, "sig-entry");
+  assert.deepEqual(Object.keys(selectedInput.advisoryOutputs).sort(), ["A", "B", "C"]);
+  assert.equal(selectedInput.advisoryOutputs.A.engineId, "ENGINE_A_QUALITY");
+  assert.equal(result.usedForDecision, false);
+  const receiptEvents = SelectedAdvisor.buildLiveReceiptEvents(
+    { selectedAdvisorContext: result },
+    { signalId: "sig-entry", symbol: "EUR_USD", side: "buy" },
+  );
+  assert.deepEqual(receiptEvents.map((event) => event.type), [
+    "selected_advisor_advisory_delivered",
+    "selected_advisor_advisory_read",
+  ]);
+  assert.equal(receiptEvents[1].readBy, "live_bot");
+  assert.equal(receiptEvents[1].cooperationPath, "shadow_abc_selected_live");
+  const lifecycleEvents = SelectedAdvisor.buildEntryLifecycleEvents({
+    handoff: result,
+    signal: { signalId: "sig-entry", symbol: "EUR_USD", side: "buy" },
+    shadowAdvisory,
+  });
+  assert.equal(lifecycleEvents.length, 7, "A/B/C delivered+read plus Selected generated");
+  assert.deepEqual(lifecycleEvents.slice(0, 6).map((event) => event.type), [
+    "shadow_a_advisory_delivered", "shadow_a_advisory_read",
+    "shadow_b_advisory_delivered", "shadow_b_advisory_read",
+    "shadow_c_advisory_delivered", "shadow_c_advisory_read",
+  ]);
+  assert.equal(lifecycleEvents[0].deliveredTo, "selected_advisor");
+  assert.equal(lifecycleEvents[1].readBy, "selected_advisor");
+  assert.equal(lifecycleEvents[6].type, "selected_advisor_advisory_generated");
+  assert.equal(lifecycleEvents[6].usedForDecision, false);
+  const policy = new CooperativeManager().entryPolicy(result.selected, { highConfidence: 0.8 });
+  assert.equal(policy.action, "ADVISORY", "Selected Advisor context does not add a new entry veto");
+  assert.equal(advisor.getStatus().counters.entryContexts, 1);
+  assert.equal(advisor.getStatus().counters.entryAdvisories, 1);
+  assert.equal(advisor.getAdvisories()[0].kind, "entry_handshake");
+  assert.equal(db.calls.run, 0);
+  assert.equal(db.calls.exec, 0);
+});
+
+test("entry handshake OFF is a complete no-op", async () => {
+  const db = fakeDb();
+  const advisor = new SelectedAdvisor({
+    enabled: false,
+    db, logger: silentLog, selectedEngine: {
+      evaluateEntry: async () => ({ decision: "TRADE", contextId: "must-not-run" }),
+    },
+  });
+  const result = await advisor.receiveEntryContext({
+    signal: { signalId: "sig-entry-off", symbol: "EUR_USD", side: "buy" },
+    shadowAdvisory: { advisoryId: "adv-off", outputs: { A: { advisoryId: "a", engineId: "A" } } },
+  });
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "selected_advisor_runtime_off");
+  assert.equal(advisor.getStatus().counters.entryContexts, 0);
+  assert.equal(advisor.getAdvisories().length, 0);
+  assert.equal(db.calls.get, 0);
+});
+
+test("each A/B/C runtime OFF is omitted from the Selected Advisor hand-off", async () => {
+  const allOutputs = {
+    A: { advisoryId: "a", engineId: "ENGINE_A_QUALITY", recommendation: "TRADE" },
+    B: { advisoryId: "b", engineId: "ENGINE_B_CONTEXT", recommendation: "NO_TRADE" },
+    C: { advisoryId: "c", engineId: "ENGINE_C_KNN", recommendation: "ABSTAIN" },
+  };
+  for (const off of ["A", "B", "C"]) {
+    let selectedInput = null;
+    const advisor = new SelectedAdvisor({
+      db: fakeDb(), logger: silentLog,
+      selectedEngine: {
+        evaluateEntry: async (input) => {
+          selectedInput = input;
+          return { decision: "ABSTAIN", contextId: `ctx-off-${off}` };
+        },
+      },
+    });
+    const runtime = { A: true, B: true, C: true, [off]: false };
+    const outputs = Object.fromEntries(Object.entries(allOutputs).filter(([letter]) => runtime[letter]));
+    const result = await advisor.receiveEntryContext({
+      signal: { signalId: `sig-off-${off}`, symbol: "EUR_USD", side: "buy" },
+      shadowAdvisory: { advisoryId: `adv-off-${off}`, runtime, outputs },
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(selectedInput.advisoryOutputs[off], undefined);
+    assert.deepEqual(Object.keys(result.shadowOutputs).sort(), Object.keys(outputs).sort());
+  }
 });

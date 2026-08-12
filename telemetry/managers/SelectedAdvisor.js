@@ -21,6 +21,9 @@
  *      The advisory lives in a bounded in-memory ring — nothing is persisted.
  *   4. Kill switch: enabled=false makes every method a complete no-op
  *      (SELECTED_ADVISOR=off in server.js restores prior behavior exactly).
+ *   5. Entry handshake: when Live supplies the current Shadow A/B/C advisory,
+ *      this bridge passes the same signal plus those outputs to Selected Engine,
+ *      aggregates both layers, and returns the resulting read-only context.
  *
  * Timing: shadow_signals rows (required for a non-empty DecisionContext) are
  * created asynchronously by the ShadowLab research reconciler (~5s poll,
@@ -70,6 +73,9 @@ class SelectedAdvisor {
       advisories: 0,  // full advisories recorded (non-empty context)
       stubs:     0,   // stub advisories (signal never found / empty context)
       errors:    0,   // swallowed errors
+      entryContexts: 0,   // live entry contexts received
+      entryAdvisories: 0, // A/B/C + Selected context assembled
+      entryErrors: 0,     // entry handshake errors swallowed
     };
   }
 
@@ -78,6 +84,103 @@ class SelectedAdvisor {
     if (data == null) return {};
     if (typeof data === "object") return data;
     try { return JSON.parse(data); } catch (_) { return {}; }
+  }
+
+  /**
+   * Build the two receipt events emitted by the Live Bot after it receives the
+   * Selected Advisor context. Pure helper: it performs no I/O.
+   */
+  static buildLiveReceiptEvents(responseData = {}, signal = {}) {
+    const context = responseData && responseData.selectedAdvisorContext;
+    if (!context) return [];
+    const base = {
+      advisoryId: context.advisoryId || null,
+      signalId: signal.signalId || null,
+      symbol: signal.symbol || null,
+      side: signal.side || null,
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+      channel: "live_entry_decision_context",
+      cooperationPath: "shadow_abc_selected_live",
+      deliveredTo: "live_bot",
+      readBy: "live_bot",
+      accepted: true,
+      usedForDecision: false,
+      selectedDecision: context.selected?.decision || "ABSTAIN",
+      selectedContextId: context.selected?.contextId || null,
+    };
+    return [
+      { type: "selected_advisor_advisory_delivered", ...base },
+      { type: "selected_advisor_advisory_read", ...base },
+    ];
+  }
+
+  static aggregateShadowOutputs(outputs = {}) {
+    const recommendations = Object.fromEntries(
+      Object.entries(outputs).map(([letter, output]) => [letter, output.recommendation || "ABSTAIN"])
+    );
+    const votesFor = Object.values(recommendations).filter((value) => value === "TRADE").length;
+    const votesAgainst = Object.values(recommendations).filter((value) => value === "NO_TRADE").length;
+    const decided = votesFor + votesAgainst;
+    return {
+      consensus: decided === 0
+        ? "ABSTAIN"
+        : votesFor === votesAgainst
+          ? "SPLIT"
+          : votesFor > votesAgainst ? "TRADE" : "NO_TRADE",
+      votesFor,
+      votesAgainst,
+      abstain: Object.values(recommendations).filter((value) => value === "ABSTAIN").length,
+      decided,
+      recommendations,
+    };
+  }
+
+  static buildEntryLifecycleEvents({ handoff = null, signal = {}, shadowAdvisory = null } = {}) {
+    if (!handoff || handoff.accepted !== true) return [];
+    const lifecycleBase = {
+      advisoryId: shadowAdvisory?.advisoryId || handoff.advisoryId || null,
+      signalId: signal.signalId || signal.signal_id || null,
+      symbol: signal.symbol || null,
+      side: signal.side || null,
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+      channel: "live_entry_decision_context",
+      cooperationPath: "shadow_abc_selected_live",
+      acceptedBy: "selected_advisor",
+      usedForDecision: false,
+    };
+    const events = [];
+    for (const [letter, output] of Object.entries(handoff.shadowOutputs || {})) {
+      const base = {
+        ...lifecycleBase,
+        advisoryId: output.advisoryId || lifecycleBase.advisoryId,
+        engineId: output.engineId || null,
+        recommendation: output.recommendation || "ABSTAIN",
+        confidence: output.confidence ?? null,
+      };
+      events.push(
+        {
+          type: `shadow_${letter.toLowerCase()}_advisory_delivered`,
+          ...base,
+          deliveredTo: "selected_advisor",
+        },
+        {
+          type: `shadow_${letter.toLowerCase()}_advisory_read`,
+          ...base,
+          readBy: "selected_advisor",
+          accepted: true,
+        },
+      );
+    }
+    events.push({
+      type: "selected_advisor_advisory_generated",
+      ...lifecycleBase,
+      selectedDecision: handoff.selected?.decision || "ABSTAIN",
+      selectedContextId: handoff.selected?.contextId || null,
+      shadowEngineCount: Object.keys(handoff.shadowOutputs || {}).length,
+    });
+    return events;
   }
 
   /**
@@ -104,6 +207,102 @@ class SelectedAdvisor {
     } catch (err) {
       this._counters.errors++;
       try { this._log.error(`[SELECTED ADVISOR] onTradeOpen: ${err.message}`); } catch (_) {}
+    }
+  }
+
+  /**
+   * Receive the current Live entry context after Shadow A/B/C evaluation.
+   * This is the real cooperative path:
+   *   Live setup → Shadow A/B/C → Selected Advisor → Live decision context.
+   *
+   * It remains advisory-only: the returned context is information for Live and
+   * never contains an execution instruction or broker operation.
+   */
+  async receiveEntryContext({
+    signal = {},
+    shadowAdvisory = null,
+    selectedResult: providedSelectedResult = null,
+  } = {}) {
+    try {
+      if (!this._enabled || this._stopped) {
+        return {
+          accepted: false,
+          enabled: false,
+          advisoryOnly: true,
+          reason: "selected_advisor_runtime_off",
+        };
+      }
+      const outputs = shadowAdvisory && shadowAdvisory.outputs &&
+        typeof shadowAdvisory.outputs === "object"
+        ? Object.fromEntries(Object.entries(shadowAdvisory.outputs)
+          .filter(([, output]) => output && output.advisoryId && output.engineId)
+          .map(([letter, output]) => [letter, {
+            advisoryId: output.advisoryId,
+            engineId: output.engineId,
+            recommendation: output.recommendation || "ABSTAIN",
+            confidence: output.confidence ?? null,
+            evaluation: output.evaluation || null,
+          }]))
+        : {};
+      const requiredLetters = ["A", "B", "C"]
+        .filter((letter) => shadowAdvisory?.runtime?.[letter] !== false);
+      const missingLetters = requiredLetters.filter((letter) => !outputs[letter]);
+      if (!shadowAdvisory || !Object.keys(outputs).length || missingLetters.length) {
+        return {
+          accepted: false,
+          enabled: true,
+          advisoryOnly: true,
+          reason: missingLetters.length
+            ? `shadow_advisory_outputs_missing:${missingLetters.join(",")}`
+            : "shadow_advisory_context_missing",
+        };
+      }
+
+      this._counters.entryContexts++;
+      const selectedResult = providedSelectedResult || (this._selectedEngine &&
+        typeof this._selectedEngine.evaluateEntry === "function"
+        ? await this._selectedEngine.evaluateEntry({
+            ...signal,
+            advisoryOutputs: outputs,
+            shadowAdvisory,
+          })
+        : {
+          decision: "ABSTAIN",
+          contextId: null,
+          confidenceScore: null,
+          confidenceTier: null,
+          explanation: "selected engine unavailable",
+        });
+      const context = {
+        advisoryId: shadowAdvisory.advisoryId || null,
+        signalId: signal.signalId || signal.signal_id || null,
+        symbol: signal.symbol || null,
+        side: signal.side || null,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+        channel: "live_entry_decision_context",
+        shadowOutputs: outputs,
+        shadowConsensus: SelectedAdvisor.aggregateShadowOutputs(outputs),
+        selected: selectedResult || {
+          decision: "ABSTAIN",
+          contextId: null,
+          explanation: "selected engine returned no result",
+        },
+        usedForDecision: false,
+        generatedAt: new Date().toISOString(),
+      };
+      this._counters.entryAdvisories++;
+      this._recordEntry(context);
+      return { accepted: true, enabled: true, ...context };
+    } catch (err) {
+      this._counters.entryErrors++;
+      try { this._log.error(`[SELECTED ADVISOR] entry handshake: ${err.message}`); } catch (_) {}
+      return {
+        accepted: false,
+        enabled: true,
+        advisoryOnly: true,
+        reason: "selected_advisor_error",
+      };
     }
   }
 
@@ -250,6 +449,32 @@ class SelectedAdvisor {
       this._log.info(
         `[SELECTED ADVISOR] ${job.symbol} ${job.side || ""} → ${advisory.selectedDecision || status}` +
         (advisory.selectedConfidence && advisory.selectedConfidence.tier ? ` (${advisory.selectedConfidence.tier})` : "")
+      );
+    } catch (_) {}
+  }
+
+  _recordEntry(context) {
+    const advisory = {
+      kind: "entry_handshake",
+      signalId: context.signalId,
+      symbol: context.symbol,
+      side: context.side,
+      generatedAt: context.generatedAt,
+      status: "OK",
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+      channel: context.channel,
+      advisoryId: context.advisoryId,
+      shadowOutputs: context.shadowOutputs,
+      selected: context.selected,
+      usedForDecision: false,
+    };
+    this._ring.push(advisory);
+    while (this._ring.length > this._ringSize) this._ring.shift();
+    try {
+      this._log.info(
+        `[SELECTED ADVISOR] entry ${context.symbol || ""} ${context.side || ""} → ` +
+        `${context.selected?.decision || "ABSTAIN"}`
       );
     } catch (_) {}
   }

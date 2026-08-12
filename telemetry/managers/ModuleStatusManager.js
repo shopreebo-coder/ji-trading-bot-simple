@@ -98,6 +98,28 @@ class ModuleStatusManager {
     }
   }
 
+  async _advisoryLifecycleCounts() {
+    try {
+      const rows = await this.db.all(
+        `SELECT type, COUNT(*) AS n FROM events
+         WHERE type IN (
+           'shadow_a_advisory_generated', 'shadow_a_advisory_delivered', 'shadow_a_advisory_read',
+           'shadow_b_advisory_generated', 'shadow_b_advisory_delivered', 'shadow_b_advisory_read',
+           'shadow_c_advisory_generated', 'shadow_c_advisory_delivered', 'shadow_c_advisory_read',
+           'selected_advisor_advisory_generated', 'selected_advisor_advisory_delivered',
+           'selected_advisor_advisory_read'
+         )
+         AND data LIKE '%"cooperationPath":"shadow_abc_selected_live"%'
+         GROUP BY type`
+      );
+      const map = {};
+      for (const r of rows || []) map[r.type] = toCount(r.n);
+      return map;
+    } catch (_e) {
+      return {};
+    }
+  }
+
   async _engineEvalCounts() {
     try {
       const rows = await this.db.all(
@@ -136,7 +158,11 @@ class ModuleStatusManager {
 
   // ── the registry ──────────────────────────────────────────────────────────
   async build() {
-    const [ev, evals] = await Promise.all([this._eventTypeCounts(), this._engineEvalCounts()]);
+    const [ev, evals, lifecycle] = await Promise.all([
+      this._eventTypeCounts(),
+      this._engineEvalCounts(),
+      this._advisoryLifecycleCounts(),
+    ]);
 
     const [
       shadowSignals, shadowOutcomes, expectancySnapshots,
@@ -160,6 +186,14 @@ class ModuleStatusManager {
     const botRunning = live.botStatus === "running";
     const mode       = this._safe0(() => this.getShadowMode(), "OBSERVE");
     const gateMode   = mode === "GATE";
+    const selectedLiveHandshake = {
+      generated: toCount(lifecycle.selected_advisor_advisory_generated),
+      delivered: toCount(lifecycle.selected_advisor_advisory_delivered),
+      read: toCount(lifecycle.selected_advisor_advisory_read),
+    };
+    const liveHandshakeComplete = selectedLiveHandshake.generated > 0 &&
+      selectedLiveHandshake.delivered > 0 &&
+      selectedLiveHandshake.read > 0;
 
     const shadowMStats  = await this._safe(() => this.getShadowMStats());
     const advisorStatus = await this._safe(() => this.selectedAdvisor && this.selectedAdvisor.getStatus());
@@ -254,19 +288,24 @@ class ModuleStatusManager {
       const isD = s.letter === "d";
       const dInfluences = isD && gateMode;
       const advisory = isD ? null : {
-        generated: ev[`shadow_${s.letter}_advisory_generated`] || 0,
-        delivered: ev[`shadow_${s.letter}_advisory_delivered`] || 0,
-        read: ev[`shadow_${s.letter}_advisory_read`] || 0,
+        generated: lifecycle[`shadow_${s.letter}_advisory_generated`] || 0,
+        delivered: lifecycle[`shadow_${s.letter}_advisory_delivered`] || 0,
+        read: lifecycle[`shadow_${s.letter}_advisory_read`] || 0,
       };
       const advisoryInfluences = !isD &&
         advisory.generated > 0 &&
         advisory.delivered > 0 &&
-        advisory.read > 0;
+        advisory.read > 0 &&
+        liveHandshakeComplete;
       let status, reason = null;
       if (dInfluences)      { status = STATUS.ACTIVE; reason = "GATE mode — HIGH-confidence SKIP blocks entries"; }
       else if (advisoryInfluences) {
         status = STATUS.ACTIVE;
-        reason = "Active — advisory cooperation: entry recommendations delivered and read by Live Bot";
+        reason = "Active — A/B/C outputs accepted by Selected Advisor; aggregate advisory context delivered and read by Live Bot";
+      }
+      else if (!isD && advisory.generated > 0 && advisory.delivered > 0 && advisory.read > 0) {
+        reason = "A/B/C output hand-off complete to Selected Advisor; waiting for aggregate context receipt by Live Bot";
+        status = s.learning ? STATUS.LEARNING : STATUS.OBSERVING;
       }
       else if (obs > 0)     { status = s.learning ? STATUS.LEARNING : STATUS.OBSERVING; }
       else                  { status = STATUS.INSTALLED; reason = "Waiting for first evaluated signal"; }
@@ -279,6 +318,7 @@ class ModuleStatusManager {
           pipelineEvals: obs,
           researchEvals: this._evalsForLetter(evals, s.letter),
           ...(advisory || {}),
+          ...(advisory ? { liveContextHandshake: selectedLiveHandshake } : {}),
         },
         reason,
         alsoVisibleIn: "LAB",
@@ -376,25 +416,41 @@ class ModuleStatusManager {
     }
 
     {
-      const enabled = !!(F.selectedAdvisor && F.selectedAdvisor.enabled);
       const raw = ((F.selectedAdvisor && F.selectedAdvisor.raw) || "").toLowerCase();
+      const runtime = this.runtimeRegistry && typeof this.runtimeRegistry.getStatus === "function"
+        ? this.runtimeRegistry.getStatus("selected-advisor")
+        : null;
+      const runtimeOn = runtime ? runtime.runtimeEnabled !== false : true;
+      const enabled = !!(F.selectedAdvisor && F.selectedAdvisor.enabled) && runtimeOn;
       const advisoryCount = Array.isArray(advisories) ? advisories.length : 0;
+      const entryHandshake = {
+        ...selectedLiveHandshake,
+      };
+      const entryInfluences = enabled &&
+        entryHandshake.generated > 0 &&
+        entryHandshake.delivered > 0 &&
+        entryHandshake.read > 0;
       modules.push({
         id: "selected-advisor", name: "Selected Advisor / Advice Engine", tier: "INTELLIGENCE",
-        status: enabled ? STATUS.OBSERVING : (raw === "off" ? STATUS.DISABLED : STATUS.INSTALLED),
-        connected: enabled, collectsData: enabled, influencesLive: false,
+        status: entryInfluences
+          ? STATUS.ACTIVE
+          : enabled ? STATUS.OBSERVING : (raw === "off" || runtimeOn === false ? STATUS.DISABLED : STATUS.INSTALLED),
+        connected: enabled, collectsData: enabled, influencesLive: entryInfluences,
         observations: advisoryCount,
         stats: advisorStatus && typeof advisorStatus === "object"
           ? {
               advisories: advisoryCount,
+              entryHandshake,
               ringCapacity: advisorStatus.ring ? toCount(advisorStatus.ring.capacity) : null,
               pendingRecoveries: toCount(advisorStatus.pending),
               ...(advisorStatus.counters && typeof advisorStatus.counters === "object" ? { counters: advisorStatus.counters } : {}),
             }
-          : { advisories: advisoryCount },
-        reason: enabled
-          ? "Advisory ring in memory — attaches Selected opinion to every live trade open"
-          : (raw === "off" ? "Explicitly disabled (kill switch)" : "Waiting for activation"),
+          : { advisories: advisoryCount, entryHandshake },
+        reason: entryInfluences
+          ? "Active — A/B/C outputs aggregated by Selected Advisor and delivered to Live decision context"
+          : enabled
+            ? "Waiting for A/B/C → Selected Advisor → Live entry handshake"
+            : (raw === "off" ? "Explicitly disabled (kill switch)" : "Disabled at runtime"),
         alsoVisibleIn: "SELECTED",
       });
     }
