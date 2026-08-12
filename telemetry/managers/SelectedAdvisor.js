@@ -273,9 +273,16 @@ class SelectedAdvisor {
     };
   }
 
+  /** Resume detached advisory work after a runtime toggle. */
+  start() {
+    this._enabled = true;
+    this._stopped = false;
+  }
+
   /** Clears all pending timers. Idempotent. NEVER throws. */
   stop() {
     try {
+      this._enabled = false;
       this._stopped = true;
       for (const t of this._timers) clearTimeout(t);
       this._timers.clear();

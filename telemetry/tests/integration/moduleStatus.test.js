@@ -87,8 +87,8 @@ test("registry covers all modules with valid statuses and full card contract", a
 test("ACTIVE (influence on live) is restricted to live/exit engines in OBSERVE mode", async () => {
   const out = await makeManager().build();
   const influencers = out.modules.filter((m) => m.influencesLive).map((m) => m.id).sort();
-  assert.deepStrictEqual(influencers, ["exit-engine", "live-engine"],
-    "in OBSERVE mode only live-engine and exit-engine influence trading");
+  assert.deepStrictEqual(influencers, ["exit-engine", "live-engine", "shadow-m"],
+    "in OBSERVE mode only Live Engine, Live Exit, and advisory Shadow M are live-connected");
   const gate = out.modules.find((m) => m.id === "shadow-gate");
   assert.strictEqual(gate.status, MODULE_STATUS.OBSERVING);
 });
