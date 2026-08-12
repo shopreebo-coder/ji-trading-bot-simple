@@ -4010,6 +4010,7 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
 app.post("/api/cooperative/signal", express.json(), async (req, res) => {
   const signalId = req.body?.signalId || req.body?.signal_id || null;
   const setupId = req.body?.setupId || req.body?.fingerprint || null;
+  const shadowAdvisory = req.body?.shadowAdvisory || null;
   const signalDiagnostic = {
     signalId,
     setupId,
@@ -4022,12 +4023,34 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
     timestamp: new Date().toISOString(),
   });
   try {
-    res.status(200).json({ ok: true }); // always respond immediately — never block the caller
+    let selectedAdvisorContext = null;
+    const selectedRuntimeOn = runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled !== false;
+    const advisorRuntimeOn = runtimeRegistry.getStatus("selected-advisor")?.runtimeEnabled !== false;
+    if (shadowAdvisory && SELECTED_ENGINE_ENABLED && selectedRuntimeOn &&
+        COOP_ENTRY_ENABLED && advisorRuntimeOn) {
+      const selectedResult = await selectedEngine.evaluateEntry(req.body || {});
+      const handoff = await selectedAdvisor.receiveEntryContext({
+        signal: req.body || {},
+        shadowAdvisory,
+        selectedResult,
+      });
+      if (handoff.accepted) {
+        selectedAdvisorContext = handoff;
+        const lifecycleWrites = SelectedAdvisor.buildEntryLifecycleEvents({
+          handoff,
+          signal: req.body || {},
+          shadowAdvisory,
+        }).map((event) => logEvent(event));
+        void Promise.all(lifecycleWrites.map((write) => Promise.resolve(write).catch(() => false)));
+      }
+    }
+    res.status(200).json({ ok: true, selectedAdvisorContext });
     logEvent({
       type: "selected_diagnostic",
       diagnostic: "cooperativeSignal_success",
       ...signalDiagnostic,
       httpStatus: 200,
+      selectedAdvisorAccepted: !!selectedAdvisorContext,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

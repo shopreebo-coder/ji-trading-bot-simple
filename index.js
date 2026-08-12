@@ -105,12 +105,15 @@ async function cooperativeAdvisory(state) {
 // Called once per signal_detected so Selected Engine ring stays current even
 // when market conditions mean no candidate ever reaches the BUY/SELL gate.
 // NEVER awaited — result is always discarded — has zero effect on trade logic.
-function cooperativeSignal(signalId, symbol, session) {
+function cooperativeSignal(signal) {
   axios.post(
     `${COOPERATIVE_URL}/api/cooperative/signal`,
-    { signalId, symbol, session },
-    { timeout: 500 }
-  ).catch(() => {}); // best-effort — error is silently dropped
+    signal,
+    { timeout: 1500 }
+  ).then((response) => {
+    const receiptEvents = SelectedAdvisor.buildLiveReceiptEvents(response.data, signal);
+    for (const event of receiptEvents) Promise.resolve(logEvent(event)).catch(() => {});
+  }).catch(() => {}); // best-effort — error is silently dropped
 }
 
 let dailyTrades  = 0;
@@ -1516,7 +1519,7 @@ async function strategy(symbol) {
     logEvent({ type: "signal_detected", signalId, symbol, session, hourUTC, dow: evalTime.getUTCDay() });
     // Inform Selected Engine of this signal cycle — fire-and-forget, never awaited.
     // Rate-limited server-side (≤1 refresh/30 s); does not block the pipeline.
-    cooperativeSignal(signalId, symbol, session);
+    cooperativeSignal({ signalId, symbol, session });
 
     // ── COOLDOWN ──────────────────────────────────────────────────────────
     // Reduced 10→5 min: M5/M1 structure doesn't need 10-min lockout;
@@ -2022,6 +2025,34 @@ async function strategy(symbol) {
     };
     const _fpHash = (fp) => Object.values(fp).map((v) => (v ? "T" : "F")).join("");
 
+    // ── SHADOW ADVISORY CONTEXT — before final entry gate ───────────────────
+    // A/B/C must observe every fully evaluated signal, not only trades that
+    // survive the final entry gate. This is advisory-only and never changes
+    // any existing entry, risk, sizing, SL/TP, exit, or broker decision.
+    const _shadowSide = _buyAll ? "buy" : _sellAll ? "sell"
+      : _buyPassScore >= _sellPassScore ? "buy" : "sell";
+    const _shadowConditionMap = _shadowSide === "buy" ? _buyCondMap : _sellCondMap;
+    const _shadowPassCount = _shadowSide === "buy" ? _buyPassScore : _sellPassScore;
+    const _shadowHard = _shadowSide === "buy" ? _buyHard : _sellHard;
+    const _shadowGate = await shadowGate({
+      signalId, symbol, session, side: _shadowSide,
+      conditionMap: _shadowConditionMap,
+      passCount: _shadowPassCount,
+      entryGate: _shadowHard ? "HARD" : "RELAXED",
+      spread, atrPips, emaDistance, candleStrength,
+    });
+    if (!_buyAll && !_sellAll && _shadowGate.advisory) {
+      cooperativeSignal({
+        signalId, symbol, session, side: _shadowSide,
+        conditionMap: _shadowConditionMap,
+        passCount: _shadowPassCount,
+        entryGate: _shadowHard ? "HARD" : "RELAXED",
+        spread, atrPips, emaDistance, candleStrength,
+        volatilityBucket: volBkt,
+        shadowAdvisory: _shadowGate.advisory,
+      });
+    }
+
     // ── FULL MARKET SNAPSHOT — attached to trade_open. TELEMETRY ONLY ─────
     const fullSnapshot = {
       spread,
@@ -2213,11 +2244,7 @@ async function strategy(symbol) {
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
       // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
-      const _gBuy = await shadowGate({
-        signalId, symbol, session, side: "buy",
-        conditionMap: _buyCondMap, passCount: _buyPassCount,
-        entryGate: _entryGate, spread, atrPips, emaDistance, candleStrength,
-      });
+      const _gBuy = _shadowGate;
       if (_gBuy.blocked) {
         console.log(`[SHADOW_GATE] BUY ${symbol} BLOCKED — ${_gBuy.reason}`);
         return;
@@ -2321,11 +2348,7 @@ async function strategy(symbol) {
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
       // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
-      const _gSell = await shadowGate({
-        signalId, symbol, session, side: "sell",
-        conditionMap: _sellCondMap, passCount: _sellPassCount,
-        entryGate: _entryGate, spread, atrPips, emaDistance, candleStrength,
-      });
+      const _gSell = _shadowGate;
       if (_gSell.blocked) {
         console.log(`[SHADOW_GATE] SELL ${symbol} BLOCKED — ${_gSell.reason}`);
         return;
