@@ -95,6 +95,13 @@ test("ACTIVE influence is reserved for live paths and completed advisory hand-of
       `Shadow ${letter.toUpperCase()} influence follows generated/delivered/read telemetry`);
     if (complete) expected.push(`shadow-${letter}`);
   }
+  const selectedAdvisor = out.modules.find((m) => m.id === "selected-advisor");
+  const advisorHandshake = selectedAdvisor.stats.entryHandshake || {};
+  if (advisorHandshake.generated > 0 &&
+      advisorHandshake.delivered > 0 &&
+      advisorHandshake.read > 0) {
+    expected.push("selected-advisor");
+  }
   assert.deepStrictEqual(influencers, expected.sort());
   const gate = out.modules.find((m) => m.id === "shadow-gate");
   assert.strictEqual(gate.status, MODULE_STATUS.OBSERVING);
