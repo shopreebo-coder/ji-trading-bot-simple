@@ -2,6 +2,7 @@ require("dotenv").config();
 const axios  = require("axios");
 const crypto = require("crypto"); // signalId generation — TELEMETRY ONLY
 const { CooperativeManager } = require("./telemetry/managers/CooperativeManager");
+const { SelectedAdvisor } = require("./telemetry/managers/SelectedAdvisor");
 const { ExitEngineX } = require("./telemetry/exit-engine-x");
 const cooperativeManager = new CooperativeManager();
 
@@ -66,15 +67,26 @@ const COOPERATIVE_URL = `http://127.0.0.1:${process.env.PORT || 3001}`;
 async function cooperativeEntry(signal) {
   try {
     const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/entry`, signal, { timeout: 1500 });
+    const selectedAdvisorContext = response.data?.selectedAdvisorContext || null;
+    const receiptEvents = SelectedAdvisor.buildLiveReceiptEvents(response.data, signal);
+    for (const event of receiptEvents) Promise.resolve(logEvent(event)).catch(() => {});
     return {
       action: response.data?.blocked ? "BLOCK" : "ALLOW",
       decision: response.data?.decision || "ABSTAIN",
       contextId: response.data?.contextId || null,
       confidenceScore: response.data?.confidenceScore ?? null,
       confidenceTier: response.data?.confidenceTier || null,
+      selectedAdvisorContext,
+      selectedAdvisorRead: receiptEvents.length > 0,
     };
   } catch (_) {
-    return { action: "FAILSAFE_ALLOW", decision: "ABSTAIN", contextId: null };
+    return {
+      action: "FAILSAFE_ALLOW",
+      decision: "ABSTAIN",
+      contextId: null,
+      selectedAdvisorContext: null,
+      selectedAdvisorRead: false,
+    };
   }
 }
 
@@ -2213,6 +2225,7 @@ async function strategy(symbol) {
       const _coopBuy = await cooperativeEntry({
         signalId, symbol, side: "buy", conditionMap: _buyCondMap, entryGate: _entryGate,
         spread, atrPips, volatilityBucket: volBkt,
+        shadowAdvisory: _gBuy.advisory,
       });
       if (_coopBuy.action === "BLOCK") {
         logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopBuy });
@@ -2320,6 +2333,7 @@ async function strategy(symbol) {
       const _coopSell = await cooperativeEntry({
         signalId, symbol, side: "sell", conditionMap: _sellCondMap, entryGate: _entryGate,
         spread, atrPips, volatilityBucket: volBkt,
+        shadowAdvisory: _gSell.advisory,
       });
       if (_coopSell.action === "BLOCK") {
         logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopSell });

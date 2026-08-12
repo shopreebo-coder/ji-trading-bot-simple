@@ -1024,17 +1024,16 @@ function shadowGate(signal) {
     advisory.generatedAt = advisoryTimestamp;
     advisory.outputs = outputs;
     advisory.delivery = {
-      target: "live_bot",
+      target: "selected_advisor",
       channel: "live_entry_decision_context",
       generated: true,
-      delivered: true,
-      read: true,
+      delivered: false,
+      read: false,
       usedForDecision: false,
     };
 
-    // shadowGate() is called by Live Bot's entry path and its return value is
-    // consumed before broker execution. These lifecycle records make that
-    // real advisory hand-off observable without changing the live decision.
+    // shadowGate() creates the A/B/C outputs. Delivery and read are recorded
+    // only after the Live → Selected Advisor bridge accepts these outputs.
     for (const [letter, output] of Object.entries(outputs)) {
       const lifecycle = {
         advisoryId: output.advisoryId,
@@ -1049,23 +1048,11 @@ function shadowGate(signal) {
         advisoryOnly: true,
         authoritativeLayer: "live_bot",
         channel: "live_entry_decision_context",
+         cooperationPath: "shadow_abc_selected_live",
         timestamp: advisoryTimestamp,
       };
       try {
         logEvent({ type: `shadow_${letter.toLowerCase()}_advisory_generated`, ...lifecycle });
-        logEvent({
-          type: `shadow_${letter.toLowerCase()}_advisory_delivered`,
-          ...lifecycle,
-          deliveredTo: "live_bot",
-        });
-        logEvent({
-          type: `shadow_${letter.toLowerCase()}_advisory_read`,
-          ...lifecycle,
-          readBy: "live_bot",
-          acceptedBy: "live_entry_decision_context",
-          accepted: true,
-          usedForDecision: false,
-        });
       } catch (_) {}
     }
 

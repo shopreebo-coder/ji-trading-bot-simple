@@ -3932,9 +3932,30 @@ app.get("/api/selected/advisories", async (req, res) => {
 app.post("/api/cooperative/entry", express.json(), async (req, res) => {
   try {
     const selectedRuntimeOn = runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled !== false;
+    const advisorRuntimeOn = runtimeRegistry.getStatus("selected-advisor")?.runtimeEnabled !== false;
+    const shadowAdvisory = req.body?.shadowAdvisory || null;
+    let selectedAdvisorContext = null;
     const result = SELECTED_ENGINE_ENABLED && selectedRuntimeOn && COOP_ENTRY_ENABLED
       ? await selectedEngine.evaluateEntry(req.body || {})
       : { decision: "ABSTAIN", contextId: null, explanation: "cooperation disabled" };
+
+    if (SELECTED_ENGINE_ENABLED && selectedRuntimeOn && COOP_ENTRY_ENABLED &&
+        advisorRuntimeOn && shadowAdvisory) {
+      const handoff = await selectedAdvisor.receiveEntryContext({
+        signal: req.body || {},
+        shadowAdvisory,
+        selectedResult: result,
+      });
+      if (handoff.accepted) {
+        selectedAdvisorContext = handoff;
+        const lifecycleWrites = SelectedAdvisor.buildEntryLifecycleEvents({
+          handoff,
+          signal: req.body || {},
+          shadowAdvisory,
+        }).map((event) => logEvent(event));
+        void Promise.all(lifecycleWrites.map((write) => Promise.resolve(write).catch(() => false)));
+      }
+    }
     const policy = cooperativeManager.entryPolicy(result, {
       highConfidence: COOP_ENTRY_HIGH_CONFIDENCE,
     });
@@ -3953,6 +3974,7 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       explanation: result.explanation || null,
       expectancy: result.expectancy || null,
       riskAssessment: result.riskAssessment || null,
+      selectedAdvisorAccepted: !!selectedAdvisorContext,
     });
     res.json({
       ok: true,
@@ -3966,6 +3988,7 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       evidence: result.evidence || null,
       expectancy: result.expectancy || null,
       riskAssessment: result.riskAssessment || null,
+      selectedAdvisorContext,
     });
   } catch (error) {
     selectedDiagnosticLog({
