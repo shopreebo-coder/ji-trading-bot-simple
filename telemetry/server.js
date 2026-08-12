@@ -528,6 +528,333 @@ async function queryEvents({ type, symbol, date, limit = 500 } = {}) {
   return (await db.all(sql, ...args)).map(r => ({ ...r, data: JSON.parse(r.data) }));
 }
 
+// ── EXIT ENGINE X read model (read-only, bounded, cache-backed) ──────────────
+// The dashboard must never materialize the complete Exit Engine X event stream.
+// Counts are aggregated in the database; only a small recent sample is used for
+// cards whose fields are stored inside JSON payloads. Detailed history is served
+// separately through the paginated endpoint below.
+const EXIT_ENGINE_X_EVENT_TYPES = Object.freeze([
+  "exit_engine_x_open",
+  "exit_engine_x_evaluation",
+  "exit_engine_x_vote",
+  "exit_engine_x_decision",
+  "exit_engine_x_close",
+  "exit_engine_x_lifecycle",
+]);
+const EXIT_ENGINE_X_SUMMARY_SAMPLE = 100;
+const EXIT_ENGINE_X_SUMMARY_TTL_MS = 15000;
+const exitEngineXSummaryCache = { value: null, expiresAt: 0, pending: null };
+
+function exitXReadPayload(row) {
+  if (!row) return {};
+  if (row.data && typeof row.data === "object") return row.data;
+  try { return typeof row.data === "string" ? JSON.parse(row.data) : row; } catch (_) { return {}; }
+}
+
+function exitXReadNumber(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function exitXReadText(...values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined && String(value).trim() !== "") return String(value);
+  }
+  return null;
+}
+
+function exitXReadKey(row) {
+  const p = exitXReadPayload(row);
+  return String(
+    p.signalId || p.tradeId || p.positionId ||
+    `${p.symbol || row?.symbol || "UNKNOWN"}:${p.entryTime || p.openedAt || p.openTime || "UNKNOWN"}`
+  );
+}
+
+function exitXReadAverage(values) {
+  const usable = values.filter(Number.isFinite);
+  return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : null;
+}
+
+function exitXReadConfidence(row) {
+  const p = exitXReadPayload(row);
+  const candidate = p.confidence ?? p.exitConfidence ?? p.decisionConfidence;
+  return candidate && typeof candidate === "object"
+    ? exitXReadNumber(candidate.score, candidate.value, candidate.confidence)
+    : exitXReadNumber(candidate);
+}
+
+function exitXReadKnowledgeConfidence(row) {
+  const p = exitXReadPayload(row);
+  const candidate = p.knowledgeConfidence ??
+    p.knowledgeResult?.confidence ??
+    p.knowledge?.confidence ??
+    p.knowledgeScore;
+  return candidate && typeof candidate === "object"
+    ? exitXReadNumber(candidate.score, candidate.value, candidate.confidence)
+    : exitXReadNumber(candidate);
+}
+
+function exitXReadField(row, names) {
+  const p = exitXReadPayload(row);
+  for (const name of names) {
+    let value = p;
+    for (const part of name.split(".")) value = value == null ? null : value[part];
+    const number = exitXReadNumber(value);
+    if (number !== null) return number;
+  }
+  return null;
+}
+
+function exitXReadVerdict(row) {
+  const p = exitXReadPayload(row);
+  const comparison = p.liveExitComparison || p.comparison || {};
+  const direct = exitXReadText(
+    p.finalVerdict, p.verdict, p.comparisonOutcome, p.exitXVerdict,
+    comparison.finalVerdict, comparison.verdict, comparison.outcome
+  );
+  if (direct) return direct.toUpperCase();
+  if (p.betterThanLive === true || comparison.betterThanLive === true) return "BETTER";
+  if (p.worseThanLive === true || comparison.worseThanLive === true) return "WORSE";
+  if (p.equalToLive === true || comparison.equalToLive === true) return "EQUAL";
+  return null;
+}
+
+function exitXReadRecent(rows) {
+  return rows.slice().sort((a, b) => {
+    const at = Date.parse(a.ts || exitXReadPayload(a).timestamp || "") || Number(a.id) || 0;
+    const bt = Date.parse(b.ts || exitXReadPayload(b).timestamp || "") || Number(b.id) || 0;
+    return at - bt;
+  });
+}
+
+function buildExitEngineXReadModel({ counts, recent }) {
+  const opens = recent.exit_engine_x_open || [];
+  const evaluations = recent.exit_engine_x_evaluation || [];
+  const votes = recent.exit_engine_x_vote || [];
+  const decisions = recent.exit_engine_x_decision || [];
+  const closes = recent.exit_engine_x_close || [];
+  const lifecycles = recent.exit_engine_x_lifecycle || [];
+  const latestDecision = decisions[0] || null;
+  const latestEvaluation = evaluations[0] || null;
+  const latestLifecycle = lifecycles[0] || null;
+  const allRecent = [...opens, ...evaluations, ...closes];
+  const uniqueKeys = new Set(allRecent.map(exitXReadKey));
+  const closedKeys = new Set(closes.map(exitXReadKey));
+  const activeKeys = new Set(opens.map(exitXReadKey));
+  for (const key of closedKeys) activeKeys.delete(key);
+
+  const comparisonRows = closes.map(close => {
+    const p = exitXReadPayload(close);
+    const evaluation = evaluations.find(row => exitXReadKey(row) === exitXReadKey(close));
+    const ep = exitXReadPayload(evaluation);
+    const liveExit = exitXReadField(close, [
+      "liveExitPips", "actualExitPips", "actualExit", "profitPips", "realizedPips",
+    ]);
+    const proposal = exitXReadField(close, [
+      "exitXPips", "shadowExitPips", "proposedExitPips", "proposalPips", "exitX.pips",
+    ]) ?? exitXReadField(evaluation, [
+      "exitXPips", "shadowExitPips", "proposedExitPips", "proposalPips", "exitX.pips",
+    ]);
+    const difference = exitXReadField(close, [
+      "exitImprovementPips", "improvementPips", "pipsSaved", "profitDifferencePips",
+      "profitDifference", "differencePips",
+    ]) ?? (proposal !== null && liveExit !== null ? proposal - liveExit : null);
+    const verdict = exitXReadVerdict(close) || exitXReadVerdict(evaluation);
+    return {
+      key: exitXReadKey(close),
+      symbol: exitXReadText(p.symbol, ep.symbol, close.symbol),
+      entryTime: exitXReadText(p.entryTime, ep.entryTime),
+      liveExit: exitXReadText(p.liveExitReason, p.exitReason, p.reason),
+      liveExitPips: liveExit,
+      exitXProposal: exitXReadText(p.shadowRecommendation, p.recommendation, ep.shadowRecommendation, ep.decision),
+      exitXPips: proposal,
+      difference,
+      confidence: exitXReadConfidence(evaluation || close),
+      knowledgeConfidence: exitXReadKnowledgeConfidence(evaluation || close),
+      exitReason: exitXReadText(p.exitReason, p.liveExitReason, p.reason, ep.exitReason, ep.tradeStage),
+      verdict,
+      profitPips: exitXReadField(close, ["profitDifferencePips", "profitPips", "actualExit", "realizedPips"]),
+    };
+  });
+  const diffs = comparisonRows.map(row => row.difference).filter(value => value !== null);
+  const verdicts = comparisonRows.map(row => row.verdict).filter(Boolean);
+  const better = verdicts.filter(v => ["BETTER", "WIN", "SUCCESS"].includes(v)).length;
+  const worse = verdicts.filter(v => ["WORSE", "LOSS", "MISSED"].includes(v)).length;
+  const equal = verdicts.filter(v => ["EQUAL", "SAME", "UNCHANGED"].includes(v)).length;
+  const qualityRows = closes;
+  const knowledgeRows = [...evaluations, ...closes];
+  const knowledgeScores = knowledgeRows.map(exitXReadKnowledgeConfidence).filter(value => value !== null);
+  const knowledgeEligible = knowledgeScores.length;
+  const knowledgeMatches = knowledgeRows.filter(row => {
+    const p = exitXReadPayload(row);
+    return p.knowledgeResult?.matchedFingerprint === true || p.knowledgeMatched === true || p.knowledgeMatch === true;
+  }).length;
+  const sampleSize = Math.max(...knowledgeRows.map(row => exitXReadField(row, [
+    "knowledgeResult.sampleSize", "knowledge.sampleSize", "sampleSize",
+  ]) || 0), 0);
+  const latestPayload = exitXReadPayload(latestEvaluation || latestDecision || latestLifecycle);
+  const decisionKey = latestDecision ? exitXReadKey(latestDecision) : null;
+  const decisionUpdates = decisionKey
+    ? decisions.filter(row => exitXReadKey(row) === decisionKey).length
+    : null;
+  const decisionSequences = {};
+  for (const row of decisions) {
+    const key = exitXReadKey(row);
+    const p = exitXReadPayload(row);
+    const recommendation = exitXReadText(p.decision, p.recommendation, p.shadowRecommendation);
+    if (recommendation) (decisionSequences[key] ||= []).push(recommendation);
+  }
+  const changes = Object.values(decisionSequences).map(sequence =>
+    sequence.slice(1).reduce((n, value, index) => n + (value !== sequence[index] ? 1 : 0), 0)
+  );
+  const stable = Object.values(decisionSequences).filter(sequence =>
+    sequence.length > 0 && new Set(sequence).size === 1
+  ).length;
+  const unstable = Object.values(decisionSequences).filter(sequence =>
+    sequence.length > 1 && new Set(sequence).size > 1
+  ).length;
+  const validationSamples = comparisonRows.filter(row => row.difference !== null || row.verdict).length;
+  const avgImprovement = exitXReadAverage(diffs);
+  const status = validationSamples >= 300 && avgImprovement !== null && avgImprovement > 0
+    ? "READY FOR LIVE"
+    : validationSamples > 0 && avgImprovement !== null && avgImprovement > 0
+      ? "PROMISING"
+      : uniqueKeys.size > 0 ? "LEARNING" : "NOT READY";
+
+  return {
+    performance: {
+      tradesObserved: Math.max(counts.exit_engine_x_open || 0, counts.exit_engine_x_evaluation || 0, counts.exit_engine_x_close || 0),
+      tradesClosed: counts.exit_engine_x_close || 0,
+      activeTrades: activeKeys.size,
+      marketEvaluations: counts.exit_engine_x_evaluation || 0,
+      decisionsMade: counts.exit_engine_x_decision || 0,
+      votesCast: counts.exit_engine_x_vote || 0,
+      avgEvaluationsPerTrade: uniqueKeys.size ? (counts.exit_engine_x_evaluation || 0) / uniqueKeys.size : null,
+      avgDecisionsPerTrade: uniqueKeys.size ? (counts.exit_engine_x_decision || 0) / uniqueKeys.size : null,
+    },
+    comparison: {
+      better, worse, equal,
+      denominator: validationSamples || null,
+      averageImprovement: avgImprovement,
+      totalPipsSaved: diffs.length ? diffs.reduce((sum, value) => sum + value, 0) : null,
+      largestImprovement: diffs.length ? Math.max(...diffs) : null,
+      largestMissedOpportunity: diffs.length ? Math.min(...diffs) : null,
+      profitDifference: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["profitDifferencePips", "profitDifference"]))),
+      averageExitDelay: exitXReadAverage(qualityRows.map(row =>
+        exitXReadField(row, ["exitDelayMinutes", "delayMinutes"]) ??
+        (exitXReadField(row, ["exitDelayMs"]) !== null ? exitXReadField(row, ["exitDelayMs"]) / 60000 : null)
+      ).filter(value => value !== null)),
+    },
+    quality: {
+      exitEfficiency: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["exitEfficiency", "efficiency"]))),
+      averageMfeAtExit: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["mfeAtExit", "mfe"]))),
+      averageMaeAtExit: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["maeAtExit", "mae"]))),
+      profitProtected: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["profitProtectedPips", "profitProtected"]))),
+      profitGivenBack: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["profitGivenBackPips", "profitGivenBack", "regretMemory.difference", "regretScore"]))),
+      earlyExitAccuracy: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["earlyExitAccuracy", "earlyExitCorrect"]))),
+      lateExitAccuracy: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["lateExitAccuracy", "lateExitCorrect"]))),
+      averageHoldTime: exitXReadAverage(qualityRows.map(row => exitXReadField(row, ["durationMin", "duration", "minutesOpen"]))),
+      averageExitConfidence: exitXReadAverage([...evaluations, ...decisions].map(exitXReadConfidence)),
+    },
+    knowledge: {
+      confidence: exitXReadAverage(knowledgeScores),
+      matchRate: knowledgeEligible ? (knowledgeMatches / knowledgeEligible) * 100 : null,
+      overrideCount: knowledgeRows.filter(row => {
+        const p = exitXReadPayload(row);
+        return p.knowledgeOverride === true || p.knowledgeResult?.override === true || p.overrideSource === "KNOWLEDGE";
+      }).length,
+      assistedDecisions: knowledgeRows.filter(row => {
+        const p = exitXReadPayload(row);
+        return p.knowledgeAssisted === true || p.knowledgeResult?.assisted === true || p.assistedByKnowledge === true;
+      }).length,
+      averageConfidence: knowledgeScores.length ? exitXReadAverage(knowledgeScores) : null,
+      sampleSize: sampleSize || null,
+      learningProgress: sampleSize ? Math.min(100, (sampleSize / 300) * 100) : null,
+    },
+    decision: {
+      recommendation: exitXReadText(latestPayload.shadowRecommendation, latestPayload.decision, latestPayload.recommendation),
+      reason: exitXReadText(latestPayload.reason, latestPayload.exitReason),
+      confidence: exitXReadConfidence(latestEvaluation || latestDecision || latestLifecycle),
+      activeState: exitXReadText(latestPayload.state, latestPayload.activeState, latestPayload.tradeStage),
+      activeMode: exitXReadText(latestPayload.mode, latestPayload.exitMode, latestPayload.activeMode),
+      latency: exitXReadNumber(latestPayload.decisionLatencyMs, latestPayload.latencyMs, latestPayload.latency),
+      updates: decisionUpdates,
+    },
+    stability: {
+      averageChanges: exitXReadAverage(changes),
+      stable,
+      unstable,
+      score: stable + unstable > 0 ? (stable / (stable + unstable)) * 100 : null,
+    },
+    confidenceBuckets: ["90–100%", "80–90%", "70–80%", "60–70%", "Below 60%"].map((label, index) => ({
+      label, accuracy: null, sample: null,
+    })),
+    history: comparisonRows.slice(-100).reverse(),
+    logs: decisions.slice(0, 100),
+    summary: {
+      rating: status === "READY FOR LIVE" ? "VALIDATED" : status === "PROMISING" ? "PROMISING" : status === "LEARNING" ? "LEARNING" : "INSUFFICIENT DATA",
+      expectedImprovement: avgImprovement,
+      learningStage: sampleSize ? `SAMPLE ${sampleSize}` : "NO SAMPLE",
+      recommendation: status === "READY FOR LIVE" ? "REVIEW PROMOTION GATE" : "CONTINUE SHADOW OBSERVATION",
+      status,
+      validationSamples,
+    },
+  };
+}
+
+async function buildExitEngineXSummary() {
+  const countRows = await db.all(
+    "SELECT type, COUNT(*) AS n FROM events WHERE type IN (?, ?, ?, ?, ?, ?) GROUP BY type",
+    ...EXIT_ENGINE_X_EVENT_TYPES
+  );
+  const counts = Object.fromEntries(EXIT_ENGINE_X_EVENT_TYPES.map(type => [type, 0]));
+  for (const row of countRows || []) counts[row.type] = Number(row.n) || 0;
+  const recentEntries = await Promise.all(EXIT_ENGINE_X_EVENT_TYPES.map(async type => [
+    type,
+    await queryEvents({ type, limit: EXIT_ENGINE_X_SUMMARY_SAMPLE }),
+  ]));
+  const recent = Object.fromEntries(recentEntries);
+  const analytics = buildExitEngineXReadModel({ counts, recent });
+  const modulePayload = {
+    id: "exit-engine-x",
+    name: "Exit Engine X",
+    status: "OBSERVING",
+    connected: true,
+    collectsData: true,
+    influencesLive: false,
+    observations: counts.exit_engine_x_evaluation,
+    stats: {
+      evaluations: counts.exit_engine_x_evaluation,
+      votes: counts.exit_engine_x_vote,
+      decisions: counts.exit_engine_x_decision,
+      closedTrades: counts.exit_engine_x_close,
+      mode: "SHADOW",
+      advisoryOnly: true,
+    },
+    reason: "Shadow-only — recommendations are recorded; Live Exit remains authoritative",
+  };
+  return {
+    ok: true,
+    generated: new Date().toISOString(),
+    cacheTtlMs: EXIT_ENGINE_X_SUMMARY_TTL_MS,
+    sampleLimitPerType: EXIT_ENGINE_X_SUMMARY_SAMPLE,
+    module: modulePayload,
+    eventCounts: counts,
+    recent,
+    analytics,
+    diagnostics: {
+      source: "backend_aggregate",
+      historyEndpoint: "/api/exit-engine-x/history",
+      note: "Counts are database aggregates; JSON metrics use only the bounded recent sample.",
+    },
+  };
+}
+
 // ── API: GET /api/events ──────────────────────────────────────────────────────
 app.get("/api/events", async (req, res) => {
   const rows = await queryEvents({
@@ -537,6 +864,80 @@ app.get("/api/events", async (req, res) => {
     limit:  parseInt(req.query.limit || "500"),
   });
   res.json(rows);
+});
+
+// ── API: GET /api/exit-engine-x/summary ──────────────────────────────────────
+// Lightweight read model for the public dashboard. The promise is shared so
+// several dashboard tabs/reloads cannot stampede the database simultaneously.
+app.get("/api/exit-engine-x/summary", async (req, res) => {
+  try {
+    const now = Date.now();
+    if (exitEngineXSummaryCache.value && exitEngineXSummaryCache.expiresAt > now) {
+      return res.json({ ...exitEngineXSummaryCache.value, cached: true });
+    }
+    if (!exitEngineXSummaryCache.pending) {
+      exitEngineXSummaryCache.pending = buildExitEngineXSummary()
+        .then(value => {
+          exitEngineXSummaryCache.value = value;
+          exitEngineXSummaryCache.expiresAt = Date.now() + EXIT_ENGINE_X_SUMMARY_TTL_MS;
+          return value;
+        })
+        .finally(() => { exitEngineXSummaryCache.pending = null; });
+    }
+    const value = await exitEngineXSummaryCache.pending;
+    res.json({ ...value, cached: false });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message || "Exit Engine X summary unavailable",
+      fallback: "N/A",
+    });
+  }
+});
+
+// ── API: GET /api/exit-engine-x/history ──────────────────────────────────────
+// Detail endpoint is deliberately separate from summary and capped at 100 rows.
+// The dashboard uses this for audit/history pages instead of loading all events.
+app.get("/api/exit-engine-x/history", async (req, res) => {
+  try {
+    const type = String(req.query.type || "exit_engine_x_decision");
+    if (!EXIT_ENGINE_X_EVENT_TYPES.includes(type)) {
+      return res.status(400).json({ ok: false, error: "Unsupported Exit Engine X event type" });
+    }
+    const rawPage = String(req.query.page ?? "1");
+    if (!/^\d+$/.test(rawPage)) {
+      return res.status(400).json({ ok: false, error: "page must be a positive integer" });
+    }
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize, 10) || 50, 1), 100);
+    const page = Number(rawPage);
+    const maxPage = 1000;
+    if (!Number.isSafeInteger(page) || page < 1 || page > maxPage) {
+      return res.status(400).json({ ok: false, error: `page must be between 1 and ${maxPage}` });
+    }
+    const offset = (page - 1) * pageSize;
+    const totalRow = await db.get("SELECT COUNT(*) AS n FROM events WHERE type=?", type);
+    const rows = await db.all(
+      "SELECT id,ts,bot_id,type,symbol,data FROM events WHERE type=? ORDER BY id DESC LIMIT ? OFFSET ?",
+      type, pageSize, offset
+    );
+    const parsed = (rows || []).map(row => {
+      let data = {};
+      try { data = typeof row.data === "string" ? JSON.parse(row.data) : (row.data || {}); } catch (_) {}
+      return { ...row, data };
+    });
+    const total = Number(totalRow?.n) || 0;
+    res.json({
+      ok: true,
+      type,
+      page,
+      pageSize,
+      total,
+      hasMore: offset + parsed.length < total,
+      rows: parsed,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || "Exit Engine X history unavailable", rows: [] });
+  }
 });
 
 // ── API: GET /api/trades ──────────────────────────────────────────────────────

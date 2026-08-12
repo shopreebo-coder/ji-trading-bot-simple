@@ -161,7 +161,30 @@ function minsOpen(t){ return ((Date.now()-t)/60000).toFixed(1); }
 function pct(v){ return v==null?"—":v.toFixed(1)+"%"; }
 function fmtNum(v,dec=2){ return v==null?"—":parseFloat(v).toFixed(dec); }
 
-async function api(path){ const r=await fetch(path); return r.json(); }
+async function api(path, options={}){
+  const timeoutMs = Number(options.timeoutMs || 8000);
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(path, {signal: controller.signal});
+    const body = await r.json().catch(()=>({}));
+    if(!r.ok){
+      const error = new Error(body?.error || `HTTP ${r.status}`);
+      error.status = r.status;
+      throw error;
+    }
+    return body;
+  } catch(error) {
+    if(error?.name === "AbortError"){
+      const timeout = new Error(`Request timed out after ${timeoutMs} ms: ${path}`);
+      timeout.code = "TIMEOUT";
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ── Top header ─────────────────────────────────────────────────────────────
 function Header({ botStatus, ts }){
@@ -342,7 +365,7 @@ function ExitXObjectSection({ title, value }){
     </div>
   );
 }
-function ExitXHistory({ title, rows }){
+function ExitXHistory({ title, rows, onMore, hasMore, loading }){
   const list = Array.isArray(rows) ? rows : [];
   return (
     <div className="panel">
@@ -356,6 +379,11 @@ function ExitXHistory({ title, rows }){
             <ExitXTree value={row.data ?? row}/>
           </div>
         )) : <div className="empty">N/A</div>}
+        {onMore && hasMore && (
+          <button className="btn" style={{margin:"10px 0"}} onClick={onMore} disabled={loading}>
+            {loading ? "Loading…" : "Load next 50"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -994,70 +1022,102 @@ function ExitXTradeHistory({ rows }){
 function ExitEngineXTab(){
   const [data,setData] = useState(null);
   const [error,setError] = useState(null);
+  const [historyState,setHistoryState] = useState({});
+  const detailLoadedRef = useRef(false);
   useEffect(()=>{
     let alive = true;
+    const loadHistory = async (type) => {
+      try {
+        const page = historyState[type]?.page || 1;
+        const result = await api(`/api/exit-engine-x/history?type=${encodeURIComponent(type)}&page=${page}&pageSize=50`, {timeoutMs:6000});
+        if(!alive) return;
+        setHistoryState(prev=>({...prev,[type]:{
+          ...result,
+          rows:Array.isArray(result.rows) ? result.rows : [],
+          loading:false,
+        }}));
+      } catch(err) {
+        if(alive) setHistoryState(prev=>({...prev,[type]:{
+          ...(prev[type]||{}), rows:[], loading:false, error:err?.message||String(err),
+        }}));
+      }
+    };
     const load = async () => {
       try {
-        const [moduleStatus, persistence, trades, allEvents] = await Promise.all([
-          api("/api/modules/status"),
-          api("/api/healthz/persistence"),
-          api("/api/trades"),
-          api("/api/events?limit=500"),
-        ]);
-        const eventCounts = persistence && persistence.eventCounts && typeof persistence.eventCounts==="object"
-          ? persistence.eventCounts : {};
-        const allExitEvents = Array.isArray(allEvents)
-          ? allEvents.filter(row=>row && String(row.type||"").indexOf("exit_engine_x_")===0)
-          : [];
-        const eventTypes = [...Object.keys(eventCounts), ...allExitEvents.map(row=>row.type)]
-          .filter(type=>type.indexOf("exit_engine_x_")===0);
-        const requestedTypes = [...new Set([...EXIT_ENGINE_X_EVENT_FALLBACKS, ...eventTypes])];
-        const eventResults = await Promise.all(requestedTypes.map(async type=>{
-          try {
-            const rows = await api(`/api/events?type=${encodeURIComponent(type)}&limit=2000`);
-            return [type, Array.isArray(rows) ? rows : []];
-          } catch(_) {
-            return [type, []];
-          }
-        }));
+        const summaryResult = await api("/api/exit-engine-x/summary", {timeoutMs:7000});
         if(!alive) return;
-        const histories = Object.fromEntries(eventResults);
-        for(const type of requestedTypes){
-          if(!histories[type] || !histories[type].length){
-            histories[type] = allExitEvents.filter(row=>row.type===type);
-          }
-        }
-        const module = Array.isArray(moduleStatus?.modules)
-          ? moduleStatus.modules.find(item=>item && item.id==="exit-engine-x") || null
-          : null;
+        const histories = summaryResult.recent || {};
+        const analytics = summaryResult.analytics || {};
         const evaluations = histories.exit_engine_x_evaluation || [];
         const decisions = histories.exit_engine_x_decision || [];
         const votes = histories.exit_engine_x_vote || [];
         const lifecycles = histories.exit_engine_x_lifecycle || [];
         const opens = histories.exit_engine_x_open || [];
         const closes = histories.exit_engine_x_close || [];
-        const activeTrades = Array.isArray(trades)
-          ? trades.filter(trade=>trade && trade.open && !trade.close)
-          : [];
-        const analytics = exitXBuildAnalytics({
-          opens, closes, evaluations, decisions, votes, lifecycles, activeTrades,
-        });
-        const raw = {moduleStatus, exitEngineX:module, persistence, events:histories, activeTrades, analytics};
+        const persistence = {
+          eventCounts: summaryResult.eventCounts || {},
+          readModel: summaryResult.diagnostics || {},
+        };
+        const raw = {summary:summaryResult, events:histories, analytics};
         setData({
-          module, persistence, histories, evaluations, decisions, votes, lifecycles, opens, closes,
-          activeTrades, analytics, raw, lastEvaluation:evaluations[0] || null,
-          lastDecision:decisions[0] || null, lastLifecycle:lifecycles[0] || null,
-          updatedAt:new Date().toISOString(),
+          module:summaryResult.module || null,
+          persistence, histories, evaluations, decisions, votes, lifecycles, opens, closes,
+          activeTrades:[], analytics, raw,
+          lastEvaluation:evaluations[0] || null,
+          lastDecision:decisions[0] || null,
+          lastLifecycle:lifecycles[0] || null,
+          updatedAt:summaryResult.generated || new Date().toISOString(),
         });
         setError(null);
+        // Detail calls are independent. A failure in one audit stream must not
+        // prevent the summary or other streams from rendering. Do not repeat
+        // page-one fetches during the periodic summary refresh: that would
+        // discard pages the operator already loaded.
+        if(!detailLoadedRef.current){
+          detailLoadedRef.current=true;
+          ["exit_engine_x_close","exit_engine_x_decision","exit_engine_x_evaluation",
+            "exit_engine_x_vote","exit_engine_x_lifecycle"].forEach(type=>loadHistory(type));
+        }
       } catch(err) {
         if(alive) setError(err?.message || String(err));
       }
     };
     load();
-    const id = setInterval(load, EXIT_ENGINE_X_REFRESH_MS);
+    const id=setInterval(load, EXIT_ENGINE_X_REFRESH_MS);
     return ()=>{ alive=false; clearInterval(id); };
   },[]);
+
+  useEffect(()=>{
+    if(!data) return;
+    const histories = {...(data.histories||{})};
+    Object.entries(historyState).forEach(([type,state])=>{
+      if(Array.isArray(state?.rows) && state.rows.length) histories[type]=state.rows;
+    });
+    const evaluations = histories.exit_engine_x_evaluation || [];
+    const decisions = histories.exit_engine_x_decision || [];
+    const votes = histories.exit_engine_x_vote || [];
+    const lifecycles = histories.exit_engine_x_lifecycle || [];
+    const closes = histories.exit_engine_x_close || [];
+    setData(prev=>prev ? {
+      ...prev, histories, evaluations, decisions, votes, lifecycles, closes,
+      raw:{...(prev.raw||{}), events:histories},
+    } : prev);
+  },[historyState]);
+
+  const loadMoreHistory = async (type) => {
+    const current = historyState[type] || {};
+    if(current.loading || !current.hasMore) return;
+    setHistoryState(prev=>({...prev,[type]:{...current,loading:true,page:(current.page||1)+1}}));
+    try {
+      const nextPage=(current.page||1)+1;
+      const result=await api(`/api/exit-engine-x/history?type=${encodeURIComponent(type)}&page=${nextPage}&pageSize=50`, {timeoutMs:6000});
+      setHistoryState(prev=>({...prev,[type]:{
+        ...result, page:nextPage, rows:[...(prev[type]?.rows||[]),...(result.rows||[])], loading:false,
+      }}));
+    } catch(err) {
+      setHistoryState(prev=>({...prev,[type]:{...prev[type],loading:false,error:err?.message||String(err)}}));
+    }
+  };
   if(error && !data) return <div className="page"><div className="card">Exit Engine X diagnostics error: {error}</div></div>;
   if(!data) return <div className="page"><div className="card">Loading Exit Engine X diagnostics…</div></div>;
   const module = data.module || {};
@@ -1195,9 +1255,18 @@ function ExitEngineXTab(){
 
       <div className="sec-label">Telemetry Audit</div>
       <ExitXObjectSection title="Exit Engine X event counters" value={eventCounts}/>
-      <ExitXHistory title="Latest Evaluations" rows={data.evaluations}/>
-      <ExitXHistory title="Latest Votes" rows={data.votes}/>
-      <ExitXHistory title="Latest Lifecycle Events" rows={data.lifecycles}/>
+      <ExitXHistory title="Latest Evaluations" rows={data.evaluations}
+        onMore={()=>loadMoreHistory("exit_engine_x_evaluation")}
+        hasMore={historyState.exit_engine_x_evaluation?.hasMore}
+        loading={historyState.exit_engine_x_evaluation?.loading}/>
+      <ExitXHistory title="Latest Votes" rows={data.votes}
+        onMore={()=>loadMoreHistory("exit_engine_x_vote")}
+        hasMore={historyState.exit_engine_x_vote?.hasMore}
+        loading={historyState.exit_engine_x_vote?.loading}/>
+      <ExitXHistory title="Latest Lifecycle Events" rows={data.lifecycles}
+        onMore={()=>loadMoreHistory("exit_engine_x_lifecycle")}
+        hasMore={historyState.exit_engine_x_lifecycle?.hasMore}
+        loading={historyState.exit_engine_x_lifecycle?.loading}/>
       <details className="panel">
         <summary className="ph" style={{cursor:"pointer"}}>Complete Exit Engine X backend payload</summary>
         <pre style={{margin:0,padding:14,overflow:"auto",maxHeight:600,color:"#cbd5e1",fontSize:11,lineHeight:1.5}}>
@@ -4678,7 +4747,7 @@ function selConsensusColor(c){
 function selFmtWould(wt){
   if(wt===true)  return "TAK";
   if(wt===false) return "NIE";
-  return "—";
+  return "ABSTAIN";
 }
 function selFmtNum(n,dp){
   if(n===null||n===undefined) return "—";
@@ -4938,10 +5007,16 @@ function App(){
     setKnowledge({ status:st, artifacts:ar });
   }
   async function refreshSelected(){
-    const [st, cx] = await Promise.all([
-      api("/api/selected/status"),
-      api("/api/selected/context"),
+    const [statusResult, contextResult] = await Promise.allSettled([
+      api("/api/selected/status", {timeoutMs:6000}),
+      api("/api/selected/context", {timeoutMs:6000}),
     ]);
+    const st = statusResult.status==="fulfilled"
+      ? statusResult.value
+      : {ok:false, error:statusResult.reason?.message||"Selected status unavailable", engines:[], telemetry:null};
+    const cx = contextResult.status==="fulfilled"
+      ? contextResult.value
+      : {ok:false, error:contextResult.reason?.message||"Selected context unavailable", context:null, diagnostics:{}};
     setSelected({
       status:st,
       context: cx && cx.context,
