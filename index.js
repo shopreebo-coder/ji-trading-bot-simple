@@ -45,6 +45,10 @@ const DISABLED_SYMBOLS = (process.env.DISABLED_SYMBOLS || "").split(",").filter(
 
 const MAIN_TIMEFRAME   = process.env.TIMEFRAME || "M5";
 const ENTRY_TIMEFRAME  = "M1";
+const OANDA_CANDLES_TIMEOUT_MS = Math.max(
+  1000,
+  parseInt(process.env.OANDA_CANDLES_TIMEOUT_MS || "10000", 10) || 10000,
+);
 const RISK_PERCENT     = parseFloat(process.env.RISK_PERCENT || "0.01");
 const MAX_OPEN_TRADES  = parseInt(process.env.MAX_OPEN_TRADES || "2");
 const MAX_DAILY_TRADES = parseInt(process.env.MAX_DAILY_TRADES || "50");
@@ -57,6 +61,14 @@ const TRAILING_SL_BUFFER_PIPS        = parseFloat(process.env.TRAILING_SL_BUFFER
 console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
 console.log(`SYMBOLS=${SYMBOLS}`);
+console.log(
+  `[OANDA_CONFIG] environment=${process.env.OANDA_ENV || "practice(default)"}` +
+  ` baseUrl=${BASE_URL}` +
+  ` accountIdPresent=${Boolean(ACCOUNT_ID)}` +
+  ` apiKeyPresent=${Boolean(API_KEY)}` +
+  ` mainTimeframe=${MAIN_TIMEFRAME}` +
+  ` candleTimeoutMs=${OANDA_CANDLES_TIMEOUT_MS}`,
+);
 
 const headers = {
   Authorization: `Bearer ${API_KEY}`,
@@ -649,17 +661,95 @@ async function checkAlmostTradeOutcomes() {
 
 // ── CANDLE DATA ───────────────────────────────────────────────────────────────
 
-async function getCandles(symbol, count = 100, granularity = MAIN_TIMEFRAME) {
+function formatOandaResponseBody(body) {
+  if (body == null || body === "") return "<empty>";
+  if (typeof body === "string") return body.slice(0, 2000);
   try {
-    const url = `${BASE_URL}/v3/instruments/${symbol}/candles`;
+    return JSON.stringify(body).slice(0, 2000);
+  } catch (_) {
+    return String(body).slice(0, 2000);
+  }
+}
+
+async function getCandles(symbol, count = 100, granularity = MAIN_TIMEFRAME) {
+  const url = `${BASE_URL}/v3/instruments/${symbol}/candles`;
+  const requestStartedAt = Date.now();
+  const requestMeta = {
+    symbol,
+    timeframe: granularity,
+    countRequested: count,
+    timeoutMs: OANDA_CANDLES_TIMEOUT_MS,
+    endpoint: url,
+  };
+
+  try {
     const res = await axios.get(url, {
       headers,
       params: { granularity, count, price: "M" },
+      timeout: OANDA_CANDLES_TIMEOUT_MS,
     });
-    return res.data.candles || [];
+
+    if (!Array.isArray(res.data?.candles)) {
+      const responseError = new Error("OANDA candles response is missing a candles array");
+      responseError.response = {
+        status: res.status,
+        data: res.data,
+      };
+      throw responseError;
+    }
+
+    const candles = res.data.candles;
+    const lastTimestamp = candles[candles.length - 1]?.time || null;
+    const durationMs = Date.now() - requestStartedAt;
+
+    console.log(
+      `[OANDA_CANDLES] httpStatus=${res.status}` +
+      ` symbol=${symbol}` +
+      ` timeframe=${granularity}` +
+      ` countRequested=${count}` +
+      ` candles=${candles.length}` +
+      ` lastTimestamp=${lastTimestamp || "<none>"}` +
+      ` timeoutMs=${OANDA_CANDLES_TIMEOUT_MS}` +
+      ` durationMs=${durationMs}`,
+    );
+    logEvent({
+      type: "candle_fetch_success",
+      ...requestMeta,
+      httpStatus: res.status,
+      candlesCount: candles.length,
+      lastTimestamp,
+      durationMs,
+    });
+
+    return candles;
   } catch (err) {
-    console.log(`Candles error ${symbol}`, err.message);
-    return [];
+    const httpStatus = err.response?.status ?? err.statusCode ?? null;
+    const responseBody = formatOandaResponseBody(err.response?.data);
+    const message = err.message || String(err);
+    const durationMs = Date.now() - requestStartedAt;
+
+    console.error(
+      `[OANDA_CANDLES_ERROR] httpStatus=${httpStatus ?? "<none>"}` +
+      ` symbol=${symbol}` +
+      ` timeframe=${granularity}` +
+      ` countRequested=${count}` +
+      ` timeoutMs=${OANDA_CANDLES_TIMEOUT_MS}` +
+      ` durationMs=${durationMs}` +
+      ` message=${message}` +
+      ` responseBody=${responseBody}` +
+      ` endpoint=${url}`,
+    );
+    logEvent({
+      type: "candle_fetch_error",
+      ...requestMeta,
+      httpStatus,
+      responseBody,
+      message,
+      code: err.code || null,
+      durationMs,
+    });
+
+    throw err;
   }
 }
 

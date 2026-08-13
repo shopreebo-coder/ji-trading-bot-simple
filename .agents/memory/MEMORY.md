@@ -17,3 +17,4 @@
 - [Cross-process runtime toggles](runtime-toggle-control.md) — child-process Shadow controls require a shared atomic channel, not only server memory.
 - [GitHub push path](github-push-integration.md) — when local HTTPS auth fails, use the installed GitHub integration with a non-force fast-forward after comparing remote blobs.
 - [Railway deploy observability](railway-deploy-observability.md) — GitHub deployment records can fan out and stay in-progress without exposing the intended service URL or runtime health.
+- [OANDA candle error visibility](oanda-candle-error-visibility.md) — candle fetch failures must retain HTTP/body/request context and propagate; `[]` hides auth and transport failures as fake M5 insufficiency.
