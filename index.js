@@ -1730,144 +1730,16 @@ async function strategy(symbol) {
     const spreadBkt = spreadBucketLabel(spread);
     const comprBkt  = compressionBucket(candleStrength);
 
-    // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ─
-    const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
-
-    // CALIBRATION v3.1: Regime-aware exhaustion — hotfix recalibration.
-    // Evidence: exhaustion_block still ≈ 60% of evals post-v3; avg post-block move ≈ 7p.
-    // HOTFIX: stretch base 0.95→1.10 (candle base stays 1.10); mults 1.2/0.7→1.35/0.90.
-    //
-    // STRONG_TREND (emaDistance ≥ 5p): multiplier 1.35
-    //   Effective limits: candle > 1.485 body/ATR | stretch > 1.485× ATR  (essentially never fires)
-    //   Sustained EMA separation: large candles + stretch are EXPECTED — trend continuation.
-    //
-    // MEDIUM/WEAK TREND (emaDistance < 5p): multiplier 0.90
-    //   Effective limits: candle > 0.99 body/ATR | stretch > 0.99× ATR
-    //   (v3 was 0.77/0.665 — hotfix allows moderate trend continuation moves through)
-    const exhaustionMultiplier   = trendBkt === "STRONG_TREND" ? 1.35 : 0.90;
-    const candleExhaustionLimit  = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
-    const stretchExhaustionLimit = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
-
-    if (candleStrength > candleExhaustionLimit) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit=${candleExhaustionLimit} regime=${trendBkt} mult=${exhaustionMultiplier})`);
-      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
-      logEvent({
-        type: "signal_filtered", signalId, symbol, session,
-        reason: "exhaustion_block", subReason: "candle_overexpanded",
-      });
-      logEvent({
-        type:                 "exhaustion_block",
-        signalId, symbol, session,
-        reason:               "candle_overexpanded",
-        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
-        candleExhaustionLimit,
-        exhaustionMultiplier,
-        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
-        atrPips:              parseFloat(atrPips.toFixed(2)),
-        volatilityBucket:     volBkt,
-        trendBucket:          trendBkt,
-      });
-      if (lastMidPrice[symbol]) {
-        blockedSignals[signalId] = {
-          signalId, symbol, blockType: "exhaustion_block",
-          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
-          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
-        };
-      }
-      return;
-    }
-
-    if (priceStretchPips > atrPips * stretchExhaustionLimit) {
-      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)} (limit=${stretchExhaustionLimit}×ATR regime=${trendBkt})`);
-      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
-      logEvent({
-        type: "signal_filtered", signalId, symbol, session,
-        reason: "exhaustion_block", subReason: "price_overextended",
-      });
-      logEvent({
-        type:                 "exhaustion_block",
-        signalId, symbol, session,
-        reason:               "price_overextended",
-        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
-        stretchExhaustionLimit,
-        exhaustionMultiplier,
-        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
-        atrPips:              parseFloat(atrPips.toFixed(2)),
-        volatilityBucket:     volBkt,
-        trendBucket:          trendBkt,
-      });
-      if (lastMidPrice[symbol]) {
-        blockedSignals[signalId] = {
-          signalId, symbol, blockType: "exhaustion_block",
-          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
-          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
-        };
-      }
-      return;
-    }
-    preFilterCounters.exhaustion_pass++;                                      // TELEMETRY ONLY
-
-    // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ───
-    const expectedCapturePips = atrPips * 0.30;
-    const edgeRatio           = expectedCapturePips / spread;
-    // CALIBRATION v3: edge ratio 1.5→1.15 — telemetry shows spread_edge_block ≈ 24%
-    // of all evaluations; avg post-block move ≈ 11p. Blocked setups were expanding.
-    // 1.15 still requires expectedCapturePips > spread × 1.15 — positive expected value
-    // after spread cost is preserved. Formula: ATR×0.3 / spread > 1.15 → ATR > 3.83× spread.
-    if (edgeRatio < 1.15) {
-      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p (limit 1.15)`);
-      blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
-      logEvent({
-        type: "signal_filtered", signalId, symbol, session,
-        reason: "spread_edge_block", edgeRatio: parseFloat(edgeRatio.toFixed(2)),
-      });
-      logEvent({
-        type:                "spread_edge_block",
-        signalId, symbol, session,
-        edgeRatio:           parseFloat(edgeRatio.toFixed(2)),
-        expectedCapturePips: parseFloat(expectedCapturePips.toFixed(2)),
-        atrPips:             parseFloat(atrPips.toFixed(2)),
-        spread,
-        spreadPercentile:    spreadPctile,
-        volatilityBucket:    volBkt,
-      });
-      if (lastMidPrice[symbol]) {
-        blockedSignals[signalId] = {
-          signalId, symbol, blockType: "spread_edge_block",
-          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
-        };
-      }
-      return;
-    }
-    preFilterCounters.spread_edge_pass++;                                     // TELEMETRY ONLY
-
-    // ── MARKET REGIME SNAPSHOT — TELEMETRY ONLY ───────────────────────────
-    logEvent({
-      type:              "market_regime",
-      signalId,
-      symbol,
-      hour:              hourUTC,
-      dow:               evalTime.getUTCDay(),
-      session,
-      atr:               parseFloat(atrPips.toFixed(2)),
-      spread,
-      spreadPercentile:  spreadPctile,
-      emaDistance:       parseFloat(emaDistance.toFixed(2)),
-      trendStrength:     parseFloat(emaDistance.toFixed(2)),
-      candleStrength:    parseFloat(candleStrength.toFixed(3)),
-      volatilityBucket:  volBkt,
-      trendBucket:       trendBkt,
-      spreadBucket:      spreadBkt,
-      compressionBucket: comprBkt,
-    });
-
-    // ── M1 CONFIRMATION ───────────────────────────────────────────────────
+    // ── M1 CONFIRMATION — fetched before exhaustion so Shadow A/B/C can observe ─
+    // Shadow must evaluate every signal that has valid M5+M1 data. Moving M1 fetch
+    // here (before exhaustion/edge filters) allows shadowGate() to receive complete
+    // condition maps for ALL non-trivially-blocked signals. This is advisory-only
+    // and NEVER changes entry, risk, sizing, SL/TP, exit, or broker decisions.
     const m1Candles = await getCandles(symbol, 50, ENTRY_TIMEFRAME);
     if (m1Candles.length < 30) {
       logEvent({ type: "candle_block", signalId, symbol, session, reason: "m1_insufficient", count: m1Candles.length });
       return;
     }
-
     const m1Closes     = m1Candles.map((c) => parseFloat(c.mid.c));
     const m1Fast       = ema(m1Closes, 9);
     const m1Slow       = ema(m1Closes, 21);
@@ -1878,68 +1750,13 @@ async function strategy(symbol) {
     const m1Bullish    = bullishCandle(m1LastCandle);
     const m1Bearish    = bearishCandle(m1LastCandle);
     const m1LastClose  = m1Closes[m1Closes.length - 1];
-
     // ENTRY DISTANCE — distance from current M1 close to EMA9
     const entryDistance = Math.abs(m1LastClose - m1LastFast) / pipMultiplier(symbol);
-    console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
 
-    // CALIBRATION v1: pullback window 1.0→1.5 pip — 1 pip was creating a near-impossible
-    // condition: price must be above EMA9 (to satisfy m1close condition) but also within
-    // 1 pip of it. 1.5 pip allows normal pullback entries while still rejecting overextensions.
-    if (entryDistance > 1.5) {
-      console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)} (limit 1.5p)`);
-      blockCounters.pullback_block++;                                         // TELEMETRY ONLY
-      logEvent({
-        type: "signal_filtered", signalId, symbol, session,
-        reason: "pullback_block", entryDistance,
-      });
-      logEvent({
-        type: "pullback_block",
-        signalId, symbol, session,
-        entryDistance,
-        volatilityBucket: volBkt,
-        spreadPercentile: spreadPctile,
-      });
-      if (lastMidPrice[symbol]) {
-        blockedSignals[signalId] = {
-          signalId, symbol, blockType: "pullback_block",
-          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
-        };
-      }
-      return;
-    }
-
-    // ── RISK ──────────────────────────────────────────────────────────────
-    const stopLossPips   = Math.max(Math.floor((atr / pipMultiplier(symbol)) * 1.5), 8);
-    const takeProfitPips = Math.floor(stopLossPips * 1.2);
-
-    const account       = await getAccountInfo();
-    const balance       = account.balance;
-    const marginPercent = (account.marginUsed / account.balance) * 100;
-
-    console.log(`MARGIN -> ${marginPercent.toFixed(1)}%`);
-
-    if (marginPercent > 50) {
-      console.log("MARGIN PROTECTION ACTIVE");
-      blockCounters.margin_block++;                                           // TELEMETRY ONLY
-      logEvent({ type: "margin_block", signalId, symbol, session, marginPercent });
-      return;
-    }
-
-    // SAFETY CAP — 500 units max for small account
-    const units = Math.min(calculateUnits(balance, stopLossPips, symbol), 500);
-
-    preFilterCounters.gate_reached++;                                         // TELEMETRY ONLY
-
-    // ── STEP 1: ENTRY PIPELINE TRACE — TELEMETRY ONLY ────────────────────────
-    // Full per-condition visibility. Fires after ALL pre-filters pass.
-    // ENTRY_DECISION: ALLOW fires before placeTrade; BLOCK fires when gate fails.
-    const _T = (v) => v ? "✓" : "✗";
-
+    // ── CONDITION MAPS + SHADOW GATE — evaluated before entry-quality filters ──
     // CALIBRATION v2: candle conditions use bullishOrNeutralCandle for M5 last bar
-    // and M1 prev bar. These allow doji/indecision candles (body < 40% range).
-    // M1 CURRENT candle (m1Bullish/m1Bearish) stays strict — requires actual direction.
-    // All trend conditions (lastFast/lastSlow, m1LastFast/m1LastSlow) stay strict.
+    // and M1 prev bar. M1 CURRENT candle stays strict. Trend conditions stay strict.
+    const _T = (v) => v ? "✓" : "✗";
     const _m5b = {
       trend:    lastFast > lastSlow,
       close:    lastClose > lastFast,
@@ -1971,7 +1788,6 @@ async function strategy(symbol) {
     // SOFT (scored + logged, cannot veto): m5trend, m1trend, m1close.
     // HARD gate (6 conditions): m5close, m5candle, ema, strength + m1candle, m1prev.
     // RELAXED gate: passScore >= 6 AND anchor trio (ema + strength + candle) all TRUE.
-    // A trade fires when HARD passes OR RELAXED passes. No other logic changes.
     const _buyPassScore  = [_m5b.trend,_m5b.close,_m5b.candle,_m5b.ema,_m5b.strength,_m1b.trend,_m1b.candle,_m1b.prev,_m1b.close].filter(Boolean).length;
     const _sellPassScore = [_m5s.trend,_m5s.close,_m5s.candle,_m5s.ema,_m5s.strength,_m1s.trend,_m1s.candle,_m1s.prev,_m1s.close].filter(Boolean).length;
     const _buyHard   = _m5b.close && _m5b.candle && _m5b.ema && _m5b.strength && _m1b.candle && _m1b.prev;
@@ -1982,55 +1798,9 @@ async function strategy(symbol) {
     const _sellAll = _sellHard || _sellRelaxed;
 
     // ── WEAK RELAXED FILTER (v39.4b) — TELEMETRY + REJECT ────────────────────
-    // Rejects RELAXED-gate entries where BOTH M5 trend AND M1 trend are FALSE.
-    // Rationale: RELAXED requires anchor(ema+str+candle) but NOT trend alignment.
-    // When BOTH trend EMAs are against direction, this is the weakest RELAXED entry.
-    // HARD entries are NEVER affected — _buyHard / _sellHard overrides this check.
-    // DOES NOT change any threshold, filter, TP, SL, risk, or exit logic.
     const _weakRelaxedBuyReject  = !_buyHard  && _buyRelaxed  && !_m5b.trend && !_m1b.trend;
     const _weakRelaxedSellReject = !_sellHard && _sellRelaxed && !_m5s.trend && !_m1s.trend;
 
-    // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
-    // Use unique keys per tier to prevent m5/m1 key collision.
-    // m5_* and m1_* allow us to distinguish where each tier fails.
-    if (!_buyAll) {
-      for (const [k, v] of Object.entries(_m5b)) {
-        if (!v) conditionBlockCounters["buy_m5_" + k] = (conditionBlockCounters["buy_m5_" + k] || 0) + 1;
-      }
-      for (const [k, v] of Object.entries(_m1b)) {
-        if (!v) conditionBlockCounters["buy_m1_" + k] = (conditionBlockCounters["buy_m1_" + k] || 0) + 1;
-      }
-    }
-    if (!_sellAll) {
-      for (const [k, v] of Object.entries(_m5s)) {
-        if (!v) conditionBlockCounters["sell_m5_" + k] = (conditionBlockCounters["sell_m5_" + k] || 0) + 1;
-      }
-      for (const [k, v] of Object.entries(_m1s)) {
-        if (!v) conditionBlockCounters["sell_m1_" + k] = (conditionBlockCounters["sell_m1_" + k] || 0) + 1;
-      }
-    }
-
-    // GATE_PASS_RATE counters — TELEMETRY ONLY
-    // Tracks per-condition pass rate across all pipeline evaluations.
-    // "Passes" = condition TRUE for at least one direction (buy OR sell).
-    gatePassCounters.total++;
-    if (_m5b.trend    || _m5s.trend)    gatePassCounters.m5_trend++;
-    if (_m5b.candle   || _m5s.candle)   gatePassCounters.m5_candle++;
-    if (_m5b.close    || _m5s.close)    gatePassCounters.m5_close++;
-    if (_m5b.ema)                        gatePassCounters.m5_ema++;      // same both dirs
-    if (_m5b.strength)                   gatePassCounters.m5_strength++; // same both dirs
-    if (_m1b.trend    || _m1s.trend)    gatePassCounters.m1_trend++;
-    if (_m1b.candle   || _m1s.candle)   gatePassCounters.m1_candle++;
-    if (_m1b.prev     || _m1s.prev)     gatePassCounters.m1_prev++;
-    if (_m1b.close    || _m1s.close)    gatePassCounters.m1_close++;
-    if (_buyAll       || _sellAll)       gatePassCounters.any_signal++;
-
-    const _buyFirstFail  = Object.entries({ ..._m5b, ..._m1b }).find(([, v]) => !v)?.[0] || null;
-    const _sellFirstFail = Object.entries({ ..._m5s, ..._m1s }).find(([, v]) => !v)?.[0] || null;
-    const _direction     = _buyAll ? "BUY" : _sellAll ? "SELL" : "NONE";
-
-    // Build these telemetry inputs before the advisory pre-gate so Shadow A/B/C
-    // receive a valid condition map for every fully evaluated signal.
     const _buyCondMap = {
       trend:    _m5b.trend,
       m5close:  _m5b.close,
@@ -2055,6 +1825,250 @@ async function strategy(symbol) {
     };
     const _buyPassCount = Object.values(_buyCondMap).filter(Boolean).length;
     const _sellPassCount = Object.values(_sellCondMap).filter(Boolean).length;
+
+    const _buyFirstFail  = Object.entries({ ..._m5b, ..._m1b }).find(([, v]) => !v)?.[0] || null;
+    const _sellFirstFail = Object.entries({ ..._m5s, ..._m1s }).find(([, v]) => !v)?.[0] || null;
+    const _direction     = _buyAll ? "BUY" : _sellAll ? "SELL" : "NONE";
+
+    // ── SHADOW ADVISORY — evaluated here for every M5+M1 valid signal ─────────
+    // shadowGate() is called BEFORE exhaustion/edge/pullback filters so A/B/C
+    // observe the full opportunity distribution, not only the tiny subset that
+    // survives all quality guards. This is the fix for the architectural gap where
+    // shadow_gate_eval=0 because every signal was blocked before this point.
+    // Advisory is pure observation: NEVER changes any Live entry/exit/risk decision.
+    const _shadowSide = _buyAll ? "buy" : _sellAll ? "sell"
+      : _buyPassScore >= _sellPassScore ? "buy" : "sell";
+    const _shadowConditionMap = _shadowSide === "buy" ? _buyCondMap : _sellCondMap;
+    const _shadowPassCount = _shadowSide === "buy" ? _buyPassScore : _sellPassScore;
+    const _shadowHard = _shadowSide === "buy" ? _buyHard : _sellHard;
+    const _shadowGate = await shadowGate({
+      signalId, symbol, session, side: _shadowSide,
+      conditionMap: _shadowConditionMap,
+      passCount: _shadowPassCount,
+      entryGate: _shadowHard ? "HARD" : "RELAXED",
+      spread, atrPips, emaDistance, candleStrength,
+    });
+    // Notify Selected Advisor for signals that are about to be blocked by a
+    // quality filter. Fire-and-forget — NEVER awaited — NEVER affects Live flow.
+    const _shadowCoopSignal = () => {
+      if (_shadowGate.advisory) {
+        cooperativeSignal({
+          signalId, symbol, session, side: _shadowSide,
+          conditionMap: _shadowConditionMap,
+          passCount: _shadowPassCount,
+          entryGate: _shadowHard ? "HARD" : "RELAXED",
+          spread, atrPips, emaDistance, candleStrength,
+          volatilityBucket: volBkt,
+          shadowAdvisory: _shadowGate.advisory,
+        });
+      }
+    };
+
+    // ── ENTRY EXHAUSTION BLOCK — STRATEGY CHANGE (approved: stabilization) ─
+    const priceStretchPips = Math.abs(lastClose - lastFast) / pipMultiplier(symbol);
+    // CALIBRATION v3.1: Regime-aware exhaustion — hotfix recalibration.
+    // STRONG_TREND (emaDistance ≥ 5p): multiplier 1.35  (limit ≈ 1.485 — essentially never fires)
+    // MEDIUM/WEAK TREND (emaDistance < 5p): multiplier 0.90  (limit ≈ 0.99 body/ATR)
+    const exhaustionMultiplier   = trendBkt === "STRONG_TREND" ? 1.35 : 0.90;
+    const candleExhaustionLimit  = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
+    const stretchExhaustionLimit = parseFloat((1.10 * exhaustionMultiplier).toFixed(3));
+
+    if (candleStrength > candleExhaustionLimit) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=candle_overexpanded expansion=${candleStrength.toFixed(2)} (limit=${candleExhaustionLimit} regime=${trendBkt} mult=${exhaustionMultiplier})`);
+      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
+      logEvent({
+        type: "signal_filtered", signalId, symbol, session,
+        reason: "exhaustion_block", subReason: "candle_overexpanded",
+      });
+      logEvent({
+        type:                 "exhaustion_block",
+        signalId, symbol, session,
+        reason:               "candle_overexpanded",
+        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
+        candleExhaustionLimit,
+        exhaustionMultiplier,
+        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:              parseFloat(atrPips.toFixed(2)),
+        volatilityBucket:     volBkt,
+        trendBucket:          trendBkt,
+      });
+      if (lastMidPrice[symbol]) {
+        blockedSignals[signalId] = {
+          signalId, symbol, blockType: "exhaustion_block",
+          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
+        };
+      }
+      _shadowCoopSignal(); // advisory-only, fire-and-forget, never blocks Live
+      return;
+    }
+
+    if (priceStretchPips > atrPips * stretchExhaustionLimit) {
+      console.log(`EXHAUSTION BLOCK -> ${symbol} reason=price_overextended stretch=${priceStretchPips.toFixed(2)} atr=${atrPips.toFixed(2)} (limit=${stretchExhaustionLimit}×ATR regime=${trendBkt})`);
+      blockCounters.exhaustion_block++;                                       // TELEMETRY ONLY
+      logEvent({
+        type: "signal_filtered", signalId, symbol, session,
+        reason: "exhaustion_block", subReason: "price_overextended",
+      });
+      logEvent({
+        type:                 "exhaustion_block",
+        signalId, symbol, session,
+        reason:               "price_overextended",
+        expansionRatio:       parseFloat(candleStrength.toFixed(3)),
+        stretchExhaustionLimit,
+        exhaustionMultiplier,
+        priceStretchPips:     parseFloat(priceStretchPips.toFixed(2)),
+        atrPips:              parseFloat(atrPips.toFixed(2)),
+        volatilityBucket:     volBkt,
+        trendBucket:          trendBkt,
+      });
+      if (lastMidPrice[symbol]) {
+        blockedSignals[signalId] = {
+          signalId, symbol, blockType: "exhaustion_block",
+          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+          trendDir: lastFast > lastSlow ? "up" : "down",   // for 3-min recovery check
+        };
+      }
+      _shadowCoopSignal(); // advisory-only, fire-and-forget, never blocks Live
+      return;
+    }
+    preFilterCounters.exhaustion_pass++;                                      // TELEMETRY ONLY
+
+    // ── MINIMUM EDGE FILTER — STRATEGY CHANGE (approved: stabilization) ───
+    const expectedCapturePips = atrPips * 0.30;
+    const edgeRatio           = expectedCapturePips / spread;
+    // CALIBRATION v3: edge ratio 1.5→1.15
+    if (edgeRatio < 1.15) {
+      console.log(`SPREAD_EDGE BLOCK -> ${symbol} edge=${edgeRatio.toFixed(2)} expected=${expectedCapturePips.toFixed(2)}p spread=${spread.toFixed(2)}p (limit 1.15)`);
+      blockCounters.spread_edge_block++;                                      // TELEMETRY ONLY
+      logEvent({
+        type: "signal_filtered", signalId, symbol, session,
+        reason: "spread_edge_block", edgeRatio: parseFloat(edgeRatio.toFixed(2)),
+      });
+      logEvent({
+        type:                "spread_edge_block",
+        signalId, symbol, session,
+        edgeRatio:           parseFloat(edgeRatio.toFixed(2)),
+        expectedCapturePips: parseFloat(expectedCapturePips.toFixed(2)),
+        atrPips:             parseFloat(atrPips.toFixed(2)),
+        spread,
+        spreadPercentile:    spreadPctile,
+        volatilityBucket:    volBkt,
+      });
+      if (lastMidPrice[symbol]) {
+        blockedSignals[signalId] = {
+          signalId, symbol, blockType: "spread_edge_block",
+          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+        };
+      }
+      _shadowCoopSignal(); // advisory-only, fire-and-forget, never blocks Live
+      return;
+    }
+    preFilterCounters.spread_edge_pass++;                                     // TELEMETRY ONLY
+
+    // ── MARKET REGIME SNAPSHOT — TELEMETRY ONLY ───────────────────────────
+    logEvent({
+      type:              "market_regime",
+      signalId,
+      symbol,
+      hour:              hourUTC,
+      dow:               evalTime.getUTCDay(),
+      session,
+      atr:               parseFloat(atrPips.toFixed(2)),
+      spread,
+      spreadPercentile:  spreadPctile,
+      emaDistance:       parseFloat(emaDistance.toFixed(2)),
+      trendStrength:     parseFloat(emaDistance.toFixed(2)),
+      candleStrength:    parseFloat(candleStrength.toFixed(3)),
+      volatilityBucket:  volBkt,
+      trendBucket:       trendBkt,
+      spreadBucket:      spreadBkt,
+      compressionBucket: comprBkt,
+    });
+
+    // ── PULLBACK BLOCK ────────────────────────────────────────────────────
+    // CALIBRATION v1: pullback window 1.0→1.5 pip
+    console.log(`${symbol} ENTRY DISTANCE -> ${entryDistance.toFixed(2)} pips`);
+    if (entryDistance > 1.5) {
+      console.log(`PULLBACK BLOCK -> ${symbol} distance=${entryDistance.toFixed(2)} (limit 1.5p)`);
+      blockCounters.pullback_block++;                                         // TELEMETRY ONLY
+      logEvent({
+        type: "signal_filtered", signalId, symbol, session,
+        reason: "pullback_block", entryDistance,
+      });
+      logEvent({
+        type: "pullback_block",
+        signalId, symbol, session,
+        entryDistance,
+        volatilityBucket: volBkt,
+        spreadPercentile: spreadPctile,
+      });
+      if (lastMidPrice[symbol]) {
+        blockedSignals[signalId] = {
+          signalId, symbol, blockType: "pullback_block",
+          blockTime: Date.now(), blockPrice: lastMidPrice[symbol],
+        };
+      }
+      _shadowCoopSignal(); // advisory-only, fire-and-forget, never blocks Live
+      return;
+    }
+
+    // ── RISK ──────────────────────────────────────────────────────────────
+    const stopLossPips   = Math.max(Math.floor((atr / pipMultiplier(symbol)) * 1.5), 8);
+    const takeProfitPips = Math.floor(stopLossPips * 1.2);
+
+    const account       = await getAccountInfo();
+    const balance       = account.balance;
+    const marginPercent = (account.marginUsed / account.balance) * 100;
+
+    console.log(`MARGIN -> ${marginPercent.toFixed(1)}%`);
+
+    if (marginPercent > 50) {
+      console.log("MARGIN PROTECTION ACTIVE");
+      blockCounters.margin_block++;                                           // TELEMETRY ONLY
+      logEvent({ type: "margin_block", signalId, symbol, session, marginPercent });
+      return;
+    }
+
+    // SAFETY CAP — 500 units max for small account
+    const units = Math.min(calculateUnits(balance, stopLossPips, symbol), 500);
+
+    preFilterCounters.gate_reached++;                                         // TELEMETRY ONLY
+
+    // ── STEP 1: ENTRY PIPELINE TRACE — TELEMETRY ONLY ────────────────────────
+    // Full per-condition visibility. Fires after ALL pre-filters pass.
+    // ENTRY_DECISION: ALLOW fires before placeTrade; BLOCK fires when gate fails.
+
+    // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
+    if (!_buyAll) {
+      for (const [k, v] of Object.entries(_m5b)) {
+        if (!v) conditionBlockCounters["buy_m5_" + k] = (conditionBlockCounters["buy_m5_" + k] || 0) + 1;
+      }
+      for (const [k, v] of Object.entries(_m1b)) {
+        if (!v) conditionBlockCounters["buy_m1_" + k] = (conditionBlockCounters["buy_m1_" + k] || 0) + 1;
+      }
+    }
+    if (!_sellAll) {
+      for (const [k, v] of Object.entries(_m5s)) {
+        if (!v) conditionBlockCounters["sell_m5_" + k] = (conditionBlockCounters["sell_m5_" + k] || 0) + 1;
+      }
+      for (const [k, v] of Object.entries(_m1s)) {
+        if (!v) conditionBlockCounters["sell_m1_" + k] = (conditionBlockCounters["sell_m1_" + k] || 0) + 1;
+      }
+    }
+
+    // GATE_PASS_RATE counters — TELEMETRY ONLY
+    gatePassCounters.total++;
+    if (_m5b.trend    || _m5s.trend)    gatePassCounters.m5_trend++;
+    if (_m5b.candle   || _m5s.candle)   gatePassCounters.m5_candle++;
+    if (_m5b.close    || _m5s.close)    gatePassCounters.m5_close++;
+    if (_m5b.ema)                        gatePassCounters.m5_ema++;
+    if (_m5b.strength)                   gatePassCounters.m5_strength++;
+    if (_m1b.trend    || _m1s.trend)    gatePassCounters.m1_trend++;
+    if (_m1b.candle   || _m1s.candle)   gatePassCounters.m1_candle++;
+    if (_m1b.prev     || _m1s.prev)     gatePassCounters.m1_prev++;
+    if (_m1b.close    || _m1s.close)    gatePassCounters.m1_close++;
+    if (_buyAll       || _sellAll)       gatePassCounters.any_signal++;
 
     console.log(`\n===== ENTRY PIPELINE: ${symbol} [${session}] =====`);
     console.log(`  ATR: ${atrPips.toFixed(1)}p  Spread: ${spread.toFixed(2)}p  EMA-dist: ${emaDistance.toFixed(1)}p  Candle-str: ${candleStrength.toFixed(2)}  Entry-dist: ${entryDistance.toFixed(2)}p`);
@@ -2123,7 +2137,6 @@ async function strategy(symbol) {
     });
 
     // DECISION FINGERPRINT — 6-char hash (T=true, F=false per condition)
-    // Updated to match gate v2 candle conditions for accurate fingerprint correlation.
     const _buyFp = {
       trend:    lastFast > lastSlow,
       candle:   bullishOrNeutralCandle(lastCandle),   // v2
@@ -2142,22 +2155,9 @@ async function strategy(symbol) {
     };
     const _fpHash = (fp) => Object.values(fp).map((v) => (v ? "T" : "F")).join("");
 
-    // ── SHADOW ADVISORY CONTEXT — before final entry gate ───────────────────
-    // A/B/C must observe every fully evaluated signal, not only trades that
-    // survive the final entry gate. This is advisory-only and never changes
-    // any existing entry, risk, sizing, SL/TP, exit, or broker decision.
-    const _shadowSide = _buyAll ? "buy" : _sellAll ? "sell"
-      : _buyPassScore >= _sellPassScore ? "buy" : "sell";
-    const _shadowConditionMap = _shadowSide === "buy" ? _buyCondMap : _sellCondMap;
-    const _shadowPassCount = _shadowSide === "buy" ? _buyPassScore : _sellPassScore;
-    const _shadowHard = _shadowSide === "buy" ? _buyHard : _sellHard;
-    const _shadowGate = await shadowGate({
-      signalId, symbol, session, side: _shadowSide,
-      conditionMap: _shadowConditionMap,
-      passCount: _shadowPassCount,
-      entryGate: _shadowHard ? "HARD" : "RELAXED",
-      spread, atrPips, emaDistance, candleStrength,
-    });
+    // ── SHADOW ADVISORY — reuse pre-computed result ───────────────────────────
+    // For signals that passed all pre-filters but miss the final BUY/SELL gate,
+    // notify Selected Advisor (already called for exhaustion/edge/pullback blocked).
     if (!_buyAll && !_sellAll && _shadowGate.advisory) {
       cooperativeSignal({
         signalId, symbol, session, side: _shadowSide,
