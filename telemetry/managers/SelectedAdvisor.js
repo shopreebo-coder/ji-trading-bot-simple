@@ -133,6 +133,7 @@ class SelectedAdvisor {
       abstain: Object.values(recommendations).filter((value) => value === "ABSTAIN").length,
       decided,
       recommendations,
+      engineIds: Object.keys(recommendations).sort(),
     };
   }
 

@@ -83,23 +83,59 @@ async function cooperativeEntry(signal) {
     const receiptEvents = SelectedAdvisor.buildLiveReceiptEvents(response.data, signal);
     for (const event of receiptEvents) Promise.resolve(logEvent(event)).catch(() => {});
     return {
-      action: response.data?.blocked ? "BLOCK" : "ALLOW",
+      action: response.data?.capitalGateDecision === "ALLOW" ? "ALLOW" : "ABSTAIN",
       decision: response.data?.decision || "ABSTAIN",
       contextId: response.data?.contextId || null,
       confidenceScore: response.data?.confidenceScore ?? null,
       confidenceTier: response.data?.confidenceTier || null,
+      shadowConsensus: response.data?.shadowConsensus || null,
+      shadowConfidence: response.data?.shadowConfidence || null,
+      selectedEngineDecision: response.data?.selectedEngineDecision || response.data?.decision || "ABSTAIN",
+      selectedEngineConfidence: response.data?.selectedEngineConfidence || {
+        tier: response.data?.confidenceTier || null,
+        score: response.data?.confidenceScore ?? null,
+      },
+      knowledgeEvidence: response.data?.knowledgeEvidence || { available: false, matchCount: 0 },
+      capitalGateDecision: response.data?.capitalGateDecision || "ABSTAIN",
+      capitalGateReason: response.data?.capitalGateReason || "capital_gate_response_missing",
+      executionAllowed: response.data?.executionAllowed === true,
       selectedAdvisorContext,
       selectedAdvisorRead: receiptEvents.length > 0,
     };
   } catch (_) {
     return {
-      action: "FAILSAFE_ALLOW",
+      action: "ABSTAIN",
       decision: "ABSTAIN",
       contextId: null,
+      shadowConsensus: null,
+      shadowConfidence: null,
+      selectedEngineDecision: "ABSTAIN",
+      selectedEngineConfidence: { tier: null, score: null },
+      knowledgeEvidence: { available: false, matchCount: 0 },
+      capitalGateDecision: "ABSTAIN",
+      capitalGateReason: "cooperative_entry_timeout_or_failure",
+      executionAllowed: false,
       selectedAdvisorContext: null,
       selectedAdvisorRead: false,
     };
   }
+}
+
+function logControlledLiveDecision(signal = {}, cooperation = {}, liveFinalDecision = "ABSTAIN") {
+  logEvent({
+    type: "controlled_live_decision",
+    signalId: signal.signalId || signal.signal_id || null,
+    symbol: signal.symbol || null,
+    side: signal.side || null,
+    shadow_consensus: cooperation.shadowConsensus || null,
+    shadow_confidence: cooperation.shadowConfidence || null,
+    selected_engine_decision: cooperation.selectedEngineDecision || "ABSTAIN",
+    selected_engine_confidence: cooperation.selectedEngineConfidence || { tier: null, score: null },
+    knowledge_evidence: cooperation.knowledgeEvidence || { available: false, matchCount: 0 },
+    capital_gate_decision: cooperation.capitalGateDecision || "ABSTAIN",
+    capital_gate_reason: cooperation.capitalGateReason || null,
+    live_final_decision: liveFinalDecision,
+  });
 }
 
 async function cooperativeAdvisory(state) {
@@ -2348,22 +2384,40 @@ async function strategy(symbol) {
       );
       console.log(`MTF BUY CONFIRMED -> ${symbol}`);
 
-      // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
+       // ── CONTROLLED INTELLIGENCE — Shadow output is information only ────────
       const _gBuy = _shadowGate;
       if (_gBuy.blocked) {
-        console.log(`[SHADOW_GATE] BUY ${symbol} BLOCKED — ${_gBuy.reason}`);
-        return;
+         logEvent({
+           type: "shadow_gate_advisory_only",
+           signalId, symbol, session, side: "buy",
+           reason: _gBuy.reason || "shadow_gate_recommendation",
+           shadowMode: _gBuy.mode || null,
+         });
       }
       const _coopBuy = await cooperativeEntry({
-        signalId, symbol, side: "buy", conditionMap: _buyCondMap, entryGate: _entryGate,
-        spread, atrPips, volatilityBucket: volBkt,
+         signalId, symbol, side: "buy",
+         conditionMap: _buyCondMap, entryGate: _entryGate,
+         passCount: _buyPassCount,
+         fingerprint: _fpHash(_buyFp),
+         spread, atrPips, emaDistance, candleStrength,
+         trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gBuy.advisory,
       });
-      if (_coopBuy.action === "BLOCK") {
-        logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopBuy });
+       if (_coopBuy.capitalGateDecision !== "ALLOW") {
+         logControlledLiveDecision(
+           { signalId, symbol, side: "buy" },
+           _coopBuy,
+           _coopBuy.capitalGateDecision === "BLOCK" ? "NO_TRADE" : "ABSTAIN",
+         );
+         logEvent({
+           type: "signal_filtered",
+           signalId, symbol, session,
+           reason: `capital_gate_${String(_coopBuy.capitalGateDecision || "ABSTAIN").toLowerCase()}`,
+           capitalGateReason: _coopBuy.capitalGateReason || null,
+         });
         return;
       }
-      // ── END SHADOW GATE ─────────────────────────────────────────────────
+       // ── END CONTROLLED INTELLIGENCE ──────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _buyPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
@@ -2373,7 +2427,12 @@ async function strategy(symbol) {
       };
       lastTradeDirection[symbol] = "buy";                          // TELEMETRY ONLY — for cooldown analysis
       const buyPlaced = await placeTrade(symbol, "buy", units, stopLossPips, takeProfitPips);
-      if (!buyPlaced) return;
+       logControlledLiveDecision(
+         { signalId, symbol, side: "buy" },
+         _coopBuy,
+         buyPlaced ? "TRADE" : "NO_TRADE",
+       );
+       if (!buyPlaced) return;
 
       await logEvent({
         type: "trade_open",
@@ -2440,22 +2499,40 @@ async function strategy(symbol) {
       );
       console.log(`MTF SELL CONFIRMED -> ${symbol}`);
 
-      // ── SHADOW GATE v40.1 — OBSERVE by default, full fail-safe ────────────
+       // ── CONTROLLED INTELLIGENCE — Shadow output is information only ────────
       const _gSell = _shadowGate;
       if (_gSell.blocked) {
-        console.log(`[SHADOW_GATE] SELL ${symbol} BLOCKED — ${_gSell.reason}`);
-        return;
+         logEvent({
+           type: "shadow_gate_advisory_only",
+           signalId, symbol, session, side: "sell",
+           reason: _gSell.reason || "shadow_gate_recommendation",
+           shadowMode: _gSell.mode || null,
+         });
       }
       const _coopSell = await cooperativeEntry({
-        signalId, symbol, side: "sell", conditionMap: _sellCondMap, entryGate: _entryGate,
-        spread, atrPips, volatilityBucket: volBkt,
+         signalId, symbol, side: "sell",
+         conditionMap: _sellCondMap, entryGate: _entryGate,
+         passCount: _sellPassCount,
+         fingerprint: _fpHash(_sellFp),
+         spread, atrPips, emaDistance, candleStrength,
+         trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gSell.advisory,
       });
-      if (_coopSell.action === "BLOCK") {
-        logEvent({ type: "signal_filtered", signalId, symbol, session, reason: "cooperative_high_confidence_no_trade", cooperative: _coopSell });
+       if (_coopSell.capitalGateDecision !== "ALLOW") {
+         logControlledLiveDecision(
+           { signalId, symbol, side: "sell" },
+           _coopSell,
+           _coopSell.capitalGateDecision === "BLOCK" ? "NO_TRADE" : "ABSTAIN",
+         );
+         logEvent({
+           type: "signal_filtered",
+           signalId, symbol, session,
+           reason: `capital_gate_${String(_coopSell.capitalGateDecision || "ABSTAIN").toLowerCase()}`,
+           capitalGateReason: _coopSell.capitalGateReason || null,
+         });
         return;
       }
-      // ── END SHADOW GATE ─────────────────────────────────────────────────
+       // ── END CONTROLLED INTELLIGENCE ──────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _sellPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
       activeEntrySnapshot[symbol] = {                             // FORENSICS TELEMETRY
@@ -2465,7 +2542,12 @@ async function strategy(symbol) {
       };
       lastTradeDirection[symbol] = "sell";                         // TELEMETRY ONLY — for cooldown analysis
       const sellPlaced = await placeTrade(symbol, "sell", units, stopLossPips, takeProfitPips);
-      if (!sellPlaced) return;
+       logControlledLiveDecision(
+         { signalId, symbol, side: "sell" },
+         _coopSell,
+         sellPlaced ? "TRADE" : "NO_TRADE",
+       );
+       if (!sellPlaced) return;
 
       await logEvent({
         type: "trade_open",

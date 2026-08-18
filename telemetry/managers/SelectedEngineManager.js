@@ -100,6 +100,95 @@ function modeOf(arr) {
   return best;
 }
 
+function aggregateInlineShadowOutputs(outputs = {}) {
+  const expectedEngineIds = ["A", "B", "C"];
+  const entries = expectedEngineIds
+    .map((letter) => [letter, outputs?.[letter]])
+    .filter(([, output]) => output && typeof output === "object");
+  const unknownEngineIds = Object.keys(outputs || {}).filter((letter) => !expectedEngineIds.includes(letter));
+  const recommendations = Object.fromEntries(entries.map(([letter, output]) => [
+    letter,
+    ["TRADE", "NO_TRADE", "ABSTAIN"].includes(output.recommendation)
+      ? output.recommendation
+      : "ABSTAIN",
+  ]));
+  const votesFor = Object.values(recommendations).filter((v) => v === "TRADE").length;
+  const votesAgainst = Object.values(recommendations).filter((v) => v === "NO_TRADE").length;
+  const abstain = Object.values(recommendations).filter((v) => v === "ABSTAIN").length;
+  const decided = votesFor + votesAgainst;
+  const confidenceScores = entries
+    .filter(([letter]) => recommendations[letter] !== "ABSTAIN")
+    .map(([, output]) => confidenceToScore(output.confidence))
+    .filter((score) => score !== null);
+  const confidence = decided > 0 && confidenceScores.length === decided
+    ? scoreToTier(Math.min(...confidenceScores))
+    : null;
+  return {
+    present: entries.length > 0,
+    consensus: decided === 0
+      ? "ABSTAIN"
+      : votesFor === votesAgainst
+        ? "SPLIT"
+        : votesFor > votesAgainst ? "TRADE" : "NO_TRADE",
+    votesFor,
+    votesAgainst,
+    abstain,
+    decided,
+    complete: entries.length === expectedEngineIds.length && unknownEngineIds.length === 0,
+    engineIds: entries.map(([letter]) => letter).sort(),
+    unknownEngineIds,
+    recommendations,
+    confidence,
+  };
+}
+
+function artifactContent(knowledge, domain, artifact) {
+  const row = (knowledge?.domains?.[domain] || []).find((item) => item.artifact === artifact);
+  return row?.value && typeof row.value === "object" ? row.value : null;
+}
+
+function buildKnowledgeEvidence(knowledge, signal = {}) {
+  const patterns = artifactContent(knowledge, "patterns", "validated");
+  const fingerprints = artifactContent(knowledge, "market", "fingerprints");
+  const expectancy = artifactContent(knowledge, "expectancy", "history");
+  const target = {
+    symbol: signal.symbol || null,
+    side: signal.side || null,
+    trendBucket: signal.trend_bucket || signal.trendBucket || null,
+    volatilityBucket: signal.volatility_bucket || signal.volatilityBucket || null,
+    spreadBucket: signal.spread_bucket || signal.spreadBucket || null,
+    fingerprint: signal.fingerprint || null,
+  };
+  const matches = (patterns?.patterns || []).filter((row) => (
+    row.validated === true &&
+    row.resolved > 0 &&
+    (!target.symbol || row.symbol === target.symbol) &&
+    (!target.side || row.side === target.side) &&
+    (!target.trendBucket || row.trendBucket === target.trendBucket) &&
+    (!target.volatilityBucket || row.volatilityBucket === target.volatilityBucket) &&
+    (!target.spreadBucket || row.spreadBucket === target.spreadBucket)
+  ));
+  const fingerprintMatches = (fingerprints?.fingerprints || []).filter((row) => (
+    target.fingerprint && row.fingerprint === target.fingerprint && row.resolved > 0
+  ));
+  const expectancyMatches = (expectancy?.scopes || []).filter((row) => (
+    row.scope === target.symbol &&
+    Number(row.latest?.resolvedTrades) > 0
+  ));
+  const matchCount = matches.length + fingerprintMatches.length + expectancyMatches.length;
+  return {
+    available: matchCount > 0,
+    source: "knowledge_layer",
+    matchCount,
+    target,
+    matchedPatterns: matches.slice(0, 5),
+    matchedFingerprints: fingerprintMatches.slice(0, 3),
+    matchedExpectancy: expectancyMatches.slice(0, 2),
+    domains: Object.keys(knowledge?.domains || {}),
+    snapshotVersion: knowledge?.snapshot?.id ?? null,
+  };
+}
+
 class SelectedEngineManager {
   constructor(opts = {}) {
     if (!opts.db) throw new Error("SelectedEngineManager requires a db adapter");
@@ -161,9 +250,11 @@ class SelectedEngineManager {
   async loadKnowledge() {
     let active = [];
     try {
-      active = typeof this.knowledge.listActive === "function"
-        ? await this.knowledge.listActive()
-        : (typeof this.knowledge.listArtifacts === "function" ? await this.knowledge.listArtifacts() : []);
+      active = typeof this.knowledge.exportActive === "function"
+        ? await this.knowledge.exportActive()
+        : (typeof this.knowledge.listActive === "function"
+          ? await this.knowledge.listActive()
+          : (typeof this.knowledge.listArtifacts === "function" ? await this.knowledge.listArtifacts() : []));
     } catch (e) {
       this._error(`[SELECTED] knowledge listActive failed: ${e.message}`);
       active = [];
@@ -181,6 +272,7 @@ class SelectedEngineManager {
         trainingEvents: numOrNull(r.training_events),
         confidence: numOrNull(r.confidence),
         createdAt: r.created_at || null,
+        value: parseJson(r.value),
       });
       if (version !== null && (maxVersion === null || version > maxVersion)) maxVersion = version;
     }
@@ -348,6 +440,8 @@ class SelectedEngineManager {
       this.loadKnowledge(),
     ]);
     const expectancy = await this._loadExpectancy(symbol);
+    const inlineShadow = aggregateInlineShadowOutputs(args.signal?.advisoryOutputs || {});
+    const knowledgeEvidence = buildKnowledgeEvidence(knowledge, signal);
 
     // Index recorded evals by engine for this signal.
     const evalById = {};
@@ -604,7 +698,16 @@ class SelectedEngineManager {
       liveSignal,
       engines: engineOpinions,
       ...this._engineAliases(engineOpinions),
+      shadowEvidence: inlineShadow,
       knowledge: knowledge.domains,
+      knowledgeEvidence,
+      liveEvidence: {
+        direction: signal.side || null,
+        setupQuality: numOrNull(signal.pass_count ?? signal.passCount),
+        marketContext: market,
+        shadowConsensus: inlineShadow,
+        knowledgeEvidence,
+      },
       confidence,
       expectancy: { all: expectancy.all, symbol: expectancy.symbol, knowledge: knowledge.domains.expectancy || [] },
       market,
@@ -777,25 +880,64 @@ class SelectedEngineManager {
    */
   async evaluateEntry(signal = {}) {
     try {
+      const normalizedSignal = {
+        ...signal,
+        advisoryOutputs: signal.advisoryOutputs || signal.shadowAdvisory?.outputs || {},
+        signal_id: signal.signalId || signal.signal_id || `candidate:${signal.symbol || "unknown"}:${signal.side || "unknown"}`,
+        created_at: signal.created_at || new Date().toISOString(),
+        trend_bucket: signal.trend_bucket ?? signal.trendBucket ?? null,
+        volatility_bucket: signal.volatility_bucket ?? signal.volatilityBucket ?? null,
+        spread_bucket: signal.spread_bucket ?? signal.spreadBucket ?? null,
+        pass_count: signal.pass_count ?? signal.passCount ?? null,
+        atr_pips: signal.atr_pips ?? signal.atrPips ?? null,
+        ema_distance: signal.ema_distance ?? signal.emaDistance ?? null,
+        candle_strength: signal.candle_strength ?? signal.candleStrength ?? null,
+      };
       const ctx = await this.buildDecisionContext({
-        signal: {
-          ...signal,
-          signal_id: signal.signalId || signal.signal_id || `candidate:${signal.symbol || "unknown"}:${signal.side || "unknown"}`,
-          created_at: signal.created_at || new Date().toISOString(),
-        },
+        signal: normalizedSignal,
       });
-      const decision = ctx && (ctx.consensus === "TRADE" || ctx.consensus === "NO_TRADE")
+      const inlineShadow = ctx?.shadowEvidence || { present: false, consensus: "ABSTAIN", confidence: null };
+      const persistedDecision = ctx && (ctx.consensus === "TRADE" || ctx.consensus === "NO_TRADE")
         ? ctx.consensus
         : "ABSTAIN";
-      const confidenceScore = ctx?.confidence?.average ?? null;
+      const directDecision = inlineShadow.consensus === "TRADE" || inlineShadow.consensus === "NO_TRADE"
+        ? inlineShadow.consensus
+        : "ABSTAIN";
+      const controlledInlineComplete = inlineShadow.complete &&
+        ["A", "B", "C"].every((letter) =>
+          inlineShadow.recommendations?.[letter] === "TRADE" ||
+          inlineShadow.recommendations?.[letter] === "NO_TRADE"
+        );
+      // The controlled live path is sourced only from the current A/B/C
+      // outputs. Persisted auto-discovered engines remain research context and
+      // must not affect the live capital decision.
+      const decision = inlineShadow.present
+        ? controlledInlineComplete ? directDecision : "ABSTAIN"
+        : persistedDecision;
+      const directScore = confidenceToScore(inlineShadow.confidence);
+      const persistedScore = numOrNull(ctx?.confidence?.average);
+      const confidenceScore = inlineShadow.present
+        ? controlledInlineComplete ? directScore : null
+        : persistedScore;
+      const confidenceTier = scoreToTier(confidenceScore);
       return {
         decision,
         contextId: ctx?.id || null,
         confidenceScore,
-        confidenceTier: ctx?.confidence?.tier || null,
-        explanation: ctx?.selectedReason || null,
+        confidenceTier,
+        explanation: [
+          ctx?.selectedReason || null,
+          inlineShadow.present ? `live_shadow_consensus=${inlineShadow.consensus}` : null,
+        ].filter(Boolean).join("; ") || null,
         evidence: ctx?.evidenceTrace || null,
         expectancy: ctx?.expectancy?.all || null,
+        shadowConsensus: inlineShadow.consensus,
+        shadowConfidence: inlineShadow.confidence,
+        knowledgeEvidence: ctx?.knowledgeEvidence || null,
+        liveEvidence: ctx?.liveEvidence || null,
+        decisionSource: inlineShadow.present
+          ? controlledInlineComplete ? "live_shadow_outputs" : "controlled_shadow_incomplete"
+          : "persisted_shadow_research_advisory",
         riskAssessment: {
           symbol: signal.symbol || null,
           side: signal.side || null,
@@ -823,6 +965,11 @@ class SelectedEngineManager {
         explanation: "selected engine unavailable",
         evidence: null,
         expectancy: null,
+        shadowConsensus: "ABSTAIN",
+        shadowConfidence: null,
+        knowledgeEvidence: { available: false, source: "knowledge_layer", matchCount: 0 },
+        liveEvidence: null,
+        decisionSource: "selected_engine_failure",
         riskAssessment: null,
       };
     }

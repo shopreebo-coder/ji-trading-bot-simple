@@ -997,6 +997,7 @@ function shadowGate(signal) {
       advisoryOnly: true,
       authoritativeLayer: "live_bot",
       channel: "live_entry_decision_context",
+      signalId: signal.signalId || null,
       runtime,
       engines: { A: engineA, B: engineB, C: engineC },
       meta: engineD,

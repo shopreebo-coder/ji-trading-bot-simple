@@ -3936,6 +3936,17 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
     const selectedRuntimeOn = runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled !== false;
     const advisorRuntimeOn = runtimeRegistry.getStatus("selected-advisor")?.runtimeEnabled !== false;
     const shadowAdvisory = req.body?.shadowAdvisory || null;
+    const controlledShadowOutputs = shadowAdvisory?.outputs
+      ? Object.fromEntries(["A", "B", "C"]
+        .filter((letter) => Object.prototype.hasOwnProperty.call(shadowAdvisory.outputs, letter))
+        .map((letter) => [letter, shadowAdvisory.outputs[letter]]))
+      : null;
+    const shadowConsensus = controlledShadowOutputs
+      ? {
+        ...SelectedAdvisor.aggregateShadowOutputs(controlledShadowOutputs),
+        signalId: shadowAdvisory.signalId || null,
+      }
+      : null;
     let selectedAdvisorContext = null;
     const result = SELECTED_ENGINE_ENABLED && selectedRuntimeOn && COOP_ENTRY_ENABLED
       ? await selectedEngine.evaluateEntry(req.body || {})
@@ -3961,7 +3972,23 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
     const policy = cooperativeManager.entryPolicy(result, {
       highConfidence: COOP_ENTRY_HIGH_CONFIDENCE,
     });
-    const blocked = policy.action === "BLOCK";
+    const capitalGate = cooperativeManager.capitalGate({
+      liveEvidence: {
+        signalId: req.body?.signalId || req.body?.signal_id || null,
+        symbol: req.body?.symbol || null,
+        side: req.body?.side || null,
+        spread: req.body?.spread ?? null,
+        atrPips: req.body?.atrPips ?? req.body?.atr_pips ?? null,
+      },
+      shadowConsensus,
+      shadowSignalId: shadowAdvisory?.signalId || null,
+      shadowConfidence: result.shadowConfidence ||
+        CooperativeManager.aggregateShadowConfidence(controlledShadowOutputs || {}),
+      selectedEngineDecision: result.decision,
+      selectedEngineConfidence: result.confidenceTier ?? result.confidenceScore,
+      knowledgeEvidence: result.knowledgeEvidence || null,
+    });
+    const blocked = capitalGate.decision === "BLOCK";
     logEvent({
       type: "cooperative_entry_decision",
       signalId: req.body?.signalId || null,
@@ -3977,12 +4004,25 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       expectancy: result.expectancy || null,
       riskAssessment: result.riskAssessment || null,
       selectedAdvisorAccepted: !!selectedAdvisorContext,
+      shadow_consensus: shadowConsensus,
+      shadow_confidence: result.shadowConfidence ||
+        CooperativeManager.aggregateShadowConfidence(controlledShadowOutputs || {}),
+      selected_engine_decision: result.decision || "ABSTAIN",
+      selected_engine_confidence: {
+        tier: result.confidenceTier || null,
+        score: result.confidenceScore ?? null,
+      },
+      knowledge_evidence: result.knowledgeEvidence || { available: false, matchCount: 0 },
+      capital_gate_decision: capitalGate.decision,
+      capital_gate_reason: capitalGate.reason,
+      live_final_decision: null,
     });
     res.json({
       ok: true,
       decision: policy.decision,
       policyAction: policy.action,
       blocked,
+      executionAllowed: capitalGate.decision === "ALLOW",
       contextId: result.contextId || null,
       confidenceScore: policy.confidenceScore,
       confidenceTier: policy.confidenceTier,
@@ -3990,6 +4030,17 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       evidence: result.evidence || null,
       expectancy: result.expectancy || null,
       riskAssessment: result.riskAssessment || null,
+      shadowConsensus,
+      shadowConfidence: result.shadowConfidence ||
+        CooperativeManager.aggregateShadowConfidence(controlledShadowOutputs || {}),
+      selectedEngineDecision: result.decision || "ABSTAIN",
+      selectedEngineConfidence: {
+        tier: result.confidenceTier || null,
+        score: result.confidenceScore ?? null,
+      },
+      knowledgeEvidence: result.knowledgeEvidence || { available: false, matchCount: 0 },
+      capitalGateDecision: capitalGate.decision,
+      capitalGateReason: capitalGate.reason,
       selectedAdvisorContext,
     });
   } catch (error) {
@@ -4000,7 +4051,21 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       error: error.message || String(error),
       stack: error.stack || null,
     });
-    res.json({ ok: true, decision: "ABSTAIN", policyAction: "FAILSAFE_ALLOW", blocked: false, contextId: null });
+    res.json({
+      ok: true,
+      decision: "ABSTAIN",
+      policyAction: "ADVISORY",
+      blocked: false,
+      executionAllowed: false,
+      capitalGateDecision: "ABSTAIN",
+      capitalGateReason: "cooperative_entry_failure",
+      contextId: null,
+      selectedEngineDecision: "ABSTAIN",
+      selectedEngineConfidence: { tier: null, score: null },
+      shadowConsensus: null,
+      shadowConfidence: null,
+      knowledgeEvidence: { available: false, matchCount: 0 },
+    });
   }
 });
 

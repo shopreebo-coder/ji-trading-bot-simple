@@ -92,3 +92,17 @@ uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v2.pdf"
 type = "pdf"
 title = "FOREX ENGINE PRO — Audyt architektury v2 (PDF)"
 description = "Wersja PDF raportu audytu gotowa do pobrania i udostępnienia."
+
+[[outputs]]
+id = "8M7aIKFEY9dL2xUwId7CG"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_CONTROLLED_INTEGRATION_PHASE2_3.pdf"
+type = "pdf"
+title = "FOREX ENGINE PRO — Controlled Integration Phase 2/3 PDF"
+description = "Raport końcowy Phase 2/3: zmiany, przepływ, Capital Gate, telemetryka, testy i problemy runtime."
+
+[[outputs]]
+id = "boDYQPP5l_xgPNziXJdaJ"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_CONTROLLED_INTEGRATION_PHASE2_3.md"
+type = "text"
+title = "FOREX ENGINE PRO — Controlled Integration Phase 2/3 Markdown"
+description = "Raport końcowy w formacie Markdown do dalszej edycji i audytu."

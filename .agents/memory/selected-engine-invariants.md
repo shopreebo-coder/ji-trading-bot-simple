@@ -7,11 +7,12 @@ The Selected Engine is a pure **read-only intelligence aggregation/orchestration
 layer over the shadow_* research + knowledge_* artifacts. It exists to *observe and
 rank*, never to act. When touching it, keep these invariants:
 
-- **Never trades, never influences a Live Bot / Shadow / Risk decision.** Nothing
-  it produces may feed back into a trading path. Outputs go only to HTTP responses
-  and an in-memory ring buffer.
-  **Why:** the whole point is a safe observation layer; if its output ever gated a
-  real order it would become an unreviewed trading engine.
+- **Never trades, never owns the Live Bot / Shadow / Risk decision.** Its output
+  may enter the explicitly controlled Capital Gate only through complete,
+  same-signal A/B/C inline evidence; persisted auto-discovered research engines
+  remain non-gating context.
+  **Why:** the controlled integration needs current Shadow evidence, but broker
+  ownership and execution authority must remain in Live Bot.
 - **Never writes to any table.** Reads only — `db.get`/`db.all`, no INSERT/UPDATE,
   no DDL, no `pool.connect()`. (No held-client path ⇒ CAS pool deadlock is
   structurally impossible.)
@@ -46,4 +47,5 @@ rank*, never to act. When touching it, keep these invariants:
   decision (see the `Number(null) === 0` trap).
 - **`SELECTED_ENGINE` flag (default OFF) gates ONLY the background poll.** OFF is a
   complete no-op (no timer, no builds). Read-only endpoints are always registered
-  and build contexts on demand regardless of the flag.
+  and build contexts on demand regardless of the flag; the controlled entry path
+  remains fail-closed unless Capital Gate has an explicit ALLOW.

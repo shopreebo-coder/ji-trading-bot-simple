@@ -6,7 +6,7 @@
 - [Dashboard report conventions](dashboard-report-conventions.md) — winrate units differ (knowledge artifacts = 0–1 fraction, lab endpoints = percent); test dashboard JSX via esbuild extract, never by running server.js.
 - [Reconciler & telemetry-metric patterns](reconciler-telemetry-patterns.md) — time-window dedupe consumption must persist across polls/restarts; completeness metrics must be UNKNOWN (not 100%) when the measurer is dormant.
 - [Module status DB binding](module-status-db-binding.md) — db adapter parameters are variadic; passing [] as one parameter makes guarded dashboard counters appear as zero.
-- [Live AI cooperation policy](live-ai-cooperation-policy.md) — Selected Engine may block only HIGH-confidence NO_TRADE; Shadow M advises while Live Exit remains authoritative.
+- [Controlled Capital Gate boundary](live-ai-cooperation-policy.md) — controlled entry requires same-signal complete A/B/C plus Knowledge evidence; uncertainty is ABSTAIN, broker authority stays Live.
 - [Selected signal evaluation fidelity](selected-signal-evaluation-fidelity.md) — cooperative contexts must only consume Shadow LAB evaluations with the same signalId; never borrow latest-per-engine rows.
 - [Selected producer/consumer contract](selected-producer-consumer-contract.md) — signal_detected notifications and ShadowLab evaluation triggers must cover the same lifecycle, or Selected Engine will correctly show missing evidence.
 - [Railway versus workspace runtime](railway-vs-workspace-runtime.md) — Railway-only secrets are not inherited by the local Replit workflow; identify the runtime before diagnosing missing broker configuration.
@@ -18,3 +18,4 @@
 - [GitHub push path](github-push-integration.md) — when local HTTPS auth fails, use the installed GitHub integration with a non-force fast-forward after comparing remote blobs.
 - [Railway deploy observability](railway-deploy-observability.md) — GitHub deployment records can fan out and stay in-progress without exposing the intended service URL or runtime health.
 - [OANDA candle error visibility](oanda-candle-error-visibility.md) — candle fetch failures must retain HTTP/body/request context and propagate; `[]` hides auth and transport failures as fake M5 insufficiency.
+- [Memory Integration workflow lock](mi-test-workflow-lock.md) — active Telemetry Dashboard can hold the PostgreSQL advisory lock; stop it only for MI tests, then restart and verify logs.
