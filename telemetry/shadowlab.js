@@ -52,11 +52,43 @@ const WEIGHTS_A = {
   m1close:  11,
 };
 const WEIGHT_TOTAL = Object.values(WEIGHTS_A).reduce((s, v) => s + v, 0); // 100
+const SHADOW_MARKET_FIELDS = ["spread", "atrPips", "emaDistance", "candleStrength"];
+
+function hasCompleteShadowMarketEvidence(signal) {
+  return !!signal &&
+    SHADOW_MARKET_FIELDS.every((key) =>
+      Object.prototype.hasOwnProperty.call(signal, key) &&
+      signal[key] !== null &&
+      signal[key] !== undefined &&
+      signal[key] !== "" &&
+      Number.isFinite(Number(signal[key]))
+    );
+}
+
+function abstainForInsufficientEvidence(engineId, reason, extra = {}) {
+  return {
+    engineId,
+    wouldTrade: null,
+    confidence: "NONE",
+    reason,
+    ...extra,
+  };
+}
 
 class ShadowQualityEngine {
   static ID = "ENGINE_A_QUALITY";
 
   static evaluate(signal) {
+    if (!hasCompleteShadowMarketEvidence(signal) ||
+        !signal.conditionMap ||
+        Object.keys(WEIGHTS_A).some((key) => typeof signal.conditionMap[key] !== "boolean")) {
+      return abstainForInsufficientEvidence(
+        this.ID,
+        "insufficient_evidence_missing_market_or_condition_fields",
+        { score: null, condScore: null },
+      );
+    }
+
     const {
       conditionMap = {}, entryGate = "HARD",
       spread = 0, atrPips = 0, emaDistance = 0, candleStrength = 0,
@@ -126,6 +158,14 @@ class ShadowContextEngine {
   static ID = "ENGINE_B_CONTEXT";
 
   static evaluate(signal) {
+    if (!hasCompleteShadowMarketEvidence(signal)) {
+      return abstainForInsufficientEvidence(
+        this.ID,
+        "insufficient_evidence_missing_market_fields",
+        { marketState: "UNKNOWN" },
+      );
+    }
+
     const {
       atrPips = 0, emaDistance = 0, candleStrength = 0, spread = 0, session,
     } = signal;

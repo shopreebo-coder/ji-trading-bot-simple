@@ -11,7 +11,7 @@ const controlPath = path.join(os.tmpdir(), `shadow-runtime-${process.pid}-${Date
 process.env.RUNTIME_MODULES_FILE = controlPath;
 
 const runtime = require("../../runtime-control");
-const { shadowGate } = require("../../shadowlab");
+const { shadowGate, ShadowQualityEngine, ShadowContextEngine } = require("../../shadowlab");
 
 const signal = {
   signalId: "runtime-toggle-test",
@@ -21,6 +21,19 @@ const signal = {
 };
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+test("Shadow A/B abstain instead of inventing confidence from missing evidence", () => {
+  const a = ShadowQualityEngine.evaluate(signal);
+  const b = ShadowContextEngine.evaluate(signal);
+
+  assert.equal(a.wouldTrade, null);
+  assert.equal(a.confidence, "NONE");
+  assert.match(a.reason, /insufficient_evidence/);
+  assert.equal(b.wouldTrade, null);
+  assert.equal(b.confidence, "NONE");
+  assert.equal(b.marketState, "UNKNOWN");
+  assert.match(b.reason, /insufficient_evidence/);
+});
 
 async function lifecycleRows(signalId, letter, stage) {
   return db.all(

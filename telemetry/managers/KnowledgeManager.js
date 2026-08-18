@@ -305,14 +305,24 @@ class KnowledgeManager {
       .sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
 
     const all = scopes.find((s) => s.scope === "ALL");
-    const trainingEvents = all
-      ? all.latest.resolvedTrades
-      : scopes.reduce((m, s) => Math.max(m, s.latest.resolvedTrades), 0);
+    const resolvedRow = await this.db.get(
+      `SELECT COUNT(DISTINCT signal_id) AS n
+         FROM shadow_outcomes
+        WHERE COALESCE(outcome->>'testSimulation', 'false') <> 'true'`
+    );
+    const currentResolvedOutcomes = intOr0(resolvedRow?.n);
+    const currentConfidenceLevel = confidenceLevel(currentResolvedOutcomes);
     return {
-      content: { source: "shadow_expectancy_snapshots", scopeCount: scopes.length, scopes },
+      content: {
+        source: "shadow_expectancy_snapshots",
+        scopeCount: scopes.length,
+        scopes,
+        currentResolvedOutcomes,
+        currentConfidenceLevel,
+      },
       meta: {
-        trainingEvents,
-        tier: confidenceLevel(trainingEvents),
+        trainingEvents: currentResolvedOutcomes,
+        tier: currentConfidenceLevel,
         windowFrom: all?.latest.windowFrom ?? null,
         windowTo: all?.latest.windowTo ?? null,
       },
@@ -504,11 +514,16 @@ class KnowledgeManager {
         ORDER BY scope, MIN(created_at)`
     );
     if (!rows.length) return null;
+    const resolvedRow = await this.db.get(
+      `SELECT COUNT(DISTINCT signal_id) AS n
+         FROM shadow_outcomes
+        WHERE COALESCE(outcome->>'testSimulation', 'false') <> 'true'`
+    );
+    const currentResolvedOutcomes = intOr0(resolvedRow?.n);
+    const currentConfidenceLevel = confidenceLevel(currentResolvedOutcomes);
     const byScope = {};
-    let totalPoints = 0;
     for (const r of rows) {
       const points = intOr0(r.points);
-      totalPoints += points;
       (byScope[r.scope] ||= []).push({
         confidenceLevel: r.confidence_level,
         points,
@@ -519,8 +534,14 @@ class KnowledgeManager {
       });
     }
     return {
-      content: { source: "shadow_expectancy_snapshots", scopeCount: Object.keys(byScope).length, byScope },
-      meta: { trainingEvents: totalPoints, tier: confidenceLevel(totalPoints) },
+      content: {
+        source: "shadow_expectancy_snapshots",
+        scopeCount: Object.keys(byScope).length,
+        byScope,
+        currentResolvedOutcomes,
+        currentConfidenceLevel,
+      },
+      meta: { trainingEvents: currentResolvedOutcomes, tier: currentConfidenceLevel },
     };
   }
 

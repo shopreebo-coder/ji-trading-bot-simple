@@ -8,6 +8,16 @@ function makeKnowledge() {
   return {
     exportActive: async () => [
       {
+        id: 0,
+        domain: "confidence",
+        artifact: "history",
+        version: 0,
+        value: {
+          currentResolvedOutcomes: 42,
+          currentConfidenceLevel: "MEDIUM",
+        },
+      },
+      {
         id: 1,
         domain: "patterns",
         artifact: "validated",
@@ -30,7 +40,50 @@ function makeKnowledge() {
   };
 }
 
-function makeManager() {
+function makeLowSampleKnowledge() {
+  return {
+    exportActive: async () => [
+      {
+        id: 4,
+        domain: "confidence",
+        artifact: "history",
+        version: 4,
+        value: {
+          currentResolvedOutcomes: 4,
+          currentConfidenceLevel: "LOW",
+        },
+      },
+      {
+        id: 2,
+        domain: "market",
+        artifact: "fingerprints",
+        version: 2,
+        value: {
+          fingerprints: [{
+            fingerprint: "fp-low",
+            resolved: 4,
+            avgProfitPips: 2.5,
+          }],
+        },
+      },
+      {
+        id: 3,
+        domain: "expectancy",
+        artifact: "history",
+        version: 3,
+        value: {
+          scopes: [{
+            scope: "EUR_USD",
+            latest: { resolvedTrades: 4, confidenceLevel: "LOW", expectancyPips: 2.5 },
+          }],
+        },
+      },
+    ],
+    listSnapshots: async () => [{ id: 2, manifest_checksum: "snapshot-low-sample" }],
+  };
+}
+
+function makeManager(knowledge = makeKnowledge()) {
   const evaluations = [
     { id: 1, engine_id: "A", engine_version: "test", would_trade: true, score: 0.9, confidence: "HIGH", eval: { reason: "A" } },
     { id: 2, engine_id: "B", engine_version: "test", would_trade: true, score: 0.9, confidence: "HIGH", eval: { reason: "B" } },
@@ -51,7 +104,7 @@ function makeManager() {
   };
   return new SelectedEngineManager({
     db,
-    knowledge: makeKnowledge(),
+    knowledge,
     ringSize: 10,
   });
 }
@@ -117,4 +170,17 @@ test("Selected Engine rejects incomplete or out-of-scope inline evidence", async
   }));
   assert.equal(extra.decision, "ABSTAIN");
   assert.equal(extra.decisionSource, "controlled_shadow_incomplete");
+});
+
+test("Selected Engine does not turn low-sample Knowledge into available evidence", async () => {
+  const result = await makeManager(makeLowSampleKnowledge()).evaluateEntry(signal({
+    A: { recommendation: "TRADE", confidence: "HIGH" },
+    B: { recommendation: "TRADE", confidence: "HIGH" },
+    C: { recommendation: "TRADE", confidence: "HIGH" },
+  }));
+
+  assert.equal(result.decision, "TRADE");
+  assert.equal(result.knowledgeEvidence.available, false);
+  assert.equal(result.knowledgeEvidence.matchCount, 0);
+  assert.equal(result.knowledgeEvidence.minimumResolved, 30);
 });

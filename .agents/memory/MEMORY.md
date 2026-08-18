@@ -1,5 +1,6 @@
 - [PDF report/audit renderer contract](pdf-report-renderer.md) — docs/**/generate_*_pdf.js: body renders only after first `---`; single `#` skipped, `##`→H1, `###`→H2, `####`→H3.
 - [Knowledge content-only checksum](knowledge-content-only-checksum.md) — knowledge artifact checksums hash content ONLY; provenance in columns, never in `value`, or restarts churn versions.
+- [Knowledge current-sample gate](knowledge-current-sample-gate.md) — snapshot points are not live training events; controlled evidence requires current non-test resolved outcomes ≥30.
 - [reconcileAll appends expectancy](reconcileall-writes-expectancy.md) — resolving a trade bumps the expectancy/confidence knowledge artifacts; never assert they stay unchanged after a resolve.
 - [Dashboard single-file UI](dashboard-single-file-ui.md) — dashboard is hand-written telemetry/public/index.html served by server.js; new endpoints are invisible until a tab is wired in (not a flag/version issue).
 - [Selected Engine invariants](selected-engine-invariants.md) — read-only orchestration layer: never trades, never writes, zero hardcoded engine names, deterministic id, ranks NOT by winrate, tri-state consensus.

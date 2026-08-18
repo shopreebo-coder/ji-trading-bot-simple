@@ -50,6 +50,7 @@ const { discoverEngines, loadCustomPlugins, parseJson } = require("./selected/en
 
 const DEFAULT_RING = 200;
 const DEFAULT_POLL_MS = 15 * 60 * 1000; // 15 min, matches the Knowledge Layer cadence
+const KNOWLEDGE_MIN_RESOLVED = 30;
 // ShadowLab records A/B/C/D asynchronously after the cooperative signal
 // notification. Retry only the exact signalId, never latest-per-engine.
 const DEFAULT_EVAL_REFRESH_DELAYS_MS = [1000, 3000, 8000, 15000, 30000];
@@ -151,6 +152,13 @@ function buildKnowledgeEvidence(knowledge, signal = {}) {
   const patterns = artifactContent(knowledge, "patterns", "validated");
   const fingerprints = artifactContent(knowledge, "market", "fingerprints");
   const expectancy = artifactContent(knowledge, "expectancy", "history");
+  const confidenceHistory = artifactContent(knowledge, "confidence", "history");
+  const currentResolvedOutcomes = Number(
+    confidenceHistory?.currentResolvedOutcomes ??
+    expectancy?.currentResolvedOutcomes
+  );
+  const currentSampleSufficient = Number.isFinite(currentResolvedOutcomes) &&
+    currentResolvedOutcomes >= KNOWLEDGE_MIN_RESOLVED;
   const target = {
     symbol: signal.symbol || null,
     side: signal.side || null,
@@ -160,8 +168,9 @@ function buildKnowledgeEvidence(knowledge, signal = {}) {
     fingerprint: signal.fingerprint || null,
   };
   const matches = (patterns?.patterns || []).filter((row) => (
+    currentSampleSufficient &&
     row.validated === true &&
-    row.resolved > 0 &&
+    Number(row.resolved) >= KNOWLEDGE_MIN_RESOLVED &&
     (!target.symbol || row.symbol === target.symbol) &&
     (!target.side || row.side === target.side) &&
     (!target.trendBucket || row.trendBucket === target.trendBucket) &&
@@ -169,17 +178,25 @@ function buildKnowledgeEvidence(knowledge, signal = {}) {
     (!target.spreadBucket || row.spreadBucket === target.spreadBucket)
   ));
   const fingerprintMatches = (fingerprints?.fingerprints || []).filter((row) => (
-    target.fingerprint && row.fingerprint === target.fingerprint && row.resolved > 0
+    currentSampleSufficient &&
+    target.fingerprint &&
+    row.fingerprint === target.fingerprint &&
+    Number(row.resolved) >= KNOWLEDGE_MIN_RESOLVED
   ));
   const expectancyMatches = (expectancy?.scopes || []).filter((row) => (
+    currentSampleSufficient &&
     row.scope === target.symbol &&
-    Number(row.latest?.resolvedTrades) > 0
+    Number(row.latest?.resolvedTrades) >= KNOWLEDGE_MIN_RESOLVED &&
+    ["MEDIUM", "HIGH"].includes(String(row.latest?.confidenceLevel || "").toUpperCase())
   ));
   const matchCount = matches.length + fingerprintMatches.length + expectancyMatches.length;
   return {
     available: matchCount > 0,
     source: "knowledge_layer",
     matchCount,
+    minimumResolved: KNOWLEDGE_MIN_RESOLVED,
+    currentResolvedOutcomes: Number.isFinite(currentResolvedOutcomes) ? currentResolvedOutcomes : null,
+    currentSampleSufficient,
     target,
     matchedPatterns: matches.slice(0, 5),
     matchedFingerprints: fingerprintMatches.slice(0, 3),
