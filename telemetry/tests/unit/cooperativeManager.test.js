@@ -2,7 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { CooperativeManager } = require("../../managers/CooperativeManager");
+const { CooperativeManager, canCollectLiveBaseline } = require("../../managers/CooperativeManager");
 
 test("entry policy is advisory-only and never owns execution", () => {
   const manager = new CooperativeManager();
@@ -113,4 +113,18 @@ test("capital gate failures never become ALLOW", () => {
   ]) {
     assert.notEqual(manager.capitalGate(completeGateInput(overrides)).decision, "ALLOW");
   }
+});
+
+test("Knowledge bootstrap can collect the unchanged Live baseline without becoming ALLOW", () => {
+  const manager = new CooperativeManager();
+  const result = manager.capitalGate(completeGateInput({
+    knowledgeEvidence: { available: false, matchCount: 0 },
+  }));
+
+  assert.equal(result.decision, "ABSTAIN");
+  assert.equal(result.reason, "knowledge_evidence_unavailable");
+  assert.equal(canCollectLiveBaseline(result), true);
+  assert.equal(canCollectLiveBaseline({ decision: "ABSTAIN", reason: "cooperative_entry_timeout_or_failure" }), false);
+  assert.equal(canCollectLiveBaseline({ decision: "ABSTAIN", reason: "shadow_consensus_conflict" }), false);
+  assert.equal(canCollectLiveBaseline({ decision: "BLOCK", reason: "high_confidence_shadow_selected_no_trade" }), false);
 });

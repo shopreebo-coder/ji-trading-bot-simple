@@ -106,3 +106,17 @@ uri = "file://docs/audit/FOREX_ENGINE_PRO_CONTROLLED_INTEGRATION_PHASE2_3.md"
 type = "text"
 title = "FOREX ENGINE PRO — Controlled Integration Phase 2/3 Markdown"
 description = "Raport końcowy w formacie Markdown do dalszej edycji i audytu."
+
+[[outputs]]
+id = "Ib8XvF7Yb1QSI6NPhxEoG"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_FINAL_PRE_PUSH_FIX.pdf"
+type = "pdf"
+title = "FOREX ENGINE PRO — Final Pre-Push Fix (PDF)"
+description = "Deadlock analysis, minimal bootstrap collection fix, test results, OANDA status and READY_FOR_PUSH verdict."
+
+[[outputs]]
+id = "V8fp1-ACXmxIa-Nie6bAq"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_FINAL_PRE_PUSH_FIX.md"
+type = "text"
+title = "FOREX ENGINE PRO — Final Pre-Push Fix (Markdown)"
+description = "Short downloadable audit report with the final PUSH recommendation."

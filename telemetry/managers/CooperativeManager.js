@@ -7,6 +7,11 @@
 const ENTRY_ACTIONS = new Set(["TRADE", "NO_TRADE", "ABSTAIN"]);
 const ADVISORY_ACTIONS = new Set(["HOLD", "MOVE_SL", "MOVE_BE", "TAKE_PARTIAL", "REQUEST_CLOSE"]);
 const CAPITAL_GATE_DECISIONS = new Set(["ALLOW", "ABSTAIN", "BLOCK"]);
+const KNOWLEDGE_BOOTSTRAP_ABSTAIN = "knowledge_evidence_unavailable";
+
+function canCollectLiveBaseline({ decision = null, reason = null } = {}) {
+  return decision === "ABSTAIN" && reason === KNOWLEDGE_BOOTSTRAP_ABSTAIN;
+}
 
 function finiteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -199,4 +204,4 @@ class CooperativeManager {
   }
 }
 
-module.exports = { CooperativeManager };
+module.exports = { CooperativeManager, canCollectLiveBaseline };

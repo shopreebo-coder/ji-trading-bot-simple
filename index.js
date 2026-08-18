@@ -1,7 +1,7 @@
 require("dotenv").config();
 const axios  = require("axios");
 const crypto = require("crypto"); // signalId generation — TELEMETRY ONLY
-const { CooperativeManager } = require("./telemetry/managers/CooperativeManager");
+const { CooperativeManager, canCollectLiveBaseline } = require("./telemetry/managers/CooperativeManager");
 const { SelectedAdvisor } = require("./telemetry/managers/SelectedAdvisor");
 const { ExitEngineX } = require("./telemetry/exit-engine-x");
 const cooperativeManager = new CooperativeManager();
@@ -2073,7 +2073,9 @@ async function strategy(symbol) {
 
     // ── STEP 1: ENTRY PIPELINE TRACE — TELEMETRY ONLY ────────────────────────
     // Full per-condition visibility. Fires after ALL pre-filters pass.
-    // ENTRY_DECISION: ALLOW fires before placeTrade; BLOCK fires when gate fails.
+    // ENTRY_DECISION: ALLOW fires before placeTrade. During Knowledge bootstrap,
+    // only the unchanged Live baseline may collect real outcomes while the
+    // Capital Gate remains ABSTAIN; BLOCK and every other ABSTAIN still stop.
 
     // STEP 2: Condition-gate failure counters — TELEMETRY ONLY
     if (!_buyAll) {
@@ -2403,7 +2405,11 @@ async function strategy(symbol) {
          trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gBuy.advisory,
       });
-       if (_coopBuy.capitalGateDecision !== "ALLOW") {
+       const _baselineCollectionBuy = canCollectLiveBaseline({
+         decision: _coopBuy.capitalGateDecision,
+         reason: _coopBuy.capitalGateReason,
+       });
+       if (_coopBuy.capitalGateDecision !== "ALLOW" && !_baselineCollectionBuy) {
          logControlledLiveDecision(
            { signalId, symbol, side: "buy" },
            _coopBuy,
@@ -2417,6 +2423,16 @@ async function strategy(symbol) {
          });
         return;
       }
+       if (_baselineCollectionBuy) {
+         logEvent({
+           type: "controlled_baseline_collection",
+           signalId, symbol, side: "buy",
+           capitalGateDecision: _coopBuy.capitalGateDecision,
+           capitalGateReason: _coopBuy.capitalGateReason,
+           shadowInfluence: false,
+           authority: "live_bot",
+         });
+       }
        // ── END CONTROLLED INTELLIGENCE ──────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _buyPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
@@ -2518,7 +2534,11 @@ async function strategy(symbol) {
          trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gSell.advisory,
       });
-       if (_coopSell.capitalGateDecision !== "ALLOW") {
+       const _baselineCollectionSell = canCollectLiveBaseline({
+         decision: _coopSell.capitalGateDecision,
+         reason: _coopSell.capitalGateReason,
+       });
+       if (_coopSell.capitalGateDecision !== "ALLOW" && !_baselineCollectionSell) {
          logControlledLiveDecision(
            { signalId, symbol, side: "sell" },
            _coopSell,
@@ -2532,6 +2552,16 @@ async function strategy(symbol) {
          });
         return;
       }
+       if (_baselineCollectionSell) {
+         logEvent({
+           type: "controlled_baseline_collection",
+           signalId, symbol, side: "sell",
+           capitalGateDecision: _coopSell.capitalGateDecision,
+           capitalGateReason: _coopSell.capitalGateReason,
+           shadowInfluence: false,
+           authority: "live_bot",
+         });
+       }
        // ── END CONTROLLED INTELLIGENCE ──────────────────────────────────────
       symbolSignalId[symbol]      = signalId;
       symbolEntryMeta[symbol]     = { passCount: _sellPassCount, m1TrendAtEntry: _m1TrendStatus, m5TrendAtEntry: _m5TrendStatus, m1CloseAtEntry: _m1CloseStatus, entryGate: _entryGate };
