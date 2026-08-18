@@ -78,3 +78,17 @@ id = "nGiMb-J-wnjNSDD5eJtKE"
 uri = "file://AUDIT_REPORT_SELECTED_ENGINE_DIAGNOSTICS.md"
 type = "text"
 title = "Raport audytu Selected Engine diagnostics"
+
+[[outputs]]
+id = "eqXe0gMAeeM2I9XyP3Voe"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v2.md"
+type = "text"
+title = "FOREX ENGINE PRO — Audyt architektury v2 (Markdown)"
+description = "Pełny raport audytu Live / Shadow / Selected z klasyfikacją połączeń i rzeczywistymi granicami wpływu."
+
+[[outputs]]
+id = "ndzS0MVpthW06WT_gaa4B"
+uri = "file://docs/audit/FOREX_ENGINE_PRO_ARCHITECTURE_AUDIT_v2.pdf"
+type = "pdf"
+title = "FOREX ENGINE PRO — Audyt architektury v2 (PDF)"
+description = "Wersja PDF raportu audytu gotowa do pobrania i udostępnienia."
