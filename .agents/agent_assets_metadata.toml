@@ -120,3 +120,10 @@ uri = "file://docs/audit/FOREX_ENGINE_PRO_FINAL_PRE_PUSH_FIX.md"
 type = "text"
 title = "FOREX ENGINE PRO — Final Pre-Push Fix (Markdown)"
 description = "Short downloadable audit report with the final PUSH recommendation."
+
+[[outputs]]
+id = "w7CDrofwu6pjnDfgr63qZ"
+uri = "file://FOREX_ENGINE_PRO_ETAP_2_SHADOW_V2_AUDIT.md"
+type = "text"
+title = "FOREX Engine Pro ETAP 2 Shadow V2 Audit"
+description = "Read-only audit report for Shadow A, B, C, preliminary Shadow M findings, provenance risks, recommended fixes, and explicit no-change statement."
