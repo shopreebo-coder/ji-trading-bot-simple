@@ -141,3 +141,10 @@ uri = "file://OANDA_401_DIAGNOSTIC_REPORT.md"
 type = "text"
 title = "OANDA 401 Diagnostic Report"
 description = "Read-only authentication-path audit with confirmed facts, evidence, classification, recommended fix, and token-regeneration guidance. No secrets included."
+
+[[outputs]]
+id = "PlYPHGZy0fB6pkrh80rEi"
+uri = "file://OANDA_RAILWAY_RUNTIME_CHECK_REPORT.md"
+type = "text"
+title = "OANDA Railway Runtime Check Report"
+description = "Read-only report of Railway deployment metadata, access limits, confirmed version records, and why Railway ENV/authentication could not be verified without Railway runtime access."
