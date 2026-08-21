@@ -19,6 +19,7 @@
 
 const { logEvent, db } = require("./index");
 const { getRuntimeEnabled } = require("./runtime-control");
+const { ShadowDMetaManager } = require("./managers/ShadowDMetaManager");
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SHADOW ENGINE A — Quality Score (0–100)  ★ FROZEN — DO NOT MODIFY ★
@@ -1014,6 +1015,13 @@ function shadowGate(signal) {
       ? ShadowMetaEngine.evaluate(signal, engineA, engineB, engineC)
       : disabled("D");
 
+    // ── Shadow D Meta: richer entry advisory with Trading Strategy Knowledge ──
+    // Synchronous + fail-safe. Evaluates strategy patterns, conflicts,
+    // provenance, and data quality. Advisory only — NEVER influences Live Bot.
+    const dMeta = runtime.D
+      ? ShadowDMetaManager.analyzeAndLogEntry({ signal, engineA, engineB, engineC })
+      : null;
+
     // Log gate evaluation (always — this feeds Shadow Memory even in OBSERVE)
     try {
       logEvent({
@@ -1041,6 +1049,7 @@ function shadowGate(signal) {
       runtime,
       engines: { A: engineA, B: engineB, C: engineC },
       meta: engineD,
+      dMeta,    // Shadow D Meta — rich entry suggestion (advisory only)
     };
 
     const advisoryTimestamp = new Date().toISOString();

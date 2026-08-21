@@ -1,0 +1,237 @@
+# FOREX ENGINE PRO — ETAP 2
+## SHADOW D META TRADE MANAGER — IMPLEMENTATION COMMAND
+
+### CEL
+Przebuduj istniejący Shadow D w prawdziwy META TRADE MANAGER.
+
+D ma działać w realnym live flow i korzystać z:
+- Shadow A — Entry Quality
+- Shadow B — Regime
+- Shadow C — Confirmation / Memory
+- Shadow M — Trade Behaviour
+- Knowledge Layer
+- Trading Strategy Knowledge
+- bieżących danych market/trade telemetry
+
+D ma generować sugestie dla Live Bot dotyczące:
+- ENTER / WAIT / REJECT
+- HOLD / PROTECT / REDUCE / EXIT
+
+**Live Bot pozostaje final authority.**
+D nigdy nie wykonuje orderów, nie zamyka pozycji, nie modyfikuje SL/TP, lot size ani risk.
+
+---
+
+## 1. META ARCHITECTURE
+
+LIVE MARKET + CURRENT TRADE
+→ A + B + C + M
+→ Knowledge Layer + Trading Strategy Knowledge
+→ SHADOW D META
+→ META SUGGESTION
+→ LIVE BOT FINAL DECISION
+→ REAL OUTCOME
+→ TELEMETRY / KNOWLEDGE
+
+Nie twórz drugiego Live Bota. D ma być warstwą inteligencji/advisory nad istniejącym systemem.
+
+Nie usuwaj A/B/C/M.
+
+## 2. TRADING INTELLIGENCE
+
+D nie może być tylko agregatorem danych.
+
+Ma posiadać/wykorzystywać rozszerzalną wiedzę o:
+- trend following
+- momentum
+- breakout / retest
+- pullback / continuation
+- reversal
+- mean reversion
+- range trading
+- market structure
+- HH/HL, LH/LL
+- EMA alignment
+- candle confirmation
+- exhaustion
+- volatility expansion/contraction
+- false breakout
+- session behaviour
+- spread/liquidity
+- risk/reward
+
+Traktuj strategie jako modele/hipotezy, nie gwarancje. Preferuj real live evidence i expectancy zamiast samego win rate.
+
+## 3. PRE-TRADE META DECISION
+
+D analizuje A, B, C, M, Knowledge Layer, strategy patterns, spread/ATR/momentum/structure/session, risk/reward, podobne realne przypadki oraz jakość i świeżość danych.
+
+Wynik:
+ENTER / WAIT / REJECT / INSUFFICIENT_DATA
+
+Wraz z confidence, meta score, reasoning, risk flags, strategy context, invalidation conditions, data quality i provenance.
+
+## 4. POST-ENTRY META MANAGEMENT
+
+D aktywnie analizuje już otwartą pozycję.
+
+Cyklicznie ocenia:
+- czy pierwotny edge nadal istnieje,
+- MFE / MAE,
+- current profit,
+- peak profit,
+- momentum,
+- trend / regime,
+- volatility,
+- market structure,
+- czas w pozycji,
+- spread / session,
+- zachowanie podobnych realnych trade'ów.
+
+Wynik:
+HOLD / HOLD_WITH_CAUTION / PROTECT / REDUCE / EXIT
+
+## 5. DOUBLE-CHECK HOLD / EXIT
+
+Przed istotną sugestią HOLD lub EXIT wykonaj dwa niezależne pytania:
+
+A. Czy nadal istnieje uzasadnienie dla kontynuacji?
+B. Czy ryzyko dalszego trzymania jest nadal warte potencjalnego edge?
+
+Porównuj remaining edge vs risk of giving back current profit.
+
+D ma unikać premature exit, late exit i bezmyślnego HOLD tylko dlatego, że trade jest dodatni.
+
+Mierz:
+NET SAVED PIPS, expectancy, profit retention, avoided losses, avoided winners, early exits, late exits, hold quality, exit quality.
+
+## 6. CONFLICT RESOLUTION
+
+D wykrywa konflikty A/B/C/M, np.:
+- A strong + B strong + C weak
+- A strong + B ranging + C strong
+- A/B/C positive + M deterioration
+
+D określa charakter konfliktu, wagę sygnałów, potrzebę WAIT, obniżenie confidence lub PROTECT/EXIT suggestion.
+
+Nie wymuszaj decyzji przy konflikcie lub niepełnych danych.
+
+## 7. KNOWLEDGE LAYER
+
+D wykorzystuje Knowledge Layer jako wiedzę:
+- jakie wzorce działały,
+- w jakich warunkach,
+- kiedy zawodziły,
+- expectancy,
+- NET PIPS,
+- trade duration,
+- zachowanie po wejściu,
+- warunki dobrych i złych wyjść.
+
+Nie wymyślaj wiedzy, której system nie posiada.
+
+## 8. PROVENANCE
+
+Rozróżniaj:
+LIVE_BROKER / HISTORICAL / TEST / SYNTHETIC / RECONSTRUCTED / UNKNOWN
+
+Nie traktuj UNKNOWN jako potwierdzonego live evidence.
+
+Nie mieszaj historycznych/testowych rekordów z live scorecard D.
+
+Jeżeli obecna architektura nie ma wystarczającego provenance, zaprojektuj minimalną bezpieczną warstwę zamiast przebudowy całego systemu.
+
+## 9. LIVE INTEGRATION
+
+A/B/C/M
+→ D META
+→ ADVISORY TO LIVE BOT
+→ LIVE BOT FINAL DECISION
+
+D nie może mieć własnego execution path, bezpośredniego OANDA order access, możliwości ominięcia Live Bot ani możliwości zastąpienia jego zabezpieczeń.
+
+Nowy D testuj od razu na realnym live flow poprzez realne sugestie, ale bez bezpośredniego execution.
+
+## 10. TELEMETRY
+
+Dodaj lub wykorzystaj istniejący standard telemetry dla:
+- D meta decision
+- entry / hold / protect / reduce / exit suggestion
+- abstention
+- conflict
+- outcome
+
+Każdą sugestię musi dać się później połączyć z realnym wynikiem trade'u.
+
+Nie twórz statystyk bez wystarczającej próbki.
+
+## 11. STANDARD DECISION OBJECT
+
+Zaprojektuj stabilny obiekt decyzji zawierający:
+ACTION, CONFIDENCE, META_SCORE, ENTRY_QUALITY, REGIME_QUALITY,
+CONFIRMATION, TRADE_BEHAVIOUR, STRATEGY_CONTEXT, EDGE_STATUS,
+RISK_STATUS, REASONING, INVALIDATION, DATA_QUALITY, PROVENANCE.
+
+Dostosuj nazwy do istniejącego kodu, jeśli istnieje kompatybilny standard.
+
+## 12. TESTY I KRYTERIUM SUKCESU
+
+Potwierdź:
+1. D otrzymuje aktualne dane A/B/C/M.
+2. D otrzymuje Knowledge Layer.
+3. D posiada Trading Strategy Knowledge.
+4. D działa w realnym live flow.
+5. D generuje rzeczywiste sugestie.
+6. Sugestie docierają do Live Bot.
+7. Live Bot pozostaje final authority.
+8. D nie wykonuje orderów.
+9. Sugestie są zapisywane.
+10. Sugestie można rozliczyć z realnym outcome.
+11. HOLD/EXIT przechodzi double-check.
+12. Niepełne dane powodują abstention/UNKNOWN.
+
+## 13. BEZPIECZEŃSTWO
+
+Przed zmianami sprawdź repo.
+
+Nie usuwaj danych, nie resetuj historii, nie wykonuj destrukcyjnych migracji i nie zmieniaj Live Bot execution logic bez konieczności.
+
+Najpierw wykorzystaj istniejący D i istniejące połączenia.
+
+Jeżeli minimalna zmiana A/B/C/M jest niezbędna do poprawnej integracji D, opisz ją i ogranicz zakres.
+
+## 14. RAPORT KOŃCOWY
+
+Raport ma zawierać:
+- stan D przed zmianami,
+- architekturę po zmianach,
+- zmienione pliki,
+- integrację A/B/C/M,
+- Knowledge Layer,
+- Trading Strategy Knowledge,
+- Entry / Hold / Exit logic,
+- Double-check logic,
+- Conflict Resolution,
+- provenance,
+- telemetry,
+- testy i wyniki,
+- potwierdzenie braku execution przez D,
+- potwierdzenie final authority Live Bot,
+- ograniczenia.
+
+OBOWIĄZKOWO dodaj:
+**AGENT RECOMMENDATIONS — WHAT SHOULD WE ADD NEXT**
+
+Podaj własne sugestie, których nie wdrażasz automatycznie. Dla każdej: problem, rozwiązanie, potencjalna korzyść, ryzyko, wpływ na Live Bot i sposób pomiaru skuteczności.
+
+Podziel na HIGH PRIORITY / MEDIUM PRIORITY / FUTURE.
+
+## FINAL COMMAND
+
+Nie buduj kolejnego Shadow, który tylko obserwuje.
+
+Przebuduj istniejący Shadow D w META INTELLIGENCE + META TRADE MANAGER, który rozumie trading, korzysta z A/B/C/M, Knowledge Layer i Trading Strategy Knowledge, analizuje wejścia, ponownie analizuje otwarte pozycje, dwukrotnie sprawdza HOLD/EXIT, generuje realne sugestie dla Live Bot i uczy się z realnych outcomes.
+
+Live Bot zachowuje ostateczną decyzję i execution.
+
+Po zakończeniu wygeneruj raport oraz osobną listę własnych rekomendacji agenta.

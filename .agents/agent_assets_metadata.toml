@@ -127,3 +127,10 @@ uri = "file://FOREX_ENGINE_PRO_ETAP_2_SHADOW_V2_AUDIT.md"
 type = "text"
 title = "FOREX Engine Pro ETAP 2 Shadow V2 Audit"
 description = "Read-only audit report for Shadow A, B, C, preliminary Shadow M findings, provenance risks, recommended fixes, and explicit no-change statement."
+
+[[outputs]]
+id = "bQofZx_k2W8bidRMXn00S"
+uri = "file://FOREX_ENGINE_PRO_ETAP_2_SHADOW_D_META_REPORT.md"
+type = "text"
+title = "ETAP 2 — Shadow D Meta: Implementation Report & Recommendations"
+description = "Full implementation report: architecture, 33 test results, 12 success criteria, agent recommendations (HIGH/MEDIUM/FUTURE)."

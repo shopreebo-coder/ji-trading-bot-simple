@@ -21,11 +21,12 @@ const CONTROL_PATH = process.env.RUNTIME_MODULES_FILE ||
   );
 
 const DEFAULT_RUNTIME_MODULES = Object.freeze({
-  "shadow-a": true,
-  "shadow-b": true,
-  "shadow-c": true,
-  "shadow-d": true,
-  "shadow-gate": true,
+  "shadow-a":      true,
+  "shadow-b":      true,
+  "shadow-c":      true,
+  "shadow-d":      true,
+  "shadow-d-meta": true,   // Shadow D Meta Trade Manager (advisory only)
+  "shadow-gate":   true,
 });
 
 function readRuntimeState() {

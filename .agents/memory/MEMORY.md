@@ -20,3 +20,4 @@
 - [Railway deploy observability](railway-deploy-observability.md) — GitHub deployment records can fan out and stay in-progress without exposing the intended service URL or runtime health.
 - [OANDA candle error visibility](oanda-candle-error-visibility.md) — candle fetch failures must retain HTTP/body/request context and propagate; `[]` hides auth and transport failures as fake M5 insufficiency.
 - [Memory Integration workflow lock](mi-test-workflow-lock.md) — active Telemetry Dashboard can hold the PostgreSQL advisory lock; stop it only for MI tests, then restart and verify logs.
+- [Shadow D Meta Manager](shadow-d-meta-manager.md) — rebuilt D: analyzeEntry+analyzePosition, lazy logEvent, SHADOW_D_META_NO_LOG=1 for tests, new event types + /api/shadow-d/status.

@@ -26,6 +26,7 @@ const { TelemetryReconciler, buildDefaultOandaClient, CURSOR_TYPE: RECONCILER_CU
 const { ModuleStatusManager, MODULE_STATUS } = require("./ModuleStatusManager");
 const { CooperativeManager } = require("./CooperativeManager");
 const { RuntimeModuleRegistry } = require("./RuntimeModuleRegistry");
+const { ShadowDMetaManager, STRATEGY_KNOWLEDGE, PROVENANCE: D_PROVENANCE, ENTRY_ACTIONS, POSITION_ACTIONS, SCHEMA_VERSION: D_SCHEMA_VERSION } = require("./ShadowDMetaManager");
 
 module.exports = {
   RuntimeDomainManager,
@@ -76,4 +77,11 @@ module.exports = {
   MODULE_STATUS,
   RuntimeModuleRegistry,
   CooperativeManager,
+  // Shadow D Meta — Meta Trade Manager (advisory only)
+  ShadowDMetaManager,
+  STRATEGY_KNOWLEDGE,
+  D_PROVENANCE,
+  ENTRY_ACTIONS,
+  POSITION_ACTIONS,
+  D_SCHEMA_VERSION,
 };

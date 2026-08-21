@@ -16,6 +16,7 @@ const { spawn }  = require("child_process");
 const { db, emitter, logEvent, getLastId, backupDatabase, getDbStats, DATA_DIR, DATA_DIR_EXPLICIT, DB_PATH, USE_PG } = require("./index");
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
 const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = require("./shadowm");
+const { ShadowDMetaManager } = require("./managers/ShadowDMetaManager");
 
 // ── SHADOW OS v2 — Sprint 4: live memory integration (flag-gated) ─────────────
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
@@ -68,7 +69,9 @@ const knowledge = new KnowledgeManager({
 // Cooperation is enabled by default in production; SELECTED_ENGINE=off remains
 // the explicit kill switch. The engine is read-only and entry policy remains
 // fail-open when its evidence is unavailable.
-const SELECTED_ENGINE_ENABLED = (process.env.SELECTED_ENGINE || "on").toLowerCase() === "on";
+const SELECTED_ENGINE_ENABLED  = (process.env.SELECTED_ENGINE  || "on").toLowerCase() === "on";
+// Shadow D Meta — post-entry position analysis layer (advisory only, fail-safe)
+const SHADOW_D_META_ENABLED    = (process.env.SHADOW_D_META    || "on").toLowerCase() !== "off";
 const selectedEngine = new SelectedEngineManager({
   db,
   shadowLab: shadowLabResearch, // read-only expectancy provider (optional)
@@ -4162,6 +4165,29 @@ app.post("/api/cooperative/signal", express.json(), async (req, res) => {
   }); // best-effort — failure is visible but has no control-flow effect
 });
 
+// ── Shadow D Meta helper — best-effort DB lookup of stored A/B/C evals ────────
+// Called from /api/cooperative/advisory to enrich position analysis.
+// Uses LIKE on event data — DB-agnostic, no JSON operators needed.
+// Returns empty objects on any failure so D meta degrades gracefully.
+async function _fetchStoredEvals(signalId) {
+  if (!signalId) return { engineA: {}, engineB: {}, engineC: {} };
+  try {
+    const pattern = `%"signalId":"${signalId}"%`;
+    const [rA, rB, rC] = await Promise.all([
+      db.get("SELECT data FROM events WHERE type=? AND data LIKE ? ORDER BY id DESC LIMIT 1", "lab_shadow_a", pattern).catch(() => null),
+      db.get("SELECT data FROM events WHERE type=? AND data LIKE ? ORDER BY id DESC LIMIT 1", "lab_shadow_b", pattern).catch(() => null),
+      db.get("SELECT data FROM events WHERE type=? AND data LIKE ? ORDER BY id DESC LIMIT 1", "lab_shadow_c", pattern).catch(() => null),
+    ]);
+    const parse = r => {
+      if (!r?.data) return {};
+      try { return typeof r.data === "string" ? JSON.parse(r.data) : r.data; } catch (_) { return {}; }
+    };
+    return { engineA: parse(rA), engineB: parse(rB), engineC: parse(rC) };
+  } catch (_) {
+    return { engineA: {}, engineB: {}, engineC: {} };
+  }
+}
+
 app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
   try {
     if (runtimeRegistry.getStatus("shadow-m")?.runtimeEnabled === false) {
@@ -4170,9 +4196,45 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
         action: "HOLD",
         advisoryOnly: true,
         evidence: { tracked: false, reason: "shadow_m_runtime_off" },
+        dMeta: null,
       });
     }
     const shadow = await shadowM.getAdvisory(req.body || {});
+
+    // ── Shadow D Meta: post-entry position analysis ────────────────────────
+    // Best-effort DB lookup for stored A/B/C evaluations tied to this trade.
+    // Advisory only — dMetaPosition NEVER changes finalAction or blocks Live Bot.
+    const _dSignalId = req.body?.signalId || req.body?.signal_id || null;
+    let dMetaPosition = null;
+    if (SHADOW_D_META_ENABLED) {
+      try {
+        const _storedEvals = await _fetchStoredEvals(_dSignalId);
+        dMetaPosition = ShadowDMetaManager.analyzeAndLogPosition({
+          signal: {
+            signalId: _dSignalId,
+            symbol:   req.body?.symbol  || null,
+            session:  req.body?.session || null,
+            side:     req.body?.side    || null,
+          },
+          engineA:  _storedEvals.engineA,
+          engineB:  _storedEvals.engineB,
+          engineC:  _storedEvals.engineC,
+          shadowM:  shadow,
+          position: {
+            tradeId:     req.body?.tradeId     || null,
+            pips:        typeof req.body?.pips        === "number" ? req.body.pips        : 0,
+            mfe:         typeof req.body?.mfe         === "number" ? req.body.mfe         : 0,
+            mae:         typeof req.body?.mae         === "number" ? req.body.mae         : 0,
+            minutesOpen: typeof req.body?.minutesOpen === "number" ? req.body.minutesOpen : 0,
+            liveAction:  String(req.body?.liveAction || "HOLD"),
+          },
+        });
+      } catch (_dErr) {
+        // D meta failure never affects the main cooperative advisory response
+        dMetaPosition = null;
+      }
+    }
+
     const policy = cooperativeManager.managementPolicy(shadow);
     // Use the actual Live Exit Engine action passed by the bot, not a hardcoded placeholder.
     const liveAction = String(req.body?.liveAction || "HOLD");
@@ -4186,8 +4248,15 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       finalAction,
       advisoryOnly: true,
       evidence: shadow.evidence || {},
+      dMetaAction: dMetaPosition?.action || null,   // telemetry only
     });
-    res.json({ ok: true, action: finalAction, advisoryOnly: true, evidence: shadow.evidence || {} });
+    res.json({
+      ok: true,
+      action: finalAction,
+      advisoryOnly: true,
+      evidence: shadow.evidence || {},
+      dMeta: dMetaPosition,   // advisory-only position suggestion from D Meta
+    });
   } catch (error) {
     selectedDiagnosticLog({
       signalId: req.body?.signalId || req.body?.signal_id || null,
@@ -4196,7 +4265,41 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       error: error.message || String(error),
       stack: error.stack || null,
     });
-    res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true } });
+    res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true }, dMeta: null });
+  }
+});
+
+// ── GET /api/shadow-d/status — Shadow D Meta runtime status + recent decisions ─
+app.get("/api/shadow-d/status", async (req, res) => {
+  try {
+    const [entryRow, posRow, latestEntry, latestPos] = await Promise.all([
+      db.get("SELECT COUNT(*) AS n FROM events WHERE type='lab_shadow_d_meta_entry'").catch(() => null),
+      db.get("SELECT COUNT(*) AS n FROM events WHERE type='lab_shadow_d_meta_position'").catch(() => null),
+      db.get("SELECT data FROM events WHERE type='lab_shadow_d_meta_entry'   ORDER BY id DESC LIMIT 1").catch(() => null),
+      db.get("SELECT data FROM events WHERE type='lab_shadow_d_meta_position' ORDER BY id DESC LIMIT 1").catch(() => null),
+    ]);
+    const parseData = r => {
+      if (!r?.data) return null;
+      try { return typeof r.data === "string" ? JSON.parse(r.data) : r.data; } catch (_) { return null; }
+    };
+    res.json({
+      ok:              true,
+      enabled:         SHADOW_D_META_ENABLED,
+      schemaVersion:   ShadowDMetaManager.SCHEMA_VERSION,
+      strategies:      Object.keys(ShadowDMetaManager.STRATEGY_KNOWLEDGE),
+      entryActions:    ShadowDMetaManager.ENTRY_ACTIONS,
+      positionActions: ShadowDMetaManager.POSITION_ACTIONS,
+      entry: {
+        count: Number(entryRow?.n ?? 0),
+        last:  parseData(latestEntry),
+      },
+      position: {
+        count: Number(posRow?.n ?? 0),
+        last:  parseData(latestPos),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
