@@ -4,6 +4,7 @@ const crypto = require("crypto"); // signalId generation — TELEMETRY ONLY
 const { CooperativeManager, canCollectLiveBaseline } = require("./telemetry/managers/CooperativeManager");
 const { SelectedAdvisor } = require("./telemetry/managers/SelectedAdvisor");
 const { ExitEngineX } = require("./telemetry/exit-engine-x");
+const { classifyDMetaReaction } = require("./telemetry/managers/DMetaAdvisoryContract");
 const cooperativeManager = new CooperativeManager();
 
 // Telemetry — loaded with fallback so bot works even without better-sqlite3
@@ -101,6 +102,7 @@ async function cooperativeEntry(signal) {
       executionAllowed: response.data?.executionAllowed === true,
       selectedAdvisorContext,
       selectedAdvisorRead: receiptEvents.length > 0,
+      dMetaEntry: response.data?.dMetaEntry || response.data?.dMetaSuggestion || null,
     };
   } catch (_) {
     return {
@@ -117,8 +119,27 @@ async function cooperativeEntry(signal) {
       executionAllowed: false,
       selectedAdvisorContext: null,
       selectedAdvisorRead: false,
+      dMetaEntry: null,
     };
   }
+}
+
+const dMetaEntryBySignal = {};
+function recordDMetaEntryHandoff(signal = {}, cooperation = {}) {
+  const signalId = signal.signalId || signal.signal_id || null;
+  const suggestion = cooperation.dMetaEntry || null;
+  if (signalId) dMetaEntryBySignal[signalId] = suggestion;
+  logEvent({
+    type: "d_meta_entry_live_handoff",
+    signalId,
+    symbol: signal.symbol || null,
+    side: signal.side || null,
+    action: suggestion?.action || null,
+    suggestion,
+    receivedByLiveBot: !!suggestion,
+    advisoryOnly: true,
+    authoritativeLayer: "live_bot",
+  });
 }
 
 function logControlledLiveDecision(signal = {}, cooperation = {}, liveFinalDecision = "ABSTAIN") {
@@ -142,7 +163,23 @@ async function cooperativeAdvisory(state) {
   try {
     const response = await axios.post(`${COOPERATIVE_URL}/api/cooperative/advisory`, state, { timeout: 1500 });
     // Pass the actual Live Exit Engine natural action so Shadow M knows the live intent.
-    return cooperativeManager.decideManagement(state.liveAction || "HOLD", response.data?.action);
+    const finalAction = cooperativeManager.decideManagement(state.liveAction || "HOLD", response.data?.action);
+    const dMetaPosition = response.data?.dMetaPosition || response.data?.dMeta || null;
+    logEvent({
+      type: "d_meta_position_live_handoff",
+      signalId: state.signalId || null,
+      tradeId: state.tradeId || null,
+      symbol: state.symbol || null,
+      side: state.side || null,
+      action: dMetaPosition?.action || null,
+      suggestion: dMetaPosition,
+      liveAction: state.liveAction || "HOLD",
+      reaction: classifyDMetaReaction(dMetaPosition, state.liveAction || "HOLD"),
+      receivedByLiveBot: !!dMetaPosition,
+      advisoryOnly: true,
+      authoritativeLayer: "live_bot",
+    });
+    return finalAction;
   } catch (_) {
     // Fail-safe: return what Live Engine was going to do anyway.
     return state?.liveAction || "HOLD";
@@ -1040,7 +1077,10 @@ async function manageTrades() {
         tradeSignalId[trade.id] = symbolSignalId[symbol];
         delete symbolSignalId[symbol];
         if (symbolEntryMeta[symbol]) {
-          tradeEntryMeta[trade.id] = symbolEntryMeta[symbol];
+          tradeEntryMeta[trade.id] = {
+            ...symbolEntryMeta[symbol],
+            dMetaEntry: dMetaEntryBySignal[tradeSignalId[trade.id]] || null,
+          };
           delete symbolEntryMeta[symbol];
         }
       }
@@ -1267,6 +1307,24 @@ async function manageTrades() {
             ...tradeEntrySnapshot[trade.id],  // entry-time: spread, ATR, EMA, session, fingerprint, etc.
           });
         }
+        const dMetaEntry = tradeEntryMeta[trade.id]?.dMetaEntry || null;
+        if (dMetaEntry) {
+          logEvent({
+            type: "d_meta_outcome",
+            signalId: tradeSignalId[trade.id] || null,
+            tradeId: trade.id,
+            symbol,
+            side,
+            dMetaSuggestion: dMetaEntry,
+            outcome: _outcome,
+            profitPips: parseFloat(pips.toFixed(2)),
+            mfe,
+            mae,
+            durationMinutes: parseFloat(minutesOpen.toFixed(2)),
+            advisoryOnly: true,
+            authoritativeLayer: "live_bot",
+          });
+        }
 
         return {
           type:                 "trade_close",
@@ -1287,6 +1345,7 @@ async function manageTrades() {
           retainedProfitPercent: exitEfficiency,
           // ENTRY EFFICIENCY — TELEMETRY ONLY
           entryEfficiencyPips,
+          dMetaSuggestion: tradeEntryMeta[trade.id]?.dMetaEntry || null,
           // QUALITY — TELEMETRY ONLY
           reachedPlusTwo:       tradePlusTwoPips[trade.id]    || false,
           instantAdverse:       tradeInstantAdverse[trade.id] || false,
@@ -2396,7 +2455,7 @@ async function strategy(symbol) {
            shadowMode: _gBuy.mode || null,
          });
       }
-      const _coopBuy = await cooperativeEntry({
+        const _coopBuy = await cooperativeEntry({
          signalId, symbol, side: "buy",
          conditionMap: _buyCondMap, entryGate: _entryGate,
          passCount: _buyPassCount,
@@ -2405,6 +2464,7 @@ async function strategy(symbol) {
          trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gBuy.advisory,
       });
+      recordDMetaEntryHandoff({ signalId, symbol, side: "buy" }, _coopBuy);
        const _baselineCollectionBuy = canCollectLiveBaseline({
          decision: _coopBuy.capitalGateDecision,
          reason: _coopBuy.capitalGateReason,
@@ -2525,7 +2585,7 @@ async function strategy(symbol) {
            shadowMode: _gSell.mode || null,
          });
       }
-      const _coopSell = await cooperativeEntry({
+       const _coopSell = await cooperativeEntry({
          signalId, symbol, side: "sell",
          conditionMap: _sellCondMap, entryGate: _entryGate,
          passCount: _sellPassCount,
@@ -2534,6 +2594,7 @@ async function strategy(symbol) {
          trendBucket: trendBkt, volatilityBucket: volBkt, spreadBucket: spreadBkt,
         shadowAdvisory: _gSell.advisory,
       });
+      recordDMetaEntryHandoff({ signalId, symbol, side: "sell" }, _coopSell);
        const _baselineCollectionSell = canCollectLiveBaseline({
          decision: _coopSell.capitalGateDecision,
          reason: _coopSell.capitalGateReason,

@@ -1019,7 +1019,13 @@ function shadowGate(signal) {
     // Synchronous + fail-safe. Evaluates strategy patterns, conflicts,
     // provenance, and data quality. Advisory only — NEVER influences Live Bot.
     const dMeta = runtime.D
-      ? ShadowDMetaManager.analyzeAndLogEntry({ signal, engineA, engineB, engineC })
+      ? ShadowDMetaManager.analyzeAndLogEntry({
+          signal,
+          engineA,
+          engineB,
+          engineC,
+          knowledge: signal.knowledgeEvidence || signal.knowledge || null,
+        })
       : null;
 
     // Log gate evaluation (always — this feeds Shadow Memory even in OBSERVE)

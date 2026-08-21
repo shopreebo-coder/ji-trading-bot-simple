@@ -17,6 +17,7 @@ const { db, emitter, logEvent, getLastId, backupDatabase, getDbStats, DATA_DIR, 
 const { shadowLab, getShadowMode, setShadowMode, getShadowMemoryStats } = require("./shadowlab");
 const { shadowM, getShadowMStats, getShadowMTrades, getShadowMTimeline } = require("./shadowm");
 const { ShadowDMetaManager } = require("./managers/ShadowDMetaManager");
+const { buildDMetaHandoff } = require("./managers/DMetaAdvisoryContract");
 
 // ── SHADOW OS v2 — Sprint 4: live memory integration (flag-gated) ─────────────
 // Kill switch: SHADOW_OS_MEMORY=off restores pre-Sprint-4 behavior exactly.
@@ -3939,6 +3940,11 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
     const selectedRuntimeOn = runtimeRegistry.getStatus("selected-engine")?.runtimeEnabled !== false;
     const advisorRuntimeOn = runtimeRegistry.getStatus("selected-advisor")?.runtimeEnabled !== false;
     const shadowAdvisory = req.body?.shadowAdvisory || null;
+    const dMetaEntry = buildDMetaHandoff({
+      suggestion: shadowAdvisory?.dMeta || null,
+      handoffType: "entry",
+      signal: req.body || {},
+    });
     const controlledShadowOutputs = shadowAdvisory?.outputs
       ? Object.fromEntries(["A", "B", "C"]
         .filter((letter) => Object.prototype.hasOwnProperty.call(shadowAdvisory.outputs, letter))
@@ -4045,6 +4051,9 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       capitalGateDecision: capitalGate.decision,
       capitalGateReason: capitalGate.reason,
       selectedAdvisorContext,
+      dMetaEntry: dMetaEntry
+        ? { ...dMetaEntry, knowledgeEvidence: result.knowledgeEvidence || null }
+        : null,
     });
   } catch (error) {
     selectedDiagnosticLog({
@@ -4068,6 +4077,7 @@ app.post("/api/cooperative/entry", express.json(), async (req, res) => {
       shadowConsensus: null,
       shadowConfidence: null,
       knowledgeEvidence: { available: false, matchCount: 0 },
+      dMetaEntry: null,
     });
   }
 });
@@ -4235,6 +4245,30 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       }
     }
 
+    const dMetaPositionHandoff = buildDMetaHandoff({
+      suggestion: dMetaPosition,
+      handoffType: "position",
+      signal: {
+        signalId: _dSignalId,
+        symbol: req.body?.symbol || null,
+        side: req.body?.side || null,
+        session: req.body?.session || null,
+      },
+      position: req.body || {},
+    });
+    if (dMetaPositionHandoff) {
+      logEvent({
+        type: "d_meta_position_handoff",
+        signalId: _dSignalId,
+        tradeId: req.body?.tradeId || null,
+        symbol: req.body?.symbol || null,
+        action: dMetaPositionHandoff.action || null,
+        suggestion: dMetaPositionHandoff,
+        advisoryOnly: true,
+        authoritativeLayer: "live_bot",
+      });
+    }
+
     const policy = cooperativeManager.managementPolicy(shadow);
     // Use the actual Live Exit Engine action passed by the bot, not a hardcoded placeholder.
     const liveAction = String(req.body?.liveAction || "HOLD");
@@ -4255,7 +4289,8 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       action: finalAction,
       advisoryOnly: true,
       evidence: shadow.evidence || {},
-      dMeta: dMetaPosition,   // advisory-only position suggestion from D Meta
+      dMeta: dMetaPositionHandoff,   // advisory-only position suggestion from D Meta
+      dMetaPosition: dMetaPositionHandoff,
     });
   } catch (error) {
     selectedDiagnosticLog({
@@ -4265,7 +4300,7 @@ app.post("/api/cooperative/advisory", express.json(), async (req, res) => {
       error: error.message || String(error),
       stack: error.stack || null,
     });
-    res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true }, dMeta: null });
+    res.json({ ok: true, action: "HOLD", advisoryOnly: true, evidence: { failSafe: true }, dMeta: null, dMetaPosition: null });
   }
 });
 
