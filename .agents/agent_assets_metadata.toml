@@ -134,3 +134,10 @@ uri = "file://FOREX_ENGINE_PRO_ETAP_2_SHADOW_D_META_REPORT.md"
 type = "text"
 title = "ETAP 2 — Shadow D Meta: Implementation Report & Recommendations"
 description = "Full implementation report: architecture, 33 test results, 12 success criteria, agent recommendations (HIGH/MEDIUM/FUTURE)."
+
+[[outputs]]
+id = "ujdqCZgCI2CFeYG4_PtU8"
+uri = "file://OANDA_401_DIAGNOSTIC_REPORT.md"
+type = "text"
+title = "OANDA 401 Diagnostic Report"
+description = "Read-only authentication-path audit with confirmed facts, evidence, classification, recommended fix, and token-regeneration guidance. No secrets included."
