@@ -89,7 +89,7 @@ test("ACTIVE influence is reserved for live paths and completed advisory hand-of
   const out = await makeManager().build();
   const influencers = out.modules.filter((m) => m.influencesLive).map((m) => m.id).sort();
   const expected = ["exit-engine", "live-engine", "shadow-m"];
-  for (const letter of ["a", "b", "c"]) {
+  for (const letter of ["a", "b", "c", "d"]) {
     const module = out.modules.find((m) => m.id === `shadow-${letter}`);
     const complete = module.stats.generated > 0 && module.stats.delivered > 0 && module.stats.read > 0;
     assert.equal(module.influencesLive, complete,
@@ -112,7 +112,7 @@ test("historical lifecycle rows do not activate the current runtime", async () =
   const futureRuntime = new Date(Date.now() + 60_000).toISOString();
   const out = await makeManager({ runtimeStartedAt: futureRuntime }).build();
 
-  for (const letter of ["a", "b", "c"]) {
+  for (const letter of ["a", "b", "c", "d"]) {
     const module = out.modules.find((m) => m.id === `shadow-${letter}`);
     assert.deepStrictEqual(
       { generated: module.stats.generated, delivered: module.stats.delivered, read: module.stats.read },

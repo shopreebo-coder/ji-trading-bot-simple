@@ -1053,7 +1053,7 @@ function shadowGate(signal) {
       channel: "live_entry_decision_context",
       signalId: signal.signalId || null,
       runtime,
-      engines: { A: engineA, B: engineB, C: engineC },
+       engines: { A: engineA, B: engineB, C: engineC, D: engineD },
       meta: engineD,
       dMeta,    // Shadow D Meta — rich entry suggestion (advisory only)
     };
@@ -1074,6 +1074,26 @@ function shadowGate(signal) {
         recommendation: recommendation(output),
         confidence: output.confidence || null,
         evaluation: output,
+      };
+    }
+    if (runtime.D) {
+      const dRecommendation = dMeta?.action === "ENTER"
+        ? "TRADE"
+        : dMeta?.action === "REJECT"
+          ? "NO_TRADE"
+          : "ABSTAIN";
+      outputs.D = {
+        advisoryId: `${advisoryId}:D`,
+        engineId: "ENGINE_D_META",
+        recommendation: dRecommendation,
+        confidence: dMeta?.confidence || null,
+        evaluation: dMeta || {
+          action: "INSUFFICIENT_DATA",
+          confidence: "NONE",
+          advisoryOnly: true,
+          authoritativeLayer: "live_bot",
+        },
+        metaEvaluation: engineD,
       };
     }
     advisory.advisoryId = advisoryId;
@@ -1124,7 +1144,7 @@ function shadowGate(signal) {
         advisoryId,
         generatedAt: advisoryTimestamp,
         runtime,
-        engines: { A: engineA, B: engineB, C: engineC },
+        engines: { A: engineA, B: engineB, C: engineC, D: engineD },
         outputs,
         delivery: advisory.delivery,
         meta: engineD,

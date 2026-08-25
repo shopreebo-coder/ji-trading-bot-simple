@@ -412,6 +412,7 @@ test("entry handshake accepts A/B/C, passes them to Selected Engine, and returns
       A: { advisoryId: "adv-sig-entry:A", engineId: "ENGINE_A_QUALITY", recommendation: "TRADE", confidence: "HIGH", evaluation: { wouldTrade: true } },
       B: { advisoryId: "adv-sig-entry:B", engineId: "ENGINE_B_CONTEXT", recommendation: "NO_TRADE", confidence: "MEDIUM", evaluation: { wouldTrade: false } },
       C: { advisoryId: "adv-sig-entry:C", engineId: "ENGINE_C_KNN", recommendation: "ABSTAIN", confidence: "NONE", evaluation: { wouldTrade: null } },
+      D: { advisoryId: "adv-sig-entry:D", engineId: "ENGINE_D_META", recommendation: "ABSTAIN", confidence: "MEDIUM", evaluation: { action: "WAIT", advisoryOnly: true } },
     },
   };
 
@@ -421,14 +422,14 @@ test("entry handshake accepts A/B/C, passes them to Selected Engine, and returns
   });
 
   assert.equal(result.accepted, true);
-  assert.deepEqual(Object.keys(result.shadowOutputs).sort(), ["A", "B", "C"]);
+  assert.deepEqual(Object.keys(result.shadowOutputs).sort(), ["A", "B", "C", "D"]);
   assert.equal(result.shadowConsensus.consensus, "SPLIT");
   assert.equal(result.shadowConsensus.decided, 2);
-  assert.equal(result.shadowConsensus.abstain, 1);
+  assert.equal(result.shadowConsensus.abstain, 2);
   assert.equal(result.selected.decision, "TRADE");
   assert.equal(result.selected.contextId, "selected-ctx-sig-entry");
   assert.equal(selectedInput.signalId, "sig-entry");
-  assert.deepEqual(Object.keys(selectedInput.advisoryOutputs).sort(), ["A", "B", "C"]);
+  assert.deepEqual(Object.keys(selectedInput.advisoryOutputs).sort(), ["A", "B", "C", "D"]);
   assert.equal(selectedInput.advisoryOutputs.A.engineId, "ENGINE_A_QUALITY");
   assert.equal(result.usedForDecision, false);
   const receiptEvents = SelectedAdvisor.buildLiveReceiptEvents(
@@ -446,16 +447,17 @@ test("entry handshake accepts A/B/C, passes them to Selected Engine, and returns
     signal: { signalId: "sig-entry", symbol: "EUR_USD", side: "buy" },
     shadowAdvisory,
   });
-  assert.equal(lifecycleEvents.length, 7, "A/B/C delivered+read plus Selected generated");
-  assert.deepEqual(lifecycleEvents.slice(0, 6).map((event) => event.type), [
+  assert.equal(lifecycleEvents.length, 9, "A/B/C/D delivered+read plus Selected generated");
+  assert.deepEqual(lifecycleEvents.slice(0, 8).map((event) => event.type), [
     "shadow_a_advisory_delivered", "shadow_a_advisory_read",
     "shadow_b_advisory_delivered", "shadow_b_advisory_read",
     "shadow_c_advisory_delivered", "shadow_c_advisory_read",
+    "shadow_d_advisory_delivered", "shadow_d_advisory_read",
   ]);
   assert.equal(lifecycleEvents[0].deliveredTo, "selected_advisor");
   assert.equal(lifecycleEvents[1].readBy, "selected_advisor");
-  assert.equal(lifecycleEvents[6].type, "selected_advisor_advisory_generated");
-  assert.equal(lifecycleEvents[6].usedForDecision, false);
+  assert.equal(lifecycleEvents[8].type, "selected_advisor_advisory_generated");
+  assert.equal(lifecycleEvents[8].usedForDecision, false);
   const policy = new CooperativeManager().entryPolicy(result.selected, { highConfidence: 0.8 });
   assert.equal(policy.action, "ADVISORY", "Selected Advisor context does not add a new entry veto");
   assert.equal(advisor.getStatus().counters.entryContexts, 1);

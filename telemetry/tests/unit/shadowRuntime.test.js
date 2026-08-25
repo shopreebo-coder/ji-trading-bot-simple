@@ -73,7 +73,7 @@ test("Shadow A/B/C runtime OFF removes only that engine from advisory pipeline",
   assert.equal(baseline.authoritativeLayer, "live_bot");
   assert.deepEqual(baseline.runtime, { A: true, B: true, C: true, D: true, gate: true });
 
-  for (const letter of ["a", "b", "c"]) {
+  for (const letter of ["a", "b", "c", "d"]) {
     runtime.setRuntimeEnabled(`shadow-${letter}`, false);
     const result = shadowGate({ ...signal, signalId: `runtime-off-${letter}` });
     const engine = result.advisory.engines[letter.toUpperCase()];
@@ -101,7 +101,7 @@ test("Shadow Gate OFF is an explicit fail-open no-op", () => {
   assert.equal(result.advisoryOnly, true);
 });
 
-test("A/B/C ON generate independent outputs before the Selected hand-off", async () => {
+test("A/B/C/D ON generate independent outputs before the Selected hand-off", async () => {
   runtime.ensureRuntimeDefaults({
     "shadow-a": true,
     "shadow-b": true,
@@ -112,7 +112,10 @@ test("A/B/C ON generate independent outputs before the Selected hand-off", async
   const signalId = `advisory-on-${process.pid}-${Date.now()}`;
   const result = shadowGate({ ...signal, signalId });
 
-  assert.deepEqual(Object.keys(result.advisory.outputs).sort(), ["A", "B", "C"]);
+  assert.deepEqual(Object.keys(result.advisory.outputs).sort(), ["A", "B", "C", "D"]);
+  assert.equal(result.advisory.outputs.D.engineId, "ENGINE_D_META");
+  assert.equal(result.advisory.outputs.D.evaluation.advisoryOnly, true);
+  assert.equal(result.advisory.outputs.D.evaluation.authoritativeLayer, "live_bot");
   assert.equal(result.advisory.advisoryOnly, true);
   assert.equal(result.advisory.authoritativeLayer, "live_bot");
   assert.equal(result.advisory.channel, "live_entry_decision_context");

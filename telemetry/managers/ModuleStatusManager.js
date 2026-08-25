@@ -109,6 +109,7 @@ class ModuleStatusManager {
            'shadow_a_advisory_generated', 'shadow_a_advisory_delivered', 'shadow_a_advisory_read',
            'shadow_b_advisory_generated', 'shadow_b_advisory_delivered', 'shadow_b_advisory_read',
            'shadow_c_advisory_generated', 'shadow_c_advisory_delivered', 'shadow_c_advisory_read',
+           'shadow_d_advisory_generated', 'shadow_d_advisory_delivered', 'shadow_d_advisory_read',
            'selected_advisor_advisory_generated', 'selected_advisor_advisory_delivered',
            'selected_advisor_advisory_read'
          )
@@ -291,25 +292,28 @@ class ModuleStatusManager {
     for (const s of shadowDefs) {
       const obs = ev[`lab_shadow_${s.letter}`] || 0;
       const isD = s.letter === "d";
-      const dInfluences = isD && gateMode;
-      const advisory = isD ? null : {
+      const advisory = {
         generated: lifecycle[`shadow_${s.letter}_advisory_generated`] || 0,
         delivered: lifecycle[`shadow_${s.letter}_advisory_delivered`] || 0,
         read: lifecycle[`shadow_${s.letter}_advisory_read`] || 0,
       };
-      const advisoryInfluences = !isD &&
+      const advisoryInfluences =
         advisory.generated > 0 &&
         advisory.delivered > 0 &&
         advisory.read > 0 &&
         liveHandshakeComplete;
       let status, reason = null;
-      if (dInfluences)      { status = STATUS.ACTIVE; reason = "GATE mode — HIGH-confidence SKIP blocks entries"; }
+      if (isD && gateMode)  { status = STATUS.ACTIVE; reason = "GATE mode — D Meta advisory is delivered; Live Bot retains authority"; }
       else if (advisoryInfluences) {
         status = STATUS.ACTIVE;
-        reason = "Active — A/B/C outputs accepted by Selected Advisor; aggregate advisory context delivered and read by Live Bot";
+        reason = isD
+          ? "Active — D Meta output accepted by Selected Advisor; advisory context delivered and read by Live Bot"
+          : "Active — A/B/C outputs accepted by Selected Advisor; aggregate advisory context delivered and read by Live Bot";
       }
-      else if (!isD && advisory.generated > 0 && advisory.delivered > 0 && advisory.read > 0) {
-        reason = "A/B/C output hand-off complete to Selected Advisor; waiting for aggregate context receipt by Live Bot";
+      else if (advisory.generated > 0 && advisory.delivered > 0 && advisory.read > 0) {
+        reason = isD
+          ? "D Meta output hand-off complete to Selected Advisor; waiting for aggregate context receipt by Live Bot"
+          : "A/B/C output hand-off complete to Selected Advisor; waiting for aggregate context receipt by Live Bot";
         status = s.learning ? STATUS.LEARNING : STATUS.OBSERVING;
       }
       else if (obs > 0)     { status = s.learning ? STATUS.LEARNING : STATUS.OBSERVING; }
@@ -317,13 +321,13 @@ class ModuleStatusManager {
       modules.push({
         id: `shadow-${s.letter}`, name: s.name, tier: "SHADOW RESEARCH",
         status,
-        connected: true, collectsData: true, influencesLive: dInfluences || advisoryInfluences,
+        connected: true, collectsData: true, influencesLive: advisoryInfluences || (isD && gateMode),
         observations: obs,
         stats: {
           pipelineEvals: obs,
           researchEvals: this._evalsForLetter(evals, s.letter),
-          ...(advisory || {}),
-          ...(advisory ? { liveContextHandshake: selectedLiveHandshake } : {}),
+          ...advisory,
+          liveContextHandshake: selectedLiveHandshake,
         },
         reason,
         alsoVisibleIn: "LAB",
