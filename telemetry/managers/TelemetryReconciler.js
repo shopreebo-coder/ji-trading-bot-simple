@@ -113,7 +113,9 @@ function buildDefaultOandaClient(env = process.env, fetchImpl = globalThis.fetch
   const accountId = env.OANDA_ACCOUNT_ID;
   if (!apiKey || !accountId || typeof fetchImpl !== "function") return null;
 
-  const baseUrl = env.OANDA_ENV === "live"
+  const oandaEnv = String(env.OANDA_ENV || env.OANDA_ENVIRONMENT || "practice")
+    .trim().toLowerCase();
+  const baseUrl = oandaEnv === "live"
     ? "https://api-fxtrade.oanda.com"
     : "https://api-fxpractice.oanda.com";
   const headers = { Authorization: `Bearer ${apiKey}` };

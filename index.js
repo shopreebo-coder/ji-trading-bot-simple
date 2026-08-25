@@ -34,8 +34,11 @@ console.log("FOREX ENGINE PRO v39.1 (BALANCED MTF)");
 const API_KEY    = process.env.OANDA_API_KEY;
 const ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID;
 
+const OANDA_ENV = String(
+  process.env.OANDA_ENV || process.env.OANDA_ENVIRONMENT || "practice"
+).trim().toLowerCase();
 const BASE_URL =
-  process.env.OANDA_ENV === "live"
+  OANDA_ENV === "live"
     ? "https://api-fxtrade.oanda.com"
     : "https://api-fxpractice.oanda.com";
 
@@ -63,7 +66,7 @@ console.log(`MAX_OPEN_TRADES=${MAX_OPEN_TRADES}`);
 console.log(`MAX_DAILY_TRADES=${MAX_DAILY_TRADES}`);
 console.log(`SYMBOLS=${SYMBOLS}`);
 console.log(
-  `[OANDA_CONFIG] environment=${process.env.OANDA_ENV || "practice(default)"}` +
+  `[OANDA_CONFIG] environment=${OANDA_ENV}` +
   ` baseUrl=${BASE_URL}` +
   ` accountIdPresent=${Boolean(ACCOUNT_ID)}` +
   ` apiKeyPresent=${Boolean(API_KEY)}` +

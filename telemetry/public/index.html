@@ -5068,6 +5068,27 @@ function App(){
     return ()=>clearInterval(id);
   },[]);
 
+  // Hydrate live state and the latest persisted events before realtime SSE
+  // updates. A fresh page must not remain on the initial "starting" state or
+  // show an empty log when the backend already has telemetry history.
+  useEffect(()=>{
+    let alive = true;
+    api("/api/live", {timeoutMs:6000})
+      .then((data)=>{
+        if(alive && data && typeof data === "object"){
+          setLive(prev=>({...prev,...data}));
+          setTs(new Date().toISOString());
+        }
+      })
+      .catch((error)=>console.error("[LIVE STATUS] initial fetch failed:", error));
+    api("/api/live/log?limit=100", {timeoutMs:6000})
+      .then((data)=>{
+        if(alive && Array.isArray(data?.lines)) setLogLines(data.lines);
+      })
+      .catch((error)=>console.error("[LIVE LOG] history fetch failed:", error));
+    return ()=>{ alive=false; };
+  },[]);
+
   // Load tab-specific data on demand
   useEffect(()=>{
     if(tab==="WZORCE")   refreshFps();
@@ -5116,6 +5137,18 @@ function App(){
         setLogLines(prev=>[{t:new Date().toISOString(),line},...prev].slice(0,200));
         setTs(new Date().toISOString());
       }
+    };
+    es.onerror = ()=>{
+      // EventSource reconnects automatically; refresh the authoritative status
+      // during a proxy/SSE gap instead of leaving the initial value visible.
+      api("/api/live", {timeoutMs:6000})
+        .then((data)=>{
+          if(data && typeof data === "object"){
+            setLive(prev=>({...prev,...data}));
+            setTs(new Date().toISOString());
+          }
+        })
+        .catch(()=>{});
     };
     return ()=>es.close();
   },[]);

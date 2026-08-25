@@ -1159,6 +1159,27 @@ app.get("/api/live", async (req, res) => {
   });
 });
 
+// ── API: GET /api/live/log — bounded history for the LIVE tab ────────────────
+// The SSE stream is realtime-only. This read-only endpoint hydrates a fresh
+// dashboard with the latest persisted events before it starts consuming SSE.
+app.get("/api/live/log", async (req, res) => {
+  try {
+    const requested = Number.parseInt(req.query.limit || "100", 10);
+    const limit = Number.isFinite(requested)
+      ? Math.min(Math.max(requested, 1), 200)
+      : 100;
+    const rows = await queryEvents({ limit });
+    const lines = rows.map((row) => ({
+      id: row.id,
+      t: row.ts,
+      line: `${row.type}${row.symbol ? ` ${row.symbol}` : ""}`,
+    }));
+    res.json({ ok: true, lines });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── API: GET /api/export ──────────────────────────────────────────────────────
 app.get("/api/export", async (req, res) => {
   const date   = parseDate(req.query.date || "today");
